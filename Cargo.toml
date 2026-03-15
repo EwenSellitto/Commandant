@@ -1,0 +1,9 @@
+[workspace]
+members = ["commandant-cli", "commandant-server", "commandant-agent", "commandant-core"]
+resolver = "2"
+
+[workspace.dependencies]
+commandant-core = { path = "commandant-core" }
+
+[workspace.lints.clippy]
+# Common clippy lints for the entire workspace
