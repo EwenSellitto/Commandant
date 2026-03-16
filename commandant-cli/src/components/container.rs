@@ -1,10 +1,10 @@
 use crossterm::event::KeyEvent;
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
-    Frame,
 };
 
 use crate::components::{Component, ComponentEffect, HelpContent, RenderContext};
@@ -88,9 +88,7 @@ impl Component for Container {
     fn help_content(&self) -> HelpContent {
         HelpContent {
             title: " Help ",
-            lines: &[
-                " Hello world"
-            ],
+            lines: &[" Hello world"],
         }
     }
 }

@@ -1,12 +1,12 @@
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState},
-    Frame,
 };
 
-use crate::components::{browser::Browser, RenderContext};
+use crate::components::{RenderContext, browser::Browser};
 
 pub(crate) fn render_browser(frame: &mut Frame, browser: &Browser, area: Rect, ctx: RenderContext) {
     let items: Vec<ListItem<'_>> = browser

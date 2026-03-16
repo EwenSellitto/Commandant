@@ -1,5 +1,5 @@
 [workspace]
-members = ["commandant-cli", "commandant-server", "commandant-agent", "commandant-core"]
+members = ["commandant-cli", "commandant-server", "commandant-agent", "commandant-core", "commandant-docker-compose"]
 resolver = "2"
 
 [workspace.dependencies]

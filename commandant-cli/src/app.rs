@@ -2,7 +2,7 @@ use commandant_core::browser::WorkspaceBrowserData;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::components::{
-    browser::Browser, container::Container, help::Help, Component, ComponentEffect,
+    Component, ComponentEffect, browser::Browser, container::Container, help::Help,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

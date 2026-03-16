@@ -3,7 +3,7 @@ pub(crate) mod container;
 pub(crate) mod help;
 
 use crossterm::event::KeyEvent;
-use ratatui::{layout::Rect, Frame};
+use ratatui::{Frame, layout::Rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RenderContext {
