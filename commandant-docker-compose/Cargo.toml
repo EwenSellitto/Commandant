@@ -1,0 +1,22 @@
+[package]
+name = "commandant-docker-compose"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+bollard = "0.19"
+docker_compose_spec = "0.2.1"
+dotenvy = "0.15.7"
+humantime = "2.3.0"
+lmrc-docker = "0.3.16"
+serde_yaml = "0.9.34"
+shell-words = "1.1.0"
+thiserror = "2.0.18"
+tokio = { version = "1.50.0", features = ["full"] }
+
+[dev-dependencies]
+futures-util = "0.3"
+
+[lints]
+workspace = true
