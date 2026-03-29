@@ -1,6 +1,7 @@
 pub mod error;
 pub mod executor;
 pub mod model;
+pub mod proxy;
 pub mod parser;
 pub mod planner;
 
@@ -103,8 +104,8 @@ volumes:
         let project = ComposeProject::from_yaml_strl_str(FIXTURE).expect("parse compose fixture");
         let plan = planner::build_plan(&project, &["database".to_string()]).expect("build plan");
 
-        assert_eq!(plan.services.len(), 2);
-        assert_eq!(plan.networks.len(), 1);
+        assert_eq!(plan.services.len(), 3);
+        assert_eq!(plan.networks.len(), 2);
         assert_eq!(plan.volumes.len(), 1);
 
         let api = plan.service("api").expect("api plan exists");
@@ -112,6 +113,11 @@ volumes:
         assert_eq!(api.mounts.len(), 2);
         assert_eq!(api.networks[0].runtime_name, "app");
         assert_eq!(api.depends_on, vec!["db".to_string()]);
+
+        let proxy = plan.service("__commandant_traefik").expect("proxy plan exists");
+        assert_eq!(proxy.ports[0].host_port, 80);
+        assert_eq!(proxy.networks[0].runtime_name, plan.proxy.as_ref().expect("proxy session").network_runtime_name);
+        assert_eq!(proxy.container_name, "commandant-traefik");
     }
 
     #[test]

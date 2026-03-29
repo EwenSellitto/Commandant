@@ -61,6 +61,7 @@ impl ComposeExecutor {
 
         let mut containers = BTreeMap::new();
         for service in &plan.services {
+            self.ensure_image(&service.image).await?;
             let container = self.create_container(service).await?;
             container.start().await?;
 
@@ -105,6 +106,15 @@ impl ComposeExecutor {
             }
         }
 
+        Ok(())
+    }
+
+    async fn ensure_image(&self, image: &str) -> Result<()> {
+        if self.client.images().get(image).inspect().await.is_ok() {
+            return Ok(());
+        }
+
+        self.client.images().pull(image, None).await?;
         Ok(())
     }
 
@@ -236,7 +246,13 @@ impl ComposeExecutor {
 
         let networking_config = service.networks.first().map(|network| NetworkingConfig {
             endpoints_config: Some(
-                [(network.runtime_name.clone(), EndpointSettings::default())]
+                [(
+                    network.runtime_name.clone(),
+                    EndpointSettings {
+                        aliases: (!network.aliases.is_empty()).then(|| network.aliases.clone()),
+                        ..Default::default()
+                    },
+                )]
                     .into_iter()
                     .collect(),
             ),

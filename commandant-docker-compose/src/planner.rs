@@ -11,12 +11,14 @@ use docker_compose_spec::{
 
 use crate::error::{Error, Result};
 use crate::model::ComposeProject;
+use crate::proxy::{prepare_proxy_session, ProxyConfig};
 
 #[derive(Debug, Clone)]
 pub struct ExecutionPlan {
     pub networks: Vec<NetworkPlan>,
     pub volumes: Vec<VolumePlan>,
     pub services: Vec<ServicePlan>,
+    pub proxy: Option<crate::proxy::ProxySession>,
 }
 
 #[derive(Debug, Clone)]
@@ -138,7 +140,19 @@ pub fn build_plan(project: &ComposeProject, active_profiles: &[String]) -> Resul
         services.push(plan);
     }
 
-    let required_networks = services
+    let mut plan = ExecutionPlan {
+        networks: Vec::new(),
+        volumes: Vec::new(),
+        services,
+        proxy: None,
+    };
+
+    let proxy_config = ProxyConfig::default();
+    let proxy = prepare_proxy_session(&mut plan, &proxy_config)?;
+    plan.proxy = proxy;
+
+    let required_networks = plan
+        .services
         .iter()
         .flat_map(|service| {
             service
@@ -146,9 +160,11 @@ pub fn build_plan(project: &ComposeProject, active_profiles: &[String]) -> Resul
                 .iter()
                 .map(|network| network.compose_name.as_str())
         })
+        .filter(|name| *name != "commandant_proxy")
         .collect::<BTreeSet<_>>();
 
-    let required_volumes = services
+    let required_volumes = plan
+        .services
         .iter()
         .flat_map(|service| {
             service.mounts.iter().filter_map(|mount| {
@@ -176,11 +192,25 @@ pub fn build_plan(project: &ComposeProject, active_profiles: &[String]) -> Resul
         })
         .collect::<Result<Vec<_>>>()?;
 
-    Ok(ExecutionPlan {
-        networks,
-        volumes,
-        services,
-    })
+    plan.networks = networks;
+    plan.volumes = volumes;
+
+    if let Some(proxy) = plan.proxy.as_ref() {
+        if !plan
+            .networks
+            .iter()
+            .any(|network| network.runtime_name == proxy.network_runtime_name)
+        {
+            plan.networks.push(NetworkPlan {
+                compose_name: proxy.network_compose_name.clone(),
+                runtime_name: proxy.network_runtime_name.clone(),
+                driver: "bridge".to_string(),
+                external: false,
+            });
+        }
+    }
+
+    Ok(plan)
 }
 
 fn validate_compose_features(compose: &DockerCompose) -> Result<()> {
