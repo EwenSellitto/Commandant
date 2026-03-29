@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::docker_paths::{common_docker_socket_candidates, first_matching_path};
 use crate::error::Result;
 use crate::planner::{ExecutionPlan, ResolvedPort, ServiceNetworkAttachment, ServicePlan};
 
@@ -257,17 +258,9 @@ fn detect_docker_socket() -> Option<String> {
 
 fn detect_docker_socket_at(home: Option<std::path::PathBuf>) -> Option<String> {
     let home = home?;
-    let candidates = [
-        home.join(".docker/run/docker.sock"),
-        home.join(".colima/default/docker.sock"),
-        home.join(".orbstack/run/docker.sock"),
-        std::path::PathBuf::from("/var/run/docker.sock"),
-    ];
+    let candidates = common_docker_socket_candidates(&home, false);
 
-    candidates
-        .into_iter()
-        .find(|path| is_socket_file(path))
-        .map(|path| path.display().to_string())
+    first_matching_path(candidates, is_socket_file).map(|path| path.display().to_string())
 }
 
 fn is_socket_file(path: &std::path::Path) -> bool {

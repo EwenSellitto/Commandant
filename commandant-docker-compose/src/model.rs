@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use docker_compose_spec::{
     Command, ComposeService, DockerCompose, FieldKey, IntOrStr, Network, NetworkConfig,
     NonEmptyKey, ServiceNetwork, ServiceNetworks, ServicePort, ServiceVolume, VecOrMap,
-    VecOrMapVal, Volume, VolumeConfig,
+    VecOrMapVal,
 };
 
 use crate::error::{Error, Result};
@@ -206,33 +206,17 @@ impl ComposeProject {
         read_only: bool,
     ) -> Result<()> {
         let source = source.into();
-        self.compose
-            .volumes
-            .entry(FieldKey::from(source.as_str()))
-            .or_insert_with(|| {
-                Volume::from(VolumeConfig {
-                    driver: None,
-                    driver_opts: BTreeMap::new(),
-                    external: None,
-                    labels: None,
-                    name: None,
-                })
-            });
-
+        self.ensure_volume(&source);
         let service = self.service_mut(service)?;
         service
             .volumes
             .get_or_insert_with(Vec::new)
-            .push(ServiceVolume::Object {
-                bind: None,
-                consistency: None,
-                read_only: read_only.then_some(docker_compose_spec::BoolOrStr::Boolean(true)),
-                source: Some(source),
-                target: Some(target.into()),
-                tmpfs: None,
-                type_: "volume".to_string(),
-                volume: Box::default(),
-            });
+            .push(build_service_volume(
+                "volume",
+                Some(source),
+                target.into(),
+                read_only,
+            ));
 
         Ok(())
     }
@@ -248,16 +232,12 @@ impl ComposeProject {
         service
             .volumes
             .get_or_insert_with(Vec::new)
-            .push(ServiceVolume::Object {
-                bind: None,
-                consistency: None,
-                read_only: read_only.then_some(docker_compose_spec::BoolOrStr::Boolean(true)),
-                source: Some(source.into()),
-                target: Some(target.into()),
-                tmpfs: None,
-                type_: "bind".to_string(),
-                volume: Box::default(),
-            });
+            .push(build_service_volume(
+                "bind",
+                Some(source.into()),
+                target.into(),
+                read_only,
+            ));
 
         Ok(())
     }
@@ -281,6 +261,21 @@ impl ComposeProject {
             }
         }
         Ok(())
+    }
+
+    fn ensure_volume(&mut self, source: &str) {
+        self.compose
+            .volumes
+            .entry(FieldKey::from(source))
+            .or_insert_with(|| {
+                docker_compose_spec::Volume::from(docker_compose_spec::VolumeConfig {
+                    driver: None,
+                    driver_opts: BTreeMap::new(),
+                    external: None,
+                    labels: None,
+                    name: None,
+                })
+            });
     }
 }
 
@@ -335,5 +330,23 @@ fn stringify_env_value(value: &VecOrMapVal) -> String {
         VecOrMapVal::Boolean(value) => value.to_string(),
         VecOrMapVal::Number(value) => value.to_string(),
         VecOrMapVal::String(value) => value.clone(),
+    }
+}
+
+fn build_service_volume(
+    type_: &str,
+    source: Option<String>,
+    target: String,
+    read_only: bool,
+) -> ServiceVolume {
+    ServiceVolume::Object {
+        bind: None,
+        consistency: None,
+        read_only: read_only.then_some(docker_compose_spec::BoolOrStr::Boolean(true)),
+        source,
+        target: Some(target),
+        tmpfs: None,
+        type_: type_.to_string(),
+        volume: Box::default(),
     }
 }

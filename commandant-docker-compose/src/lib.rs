@@ -1,9 +1,10 @@
+pub mod docker_paths;
 pub mod error;
 pub mod executor;
 pub mod model;
-pub mod proxy;
 pub mod parser;
 pub mod planner;
+pub mod proxy;
 
 pub use error::{Error, Result};
 pub use executor::{ComposeExecutor, RunningProject};
