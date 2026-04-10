@@ -76,8 +76,14 @@ impl ComposeExecutor {
         let plan = self.plan_with_proxy(project, active_profiles, proxy_config)?;
         self.client.ping().await?;
 
-        let networks = self.ensure_networks(&plan.networks).await?;
-        let volumes = self.ensure_volumes(&plan.volumes).await?;
+        let (networks, created_network_ids) = self.ensure_networks(&plan.networks).await?;
+        let (volumes, created_volume_names) = match self.ensure_volumes(&plan.volumes).await {
+            Ok(result) => result,
+            Err(error) => {
+                self.remove_networks(&created_network_ids).await;
+                return Err(error);
+            }
+        };
 
         let mut containers = BTreeMap::new();
         for service in &plan.services {
@@ -101,7 +107,11 @@ impl ComposeExecutor {
             let container = match result {
                 Ok(container) => container,
                 Err(error) => {
-                    self.cleanup_partial(&plan, &networks, &volumes, &containers)
+                    self.cleanup_partial(
+                        &created_network_ids,
+                        &created_volume_names,
+                        &containers,
+                    )
                         .await;
                     return Err(error);
                 }
@@ -152,7 +162,10 @@ impl ComposeExecutor {
         Ok(())
     }
 
-    async fn ensure_networks(&self, plans: &[NetworkPlan]) -> Result<BTreeMap<String, String>> {
+    async fn ensure_networks(
+        &self,
+        plans: &[NetworkPlan],
+    ) -> Result<(BTreeMap<String, String>, Vec<String>)> {
         let existing = self.client.networks().list().await?;
         let mut known = BTreeMap::new();
         for network in existing {
@@ -188,10 +201,13 @@ impl ComposeExecutor {
             created.insert(plan.compose_name.to_string(), id);
         }
 
-        Ok(created)
+        Ok((created, created_ids))
     }
 
-    async fn ensure_volumes(&self, plans: &[VolumePlan]) -> Result<BTreeMap<String, String>> {
+    async fn ensure_volumes(
+        &self,
+        plans: &[VolumePlan],
+    ) -> Result<(BTreeMap<String, String>, Vec<String>)> {
         let existing = self.client.volumes().list().await?;
         let mut known = existing
             .into_iter()
@@ -224,7 +240,7 @@ impl ComposeExecutor {
             created.insert(plan.compose_name.to_string(), name);
         }
 
-        Ok(created)
+        Ok((created, created_names))
     }
 
     async fn create_container<'a>(&'a self, service: &ServicePlan) -> Result<ContainerRef<'a>> {
@@ -379,9 +395,8 @@ impl ComposeExecutor {
 
     async fn cleanup_partial<'a>(
         &self,
-        plan: &ExecutionPlan,
-        networks: &BTreeMap<String, String>,
-        volumes: &BTreeMap<String, String>,
+        created_network_ids: &[String],
+        created_volume_names: &[String],
         containers: &BTreeMap<String, ContainerRef<'a>>,
     ) {
         for container in containers.values().rev() {
@@ -389,21 +404,8 @@ impl ComposeExecutor {
             let _ = container.remove(true, true).await;
         }
 
-        self.remove_networks(&networks.values().cloned().collect::<Vec<_>>())
-            .await;
-        self.remove_volumes(&volumes.values().cloned().collect::<Vec<_>>())
-            .await;
-
-        for network in plan.networks.iter().rev() {
-            if !network.external {
-                let _ = self
-                    .client
-                    .networks()
-                    .get(&network.runtime_name)
-                    .remove()
-                    .await;
-            }
-        }
+        self.remove_networks(created_network_ids).await;
+        self.remove_volumes(created_volume_names).await;
     }
 
     async fn remove_networks(&self, ids: &[String]) {

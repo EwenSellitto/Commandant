@@ -49,3 +49,21 @@ pub async fn exec_stdout(
 
     bail!("timed out waiting for exec completion")
 }
+
+pub async fn network_exists(client: &DockerClient, name: &str) -> Result<bool> {
+    Ok(client
+        .networks()
+        .list()
+        .await?
+        .into_iter()
+        .any(|network| network.name.as_deref() == Some(name)))
+}
+
+pub async fn volume_exists(client: &DockerClient, name: &str) -> Result<bool> {
+    Ok(client
+        .volumes()
+        .list()
+        .await?
+        .into_iter()
+        .any(|volume| volume.name == name))
+}
