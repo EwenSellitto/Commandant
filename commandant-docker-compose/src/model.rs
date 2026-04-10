@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 use docker_compose_spec::{
     Command, ComposeService, DockerCompose, FieldKey, IntOrStr, Network, NetworkConfig,
     NonEmptyKey, ServiceNetwork, ServiceNetworks, ServicePort, ServiceVolume, VecOrMap,
-    VecOrMapVal,
+    VecOrMapVal, Volume, VolumeConfig,
 };
 
 use crate::error::{Error, Result};
-use crate::parser::{self, parse_str};
+use crate::parser::{parse_file, parse_str};
 
 #[derive(Debug, Clone)]
 pub struct ComposeProject {
@@ -17,7 +17,7 @@ pub struct ComposeProject {
 }
 
 impl ComposeProject {
-    pub fn from_yaml_strl_str(yaml: &str) -> Result<Self> {
+    pub fn from_yaml_str(yaml: &str) -> Result<Self> {
         Ok(Self {
             compose: parse_str(yaml)?,
             base_dir: PathBuf::from("."),
@@ -25,7 +25,7 @@ impl ComposeProject {
     }
 
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
-        let (compose, base_dir) = parser::parse_file(path)?;
+        let (compose, base_dir) = parse_file(path)?;
         Ok(Self { compose, base_dir })
     }
 
@@ -40,16 +40,12 @@ impl ComposeProject {
         &self.compose
     }
 
-    pub fn compose_mut(&mut self) -> &mut DockerCompose {
-        &mut self.compose
-    }
-
     pub fn base_dir(&self) -> &Path {
         &self.base_dir
     }
 
     pub fn to_yaml(&self) -> Result<String> {
-        parser::to_yaml(&self.compose)
+        Ok(serde_yaml::to_string(&self.compose)?)
     }
 
     pub fn service(&self, service: &str) -> Option<&ComposeService> {
@@ -65,8 +61,8 @@ impl ComposeProject {
             })
     }
 
-    pub fn set_image(&mut self, service: &str, image: impl Into<String>) -> Result<()> {
-        self.service_mut(service)?.image = Some(image.into());
+    pub fn set_image(&mut self, service: &str, image: &str) -> Result<()> {
+        self.service_mut(service)?.image = Some(image.to_string());
         Ok(())
     }
 
@@ -80,15 +76,10 @@ impl ComposeProject {
         Ok(())
     }
 
-    pub fn set_env(
-        &mut self,
-        service: &str,
-        key: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Result<()> {
+    pub fn set_env(&mut self, service: &str, key: &str, value: &str) -> Result<()> {
         let service = self.service_mut(service)?;
-        let key = NonEmptyKey::from(key.into().as_str());
-        let value = VecOrMapVal::String(value.into());
+        let key = NonEmptyKey::from(key);
+        let value = VecOrMapVal::String(value.to_string());
 
         let env = service
             .environment
@@ -201,22 +192,37 @@ impl ComposeProject {
     pub fn add_named_volume(
         &mut self,
         service: &str,
-        source: impl Into<String>,
-        target: impl Into<String>,
+        source: &str,
+        target: &str,
         read_only: bool,
     ) -> Result<()> {
-        let source = source.into();
-        self.ensure_volume(&source);
+        let source = source.to_string();
+        self.compose
+            .volumes
+            .entry(FieldKey::from(source.as_str()))
+            .or_insert_with(|| {
+                Volume::from(VolumeConfig {
+                    driver: None,
+                    driver_opts: BTreeMap::new(),
+                    external: None,
+                    labels: None,
+                    name: None,
+                })
+            });
         let service = self.service_mut(service)?;
         service
             .volumes
             .get_or_insert_with(Vec::new)
-            .push(build_service_volume(
-                "volume",
-                Some(source),
-                target.into(),
-                read_only,
-            ));
+            .push(ServiceVolume::Object {
+                bind: None,
+                consistency: None,
+                read_only: read_only.then_some(docker_compose_spec::BoolOrStr::Boolean(true)),
+                source: Some(source),
+                target: Some(target.to_string()),
+                tmpfs: None,
+                type_: "volume".to_string(),
+                volume: Box::default(),
+            });
 
         Ok(())
     }
@@ -224,30 +230,33 @@ impl ComposeProject {
     pub fn add_bind_mount(
         &mut self,
         service: &str,
-        source: impl Into<String>,
-        target: impl Into<String>,
+        source: &str,
+        target: &str,
         read_only: bool,
     ) -> Result<()> {
         let service = self.service_mut(service)?;
         service
             .volumes
             .get_or_insert_with(Vec::new)
-            .push(build_service_volume(
-                "bind",
-                Some(source.into()),
-                target.into(),
-                read_only,
-            ));
+            .push(ServiceVolume::Object {
+                bind: None,
+                consistency: None,
+                read_only: read_only.then_some(docker_compose_spec::BoolOrStr::Boolean(true)),
+                source: Some(source.to_string()),
+                target: Some(target.to_string()),
+                tmpfs: None,
+                type_: "bind".to_string(),
+                volume: Box::default(),
+            });
 
         Ok(())
     }
 
-    pub fn enable_profile(&mut self, service: &str, profile: impl Into<String>) -> Result<()> {
+    pub fn enable_profile(&mut self, service: &str, profile: &str) -> Result<()> {
         let service = self.service_mut(service)?;
-        let profile = profile.into();
         let profiles = service.profiles.get_or_insert_with(Vec::new);
-        if !profiles.iter().any(|existing| existing == &profile) {
-            profiles.push(profile);
+        if !profiles.iter().any(|existing| existing == profile) {
+            profiles.push(profile.to_string());
         }
         Ok(())
     }
@@ -261,21 +270,6 @@ impl ComposeProject {
             }
         }
         Ok(())
-    }
-
-    fn ensure_volume(&mut self, source: &str) {
-        self.compose
-            .volumes
-            .entry(FieldKey::from(source))
-            .or_insert_with(|| {
-                docker_compose_spec::Volume::from(docker_compose_spec::VolumeConfig {
-                    driver: None,
-                    driver_opts: BTreeMap::new(),
-                    external: None,
-                    labels: None,
-                    name: None,
-                })
-            });
     }
 }
 
@@ -330,23 +324,5 @@ fn stringify_env_value(value: &VecOrMapVal) -> String {
         VecOrMapVal::Boolean(value) => value.to_string(),
         VecOrMapVal::Number(value) => value.to_string(),
         VecOrMapVal::String(value) => value.clone(),
-    }
-}
-
-fn build_service_volume(
-    type_: &str,
-    source: Option<String>,
-    target: String,
-    read_only: bool,
-) -> ServiceVolume {
-    ServiceVolume::Object {
-        bind: None,
-        consistency: None,
-        read_only: read_only.then_some(docker_compose_spec::BoolOrStr::Boolean(true)),
-        source,
-        target: Some(target),
-        tmpfs: None,
-        type_: type_.to_string(),
-        volume: Box::default(),
     }
 }

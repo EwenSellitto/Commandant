@@ -10,9 +10,10 @@ use lmrc_docker::{ContainerRef, DockerClient};
 use crate::error::Result;
 use crate::model::ComposeProject;
 use crate::planner::{
-    ExecutionPlan, MountKind, NetworkPlan, ResolvedHealthcheck, RestartPolicy, ServicePlan,
-    VolumePlan, build_plan,
+    ExecutionPlan, NetworkPlan, ResolvedHealthcheck, RestartPolicy, ServicePlan, VolumePlan,
+    build_plan_with_proxy,
 };
+use crate::proxy::ProxyConfig;
 
 pub struct ComposeExecutor {
     client: DockerClient,
@@ -45,7 +46,16 @@ impl ComposeExecutor {
         project: &ComposeProject,
         active_profiles: &[String],
     ) -> Result<ExecutionPlan> {
-        build_plan(project, active_profiles)
+        self.plan_with_proxy(project, active_profiles, &ProxyConfig::default())
+    }
+
+    pub fn plan_with_proxy(
+        &self,
+        project: &ComposeProject,
+        active_profiles: &[String],
+        proxy_config: &ProxyConfig,
+    ) -> Result<ExecutionPlan> {
+        build_plan_with_proxy(project, active_profiles, proxy_config)
     }
 
     pub async fn up<'a>(
@@ -53,7 +63,17 @@ impl ComposeExecutor {
         project: &ComposeProject,
         active_profiles: &[String],
     ) -> Result<RunningProject<'a>> {
-        let plan = self.plan(project, active_profiles)?;
+        self.up_with_proxy(project, active_profiles, &ProxyConfig::default())
+            .await
+    }
+
+    pub async fn up_with_proxy<'a>(
+        &'a self,
+        project: &ComposeProject,
+        active_profiles: &[String],
+        proxy_config: &ProxyConfig,
+    ) -> Result<RunningProject<'a>> {
+        let plan = self.plan_with_proxy(project, active_profiles, proxy_config)?;
         self.client.ping().await?;
 
         let networks = self.ensure_networks(&plan.networks).await?;
@@ -61,17 +81,31 @@ impl ComposeExecutor {
 
         let mut containers = BTreeMap::new();
         for service in &plan.services {
-            self.ensure_image(&service.image).await?;
-            let container = self.create_container(service).await?;
-            container.start().await?;
+            let result: Result<ContainerRef<'a>> = async {
+                self.ensure_image(&service.image).await?;
+                let container = self.create_container(service).await?;
+                container.start().await?;
 
-            for attachment in service.networks.iter().skip(1) {
-                self.client
-                    .networks()
-                    .get(&attachment.runtime_name)
-                    .connect(container.id())
-                    .await?;
+                for attachment in service.networks.iter().skip(1) {
+                    self.client
+                        .networks()
+                        .get(&attachment.runtime_name)
+                        .connect(container.id())
+                        .await?;
+                }
+
+                Ok(container)
             }
+            .await;
+
+            let container = match result {
+                Ok(container) => container,
+                Err(error) => {
+                    self.cleanup_partial(&plan, &networks, &volumes, &containers)
+                        .await;
+                    return Err(error);
+                }
+            };
 
             containers.insert(service.name.to_string(), container);
         }
@@ -120,23 +154,34 @@ impl ComposeExecutor {
 
     async fn ensure_networks(&self, plans: &[NetworkPlan]) -> Result<BTreeMap<String, String>> {
         let existing = self.client.networks().list().await?;
-        let mut known = existing
-            .into_iter()
-            .filter_map(|network| Some((network.name?, network.id?)))
-            .collect::<BTreeMap<_, _>>();
+        let mut known = BTreeMap::new();
+        for network in existing {
+            if let (Some(name), Some(id)) = (network.name, network.id) {
+                known.insert(name, id);
+            }
+        }
 
         let mut created = BTreeMap::new();
+        let mut created_ids = Vec::new();
         for plan in plans {
             let id = if let Some(id) = known.get(&plan.runtime_name) {
                 id.clone()
             } else if plan.external {
                 plan.runtime_name.to_string()
             } else {
-                let id = self
+                let id = match self
                     .client
                     .networks()
                     .create(&plan.runtime_name, &plan.driver)
-                    .await?;
+                    .await
+                {
+                    Ok(id) => id,
+                    Err(error) => {
+                        self.remove_networks(&created_ids).await;
+                        return Err(error.into());
+                    }
+                };
+                created_ids.push(id.clone());
                 known.insert(plan.runtime_name.to_string(), id.clone());
                 id
             };
@@ -157,14 +202,22 @@ impl ComposeExecutor {
             .collect::<BTreeMap<_, _>>();
 
         let mut created = BTreeMap::new();
+        let mut created_names = Vec::new();
         for plan in plans {
             let name = if let Some(name) = known.get(&plan.runtime_name) {
                 name.clone()
             } else if plan.external {
                 plan.runtime_name.to_string()
             } else {
-                let volume = self.client.volumes().create(&plan.runtime_name).await?;
+                let volume = match self.client.volumes().create(&plan.runtime_name).await {
+                    Ok(volume) => volume,
+                    Err(error) => {
+                        self.remove_volumes(&created_names).await;
+                        return Err(error.into());
+                    }
+                };
                 let name = volume.name;
+                created_names.push(name.clone());
                 known.insert(name.clone(), name.clone());
                 name
             };
@@ -175,61 +228,79 @@ impl ComposeExecutor {
     }
 
     async fn create_container<'a>(&'a self, service: &ServicePlan) -> Result<ContainerRef<'a>> {
-        let env = (!service.environment.is_empty()).then(|| {
-            service
-                .environment
-                .iter()
-                .map(|(key, value)| format!("{key}={value}"))
-                .collect::<Vec<_>>()
-        });
+        let env = if service.environment.is_empty() {
+            None
+        } else {
+            Some(
+                service
+                    .environment
+                    .iter()
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .collect::<Vec<_>>(),
+            )
+        };
 
-        let labels = (!service.labels.is_empty()).then(|| {
-            service
-                .labels
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect()
-        });
+        let labels = if service.labels.is_empty() {
+            None
+        } else {
+            Some(
+                service
+                    .labels
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            )
+        };
 
-        let exposed_ports = (!service.ports.is_empty()).then(|| {
-            service
-                .ports
-                .iter()
-                .map(|port| {
-                    (
-                        format!("{}/{}", port.container_port, port.protocol),
-                        Default::default(),
-                    )
-                })
-                .collect()
-        });
+        let exposed_ports = if service.ports.is_empty() {
+            None
+        } else {
+            Some(
+                service
+                    .ports
+                    .iter()
+                    .map(|port| {
+                        (
+                            format!("{}/{}", port.container_port, port.protocol),
+                            Default::default(),
+                        )
+                    })
+                    .collect(),
+            )
+        };
 
-        let port_bindings = (!service.ports.is_empty()).then(|| {
-            service
-                .ports
-                .iter()
-                .map(|port| {
-                    (
-                        format!("{}/{}", port.container_port, port.protocol),
-                        Some(vec![PortBinding {
-                            host_ip: Some(
-                                port.host_ip
-                                    .clone()
-                                    .unwrap_or_else(|| "0.0.0.0".to_string()),
-                            ),
-                            host_port: Some(port.host_port.to_string()),
-                        }]),
-                    )
-                })
-                .collect()
-        });
+        let port_bindings = if service.ports.is_empty() {
+            None
+        } else {
+            Some(
+                service
+                    .ports
+                    .iter()
+                    .map(|port| {
+                        (
+                            format!("{}/{}", port.container_port, port.protocol),
+                            Some(vec![PortBinding {
+                                host_ip: Some(
+                                    port.host_ip
+                                        .clone()
+                                        .unwrap_or_else(|| "0.0.0.0".to_string()),
+                                ),
+                                host_port: Some(port.host_port.to_string()),
+                            }]),
+                        )
+                    })
+                    .collect(),
+            )
+        };
 
-        let binds = (!service.mounts.is_empty()).then(|| {
-            service
-                .mounts
-                .iter()
-                .map(|mount| match mount.kind {
-                    MountKind::Bind | MountKind::Volume => {
+        let binds = if service.mounts.is_empty() {
+            None
+        } else {
+            Some(
+                service
+                    .mounts
+                    .iter()
+                    .map(|mount| {
                         let mut binding = if mount.source.is_empty() {
                             mount.target.clone()
                         } else {
@@ -239,22 +310,26 @@ impl ComposeExecutor {
                             binding.push_str(":ro");
                         }
                         binding
-                    }
-                })
-                .collect::<Vec<_>>()
-        });
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
 
         let networking_config = service.networks.first().map(|network| NetworkingConfig {
             endpoints_config: Some(
                 [(
                     network.runtime_name.clone(),
                     EndpointSettings {
-                        aliases: (!network.aliases.is_empty()).then(|| network.aliases.clone()),
+                        aliases: if network.aliases.is_empty() {
+                            None
+                        } else {
+                            Some(network.aliases.clone())
+                        },
                         ..Default::default()
                     },
                 )]
-                    .into_iter()
-                    .collect(),
+                .into_iter()
+                .collect(),
             ),
         });
 
@@ -300,6 +375,47 @@ impl ComposeExecutor {
             })?;
 
         Ok(self.client.containers().get(response.id))
+    }
+
+    async fn cleanup_partial<'a>(
+        &self,
+        plan: &ExecutionPlan,
+        networks: &BTreeMap<String, String>,
+        volumes: &BTreeMap<String, String>,
+        containers: &BTreeMap<String, ContainerRef<'a>>,
+    ) {
+        for container in containers.values().rev() {
+            let _ = container.stop(Some(10)).await;
+            let _ = container.remove(true, true).await;
+        }
+
+        self.remove_networks(&networks.values().cloned().collect::<Vec<_>>())
+            .await;
+        self.remove_volumes(&volumes.values().cloned().collect::<Vec<_>>())
+            .await;
+
+        for network in plan.networks.iter().rev() {
+            if !network.external {
+                let _ = self
+                    .client
+                    .networks()
+                    .get(&network.runtime_name)
+                    .remove()
+                    .await;
+            }
+        }
+    }
+
+    async fn remove_networks(&self, ids: &[String]) {
+        for id in ids.iter().rev() {
+            let _ = self.client.networks().get(id).remove().await;
+        }
+    }
+
+    async fn remove_volumes(&self, names: &[String]) {
+        for name in names.iter().rev() {
+            let _ = self.client.volumes().get(name).remove(true).await;
+        }
     }
 }
 

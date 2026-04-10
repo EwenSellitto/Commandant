@@ -5,7 +5,7 @@ use docker_compose_spec::DockerCompose;
 
 use crate::error::{Error, Result};
 
-pub fn parse_str(yaml: &str) -> Result<DockerCompose> {
+pub fn parse_str(yaml: &str) -> Result<docker_compose_spec::DockerCompose> {
     Ok(yaml.parse::<DockerCompose>()?)
 }
 
@@ -23,8 +23,4 @@ pub fn parse_file(path: impl AsRef<Path>) -> Result<(DockerCompose, PathBuf)> {
         .unwrap_or_else(|| PathBuf::from("."));
 
     Ok((compose, base_dir))
-}
-
-pub fn to_yaml(compose: &DockerCompose) -> Result<String> {
-    Ok(serde_yaml::to_string(compose)?)
 }

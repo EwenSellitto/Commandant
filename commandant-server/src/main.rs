@@ -1,3 +1,1 @@
-fn main() {
-    // Server entry point
-}
+fn main() {}

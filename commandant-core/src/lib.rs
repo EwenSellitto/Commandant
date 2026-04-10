@@ -9,7 +9,7 @@ pub struct Config {
     pub log_level: String,
 }
 
-pub struct State {}
+pub struct State;
 
 impl Default for Config {
     fn default() -> Self {
@@ -48,8 +48,8 @@ pub mod utils {
 pub mod browser;
 pub mod engine;
 pub mod git;
-pub mod worktrunk;
 pub mod sessions;
+pub mod worktrunk;
 
 #[cfg(test)]
 mod tests {
