@@ -343,6 +343,7 @@ dependencies = [
  "lmrc-docker",
  "serde_yaml",
  "shell-words",
+ "tempfile",
  "thiserror",
  "tokio",
 ]

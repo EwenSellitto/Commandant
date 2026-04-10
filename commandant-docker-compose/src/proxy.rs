@@ -57,7 +57,7 @@ pub fn prepare_proxy_session(
     let session_id = session_id();
     let network_compose_name = "commandant_proxy".to_string();
     let network_runtime_name = format!("commandant-proxy-{session_id}");
-    let container_name = config.name.clone();
+    let container_name = format!("{}-{session_id}", config.name);
 
     if !plan
         .networks
@@ -159,12 +159,11 @@ fn prepare_service_route(
     network_runtime_name: &str,
     config: &ProxyConfig,
 ) -> Result<Option<ProxyRoute>> {
+    ensure_proxy_network(service, network_runtime_name);
+
     let Some(port) = service.ports.first().cloned() else {
-        ensure_proxy_network(service, network_runtime_name);
         return Ok(None);
     };
-
-    ensure_proxy_network(service, network_runtime_name);
 
     let hostname = format!(
         "{}.{}",
@@ -390,7 +389,7 @@ mod tests {
         assert_eq!(traefik.ports[0].host_port, 8088);
         assert_eq!(traefik.ports[0].container_port, 80);
         assert_eq!(traefik.ports[0].host_ip.as_deref(), Some("127.0.0.1"));
-        assert_eq!(traefik.container_name, "commandant-traefik");
+        assert!(traefik.container_name.starts_with("commandant-traefik-"));
         assert_eq!(traefik.networks[0].compose_name, "commandant_proxy");
         assert_eq!(
             traefik.networks[0].runtime_name,
@@ -485,10 +484,12 @@ mod tests {
             .services
             .iter()
             .all(|service| service.labels.is_empty()));
-        assert!(plan.services.iter().all(|service| service
-            .networks
-            .iter()
-            .all(|network| network.runtime_name != "commandant-proxy")));
+        assert!(plan.services.iter().all(|service| {
+            service
+                .networks
+                .iter()
+                .all(|network| network.runtime_name != "commandant-proxy")
+        }));
     }
 
     #[test]

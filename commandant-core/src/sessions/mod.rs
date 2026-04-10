@@ -1,4 +1,2 @@
-// Sessions module
-pub mod sessions;
 pub mod db;
-
+pub mod sessions;

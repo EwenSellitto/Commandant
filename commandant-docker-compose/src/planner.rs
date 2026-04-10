@@ -116,6 +116,15 @@ impl ExecutionPlan {
 }
 
 pub fn build_plan(project: &ComposeProject, active_profiles: &[String]) -> Result<ExecutionPlan> {
+    let proxy_config = ProxyConfig::default();
+    build_plan_with_proxy(project, active_profiles, &proxy_config)
+}
+
+pub fn build_plan_with_proxy(
+    project: &ComposeProject,
+    active_profiles: &[String],
+    proxy_config: &ProxyConfig,
+) -> Result<ExecutionPlan> {
     validate_compose_features(project.compose())?;
 
     let project_name = derive_project_name(project.base_dir());
@@ -147,34 +156,27 @@ pub fn build_plan(project: &ComposeProject, active_profiles: &[String]) -> Resul
         proxy: None,
     };
 
-    let proxy_config = ProxyConfig::default();
     let proxy = prepare_proxy_session(&mut plan, &proxy_config)?;
     plan.proxy = proxy;
 
     let required_networks = plan
         .services
         .iter()
-        .flat_map(|service| {
-            service
-                .networks
-                .iter()
-                .map(|network| network.compose_name.as_str())
-        })
-        .filter(|name| *name != "commandant_proxy")
+        .flat_map(|service| service.networks.iter())
+        .filter(|network| network.compose_name != "commandant_proxy")
+        .map(|network| network.compose_name.as_str())
         .collect::<BTreeSet<_>>();
 
     let required_volumes = plan
         .services
         .iter()
-        .flat_map(|service| {
-            service.mounts.iter().filter_map(|mount| {
-                (mount.kind == MountKind::Volume && !mount.anonymous).then(|| {
-                    mount
-                        .compose_source
-                        .as_deref()
-                        .unwrap_or(mount.source.as_str())
-                })
-            })
+        .flat_map(|service| service.mounts.iter())
+        .filter(|mount| mount.kind == MountKind::Volume && !mount.anonymous)
+        .map(|mount| {
+            mount
+                .compose_source
+                .as_deref()
+                .unwrap_or(mount.source.as_str())
         })
         .collect::<BTreeSet<_>>();
 
@@ -634,10 +636,16 @@ fn parse_service_port(service_name: &str, port: &ServicePort) -> Result<Resolved
         }
         ServicePort::String(value) => parse_short_port(service_name, value),
         ServicePort::Number(value) => {
-            let port = *value as u16;
+            let port = *value;
+            if !port.is_finite() || port.fract() != 0.0 || port < 0.0 || port > u16::MAX as f64 {
+                return Err(Error::InvalidPortMapping {
+                    service: service_name.to_string(),
+                    value: value.to_string(),
+                });
+            }
             Ok(ResolvedPort {
-                host_port: port,
-                container_port: port,
+                host_port: port as u16,
+                container_port: port as u16,
                 protocol: "tcp".to_string(),
                 host_ip: None,
             })
@@ -878,16 +886,15 @@ fn build_network_attachment(
 ) -> Result<ServiceNetworkAttachment> {
     let network_plan = build_network_plan_with_project_name(compose, network_name, project_name)?;
 
-    if let Some(config) = config {
-        if config.ipv4_address.is_some()
+    if config.is_some_and(|config| {
+        config.ipv4_address.is_some()
             || config.ipv6_address.is_some()
             || config.mac_address.is_some()
-        {
-            return Err(Error::UnsupportedServiceFeature {
-                service: service_name.to_string(),
-                feature: "service network static addressing",
-            });
-        }
+    }) {
+        return Err(Error::UnsupportedServiceFeature {
+            service: service_name.to_string(),
+            feature: "service network static addressing",
+        });
     }
 
     Ok(ServiceNetworkAttachment {
@@ -1015,11 +1022,10 @@ fn split_protocol(value: &str) -> (&str, &str) {
 }
 
 fn extract_host_ip(value: &str) -> (Option<String>, &str) {
-    let parts = value.split(':').collect::<Vec<_>>();
-    if parts.len() >= 3 && parts[0].contains('.') {
-        (Some(parts[0].to_string()), &value[parts[0].len() + 1..])
-    } else {
-        (None, value)
+    let mut parts = value.splitn(3, ':');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(host), Some(_), Some(rest)) if host.contains('.') => (Some(host.to_string()), rest),
+        _ => (None, value),
     }
 }
 

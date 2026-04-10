@@ -1,3 +1,1 @@
-fn main() {
-    // Agent entry point
-}
+fn main() {}
