@@ -112,6 +112,12 @@ async fn run_docker_compose_up(command: DockerComposeUpCommand) -> Result<()> {
         running.containers.len()
     );
 
+    if let Some(proxy) = running.plan.proxy.as_ref() {
+        for route in &proxy.routes {
+            println!("http://{}", route.hostname);
+        }
+    }
+
     tokio::signal::ctrl_c()
         .await
         .context("failed while waiting for Ctrl+C")?;

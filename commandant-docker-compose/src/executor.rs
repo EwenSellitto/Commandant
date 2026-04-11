@@ -76,7 +76,11 @@ impl ComposeExecutor {
         let plan = self.plan_with_proxy(project, active_profiles, proxy_config)?;
         self.client.ping().await?;
 
-        let (networks, created_network_ids) = self.ensure_networks(&plan.networks).await?;
+        let mut runtime_networks = Vec::with_capacity(plan.networks.len() + 1);
+        runtime_networks.push(plan.app_network.clone());
+        runtime_networks.extend(plan.networks.iter().cloned());
+
+        let (networks, created_network_ids) = self.ensure_networks(&runtime_networks).await?;
         let (volumes, created_volume_names) = match self.ensure_volumes(&plan.volumes).await {
             Ok(result) => result,
             Err(error) => {

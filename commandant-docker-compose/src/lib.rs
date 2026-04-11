@@ -1,3 +1,10 @@
+mod naming;
+mod planner_exposure;
+mod planner_flatten;
+mod planner_runtime;
+mod proxy_labels;
+mod proxy_socket;
+
 pub mod docker_paths;
 pub mod error;
 pub mod executor;
@@ -11,7 +18,7 @@ pub use executor::{ComposeExecutor, RunningProject};
 pub use model::{ComposeProject, PortMapping};
 pub use planner::{
     ExecutionPlan, MountKind, NetworkPlan, ResolvedHealthcheck, ResolvedMount, ResolvedPort,
-    RestartPolicy, ServiceNetworkAttachment, ServicePlan, VolumePlan,
+    RestartPolicy, ServiceExposure, ServiceNetworkAttachment, ServicePlan, TagSource, VolumePlan,
 };
 
 #[cfg(test)]
@@ -110,7 +117,10 @@ volumes:
         let api = plan.service("api").expect("api plan exists");
         assert_eq!(api.ports.len(), 1);
         assert_eq!(api.mounts.len(), 2);
-        assert_eq!(api.networks[0].runtime_name, "app");
+        assert!(api
+            .networks[0]
+            .runtime_name
+            .starts_with("commandant_app_"));
         assert_eq!(api.depends_on, vec!["db".to_string()]);
 
         let proxy = plan
@@ -129,27 +139,29 @@ volumes:
 
     #[test]
     fn planner_prefixes_implicit_names_with_parent_directory() {
-        let project = ComposeProject::from_path(
-            "/Users/mac-ESELLI02/Documents/PERSO/Commandant/commandant-docker-compose/fixtures/sample/compose.yml",
-        )
-        .unwrap_or_else(|_| {
-            ComposeProject::new(
-                FIXTURE.parse().expect("parse compose fixture"),
-                "/tmp/example-project",
-            )
-        });
+        let test_dir = std::env::current_dir()
+            .expect("current dir")
+            .join("example-project");
+        std::fs::create_dir_all(&test_dir).expect("create temp project dir");
+        std::fs::write(test_dir.join("compose.yml"), FIXTURE).expect("write compose file");
+        let project = ComposeProject::from_path(test_dir.join("compose.yml")).expect("parse compose file");
 
         let plan = planner::build_plan(&project, &["database".to_string()]).expect("build plan");
         let api = plan.service("api").expect("api plan exists");
 
         assert_eq!(api.container_name, "example-project_api");
-        assert_eq!(api.networks[0].runtime_name, "example-project_app");
+        assert!(api
+            .networks[0]
+            .runtime_name
+            .starts_with("example-project_commandant_app_"));
         assert_eq!(plan.volumes[0].runtime_name, "example-project_app-data");
         assert!(
             api.mounts
                 .iter()
                 .any(|mount| mount.source == "example-project_app-data")
         );
+
+        let _ = std::fs::remove_dir_all(&test_dir);
     }
 
     #[test]
@@ -270,6 +282,31 @@ services:
 
         assert_eq!(healthcheck.test, Some(vec!["NONE".to_string()]));
         assert_eq!(healthcheck.interval_ns, None);
+    }
+
+    #[test]
+    fn planner_resolves_exposed_service_tags() {
+        let project = ComposeProject::from_yaml_str(
+            r#"
+services:
+  web:
+    image: nginx:latest
+    ports:
+      - "8080:80"
+    labels:
+      com.commandant.expose: "true"
+      com.commandant.tag: "checkout-web"
+"#,
+        )
+        .expect("parse compose fixture");
+
+        let plan = planner::build_plan_with_proxy(&project, &[], &proxy::ProxyConfig::default())
+            .expect("build plan");
+        let service = plan.service("web").expect("service exists");
+
+        assert_eq!(service.exposure.as_ref().map(|exposure| exposure.tag.as_str()), Some("checkout-web"));
+        assert_eq!(service.exposure.as_ref().map(|exposure| exposure.hostname.as_str()), Some("checkout-web.localhost"));
+        assert_eq!(service.exposure.as_ref().map(|exposure| exposure.backend_port), Some(80));
     }
 
     fn temp_dir(prefix: &str) -> std::path::PathBuf {
