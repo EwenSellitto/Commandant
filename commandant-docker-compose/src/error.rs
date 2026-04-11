@@ -63,6 +63,9 @@ pub enum Error {
     #[error("service `{service}` is exposed but does not define a usable backend port")]
     MissingExposurePort { service: String },
 
+    #[error("invalid exposure port for service `{service}`: {value}")]
+    InvalidExposurePort { service: String, value: String },
+
     #[error("Docker runtime error: {0}")]
     Docker(#[from] lmrc_docker::DockerError),
 }

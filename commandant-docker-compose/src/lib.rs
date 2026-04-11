@@ -309,6 +309,28 @@ services:
         assert_eq!(service.exposure.as_ref().map(|exposure| exposure.backend_port), Some(80));
     }
 
+    #[test]
+    fn planner_rejects_invalid_exposure_port() {
+        let project = ComposeProject::from_yaml_str(
+            r#"
+services:
+  web:
+    image: nginx:latest
+    ports:
+      - "8080:80"
+    labels:
+      com.commandant.expose: "true"
+      com.commandant.port: "not-a-port"
+"#,
+        )
+        .expect("parse compose fixture");
+
+        let error = planner::build_plan_with_proxy(&project, &[], &proxy::ProxyConfig::default())
+            .expect_err("expected invalid exposure port");
+
+        assert!(matches!(error, crate::Error::InvalidExposurePort { .. }));
+    }
+
     fn temp_dir(prefix: &str) -> std::path::PathBuf {
         use std::time::{SystemTime, UNIX_EPOCH};
 

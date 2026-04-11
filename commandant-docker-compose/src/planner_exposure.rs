@@ -44,14 +44,21 @@ pub(crate) fn resolve_service_exposure(
             });
         }
 
-        let backend_port = service
-            .labels
-            .get(COMMANDANT_PORT_LABEL)
-            .and_then(|value| value.parse::<u16>().ok())
-            .or_else(|| service.ports.first().map(|port| port.container_port))
-            .ok_or_else(|| Error::MissingExposurePort {
-                service: service.name.clone(),
-            })?;
+        let backend_port = match service.labels.get(COMMANDANT_PORT_LABEL) {
+            Some(value) => value
+                .parse::<u16>()
+                .map_err(|_| Error::InvalidExposurePort {
+                    service: service.name.clone(),
+                    value: value.clone(),
+                })?,
+            None => service
+                .ports
+                .first()
+                .map(|port| port.container_port)
+                .ok_or_else(|| Error::MissingExposurePort {
+                    service: service.name.clone(),
+                })?,
+        };
 
         service.exposure = Some(ServiceExposure {
             enabled: true,

@@ -96,14 +96,6 @@ impl ComposeExecutor {
                 let container = self.create_container(service).await?;
                 container.start().await?;
 
-                for attachment in service.networks.iter().skip(1) {
-                    self.client
-                        .networks()
-                        .get(&attachment.runtime_name)
-                        .connect(container.id())
-                        .await?;
-                }
-
                 Ok(container)
             }
             .await;
@@ -335,23 +327,31 @@ impl ComposeExecutor {
             )
         };
 
-        let networking_config = service.networks.first().map(|network| NetworkingConfig {
-            endpoints_config: Some(
-                [(
-                    network.runtime_name.clone(),
-                    EndpointSettings {
-                        aliases: if network.aliases.is_empty() {
-                            None
-                        } else {
-                            Some(network.aliases.clone())
-                        },
-                        ..Default::default()
-                    },
-                )]
-                .into_iter()
-                .collect(),
-            ),
-        });
+        let networking_config = if service.networks.is_empty() {
+            None
+        } else {
+            Some(NetworkingConfig {
+                endpoints_config: Some(
+                    service
+                        .networks
+                        .iter()
+                        .map(|network| {
+                            (
+                                network.runtime_name.clone(),
+                                EndpointSettings {
+                                    aliases: if network.aliases.is_empty() {
+                                        None
+                                    } else {
+                                        Some(network.aliases.clone())
+                                    },
+                                    ..Default::default()
+                                },
+                            )
+                        })
+                        .collect(),
+                ),
+            })
+        };
 
         let host_config = HostConfig {
             binds,
