@@ -1,3 +1,9 @@
+mod naming;
+mod planner_exposure;
+mod planner_flatten;
+mod planner_runtime;
+mod proxy_labels;
+
 pub mod docker_paths;
 pub mod error;
 pub mod executor;
@@ -11,7 +17,7 @@ pub use executor::{ComposeExecutor, RunningProject};
 pub use model::{ComposeProject, PortMapping};
 pub use planner::{
     ExecutionPlan, MountKind, NetworkPlan, ResolvedHealthcheck, ResolvedMount, ResolvedPort,
-    RestartPolicy, ServiceNetworkAttachment, ServicePlan, VolumePlan,
+    RestartPolicy, ServiceExposure, ServiceNetworkAttachment, ServicePlan, TagSource, VolumePlan,
 };
 
 #[cfg(test)]
@@ -108,15 +114,17 @@ volumes:
         assert_eq!(plan.volumes.len(), 1);
 
         let api = plan.service("api").expect("api plan exists");
-        assert_eq!(api.ports.len(), 1);
+        assert!(api.ports.is_empty());
         assert_eq!(api.mounts.len(), 2);
-        assert_eq!(api.networks[0].runtime_name, "app");
+        assert!(api.networks[0].runtime_name.starts_with("commandant_app_"));
         assert_eq!(api.depends_on, vec!["db".to_string()]);
 
         let proxy = plan
             .service("__commandant_traefik")
             .expect("proxy plan exists");
         assert_eq!(proxy.ports[0].host_port, 18080);
+        assert_eq!(proxy.mounts[0].source, "/var/run/docker.sock");
+        assert_eq!(proxy.mounts[0].target, "/var/run/docker.sock");
         assert_eq!(
             proxy.networks[0].runtime_name,
             plan.proxy
@@ -129,27 +137,31 @@ volumes:
 
     #[test]
     fn planner_prefixes_implicit_names_with_parent_directory() {
-        let project = ComposeProject::from_path(
-            "/Users/mac-ESELLI02/Documents/PERSO/Commandant/commandant-docker-compose/fixtures/sample/compose.yml",
-        )
-        .unwrap_or_else(|_| {
-            ComposeProject::new(
-                FIXTURE.parse().expect("parse compose fixture"),
-                "/tmp/example-project",
-            )
-        });
+        let test_dir = std::env::current_dir()
+            .expect("current dir")
+            .join("example-project");
+        std::fs::create_dir_all(&test_dir).expect("create temp project dir");
+        std::fs::write(test_dir.join("compose.yml"), FIXTURE).expect("write compose file");
+        let project =
+            ComposeProject::from_path(test_dir.join("compose.yml")).expect("parse compose file");
 
         let plan = planner::build_plan(&project, &["database".to_string()]).expect("build plan");
         let api = plan.service("api").expect("api plan exists");
 
         assert_eq!(api.container_name, "example-project_api");
-        assert_eq!(api.networks[0].runtime_name, "example-project_app");
+        assert!(
+            api.networks[0]
+                .runtime_name
+                .starts_with("example-project_commandant_app_")
+        );
         assert_eq!(plan.volumes[0].runtime_name, "example-project_app-data");
         assert!(
             api.mounts
                 .iter()
                 .any(|mount| mount.source == "example-project_app-data")
         );
+
+        let _ = std::fs::remove_dir_all(&test_dir);
     }
 
     #[test]
@@ -215,6 +227,39 @@ volumes:
     }
 
     #[test]
+    fn planner_resolves_bind_mounts_to_absolute_paths_for_relative_compose_files() {
+        let workspace_root = std::env::current_dir().expect("current dir");
+        let temp_root = workspace_root.join("target");
+        std::fs::create_dir_all(&temp_root).expect("create temp root");
+        let test_dir = temp_dir_in(&temp_root, "commandant-compose-bind");
+        std::fs::write(test_dir.join("redis.conf"), "save 60 1\n").expect("write redis config");
+        std::fs::write(
+            test_dir.join("compose.yml"),
+            "services:\n  redis:\n    image: redis:7-alpine\n    volumes:\n      - ./redis.conf:/usr/local/etc/redis/redis.conf\n",
+        )
+        .expect("write compose file");
+
+        let relative_path = test_dir
+            .strip_prefix(&workspace_root)
+            .expect("temp dir inside workspace")
+            .join("compose.yml");
+        let project = ComposeProject::from_path(&relative_path).expect("parse compose file");
+        let plan = planner::build_plan(&project, &[]).expect("build plan");
+        let service = plan.service("redis").expect("service exists");
+        let mount = service.mounts.first().expect("mount exists");
+
+        assert_eq!(mount.kind, MountKind::Bind);
+        assert!(std::path::Path::new(&mount.source).is_absolute());
+        assert_eq!(
+            std::fs::canonicalize(&mount.source).expect("canonicalize actual mount source"),
+            std::fs::canonicalize(test_dir.join("redis.conf"))
+                .expect("canonicalize expected mount source")
+        );
+
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
     fn planner_resolves_healthcheck_configuration() {
         let project = ComposeProject::from_yaml_str(
             r#"
@@ -272,14 +317,138 @@ services:
         assert_eq!(healthcheck.interval_ns, None);
     }
 
+    #[test]
+    fn planner_resolves_exposed_service_tags() {
+        let project = ComposeProject::from_yaml_str(
+            r#"
+services:
+  web:
+    image: nginx:latest
+    ports:
+      - "8080:80"
+    labels:
+      com.commandant.expose: "true"
+      com.commandant.tag: "checkout-web"
+"#,
+        )
+        .expect("parse compose fixture");
+
+        let plan = planner::build_plan_with_proxy(&project, &[], &proxy::ProxyConfig::default())
+            .expect("build plan");
+        let service = plan.service("web").expect("service exists");
+
+        assert_eq!(
+            service
+                .exposure
+                .as_ref()
+                .map(|exposure| exposure.tag.as_str()),
+            Some("checkout-web")
+        );
+        assert_eq!(
+            service
+                .exposure
+                .as_ref()
+                .map(|exposure| exposure.hostname.as_str()),
+            Some("checkout-web.localhost")
+        );
+        assert_eq!(
+            service
+                .exposure
+                .as_ref()
+                .map(|exposure| exposure.backend_port),
+            Some(80)
+        );
+        assert!(service.ports.is_empty());
+    }
+
+    #[test]
+    fn planner_auto_exposes_services_with_published_ports() {
+        let project = ComposeProject::from_yaml_str(
+            r#"
+services:
+  web:
+    image: nginx:latest
+    ports:
+      - "3000:3000"
+"#,
+        )
+        .expect("parse compose fixture");
+
+        let plan = planner::build_plan_with_proxy(&project, &[], &proxy::ProxyConfig::default())
+            .expect("build plan");
+        let service = plan.service("web").expect("service exists");
+
+        assert_eq!(
+            service
+                .exposure
+                .as_ref()
+                .map(|exposure| exposure.backend_port),
+            Some(3000)
+        );
+        assert!(service.ports.is_empty());
+    }
+
+    #[test]
+    fn planner_auto_exposes_services_with_native_expose() {
+        let project = ComposeProject::from_yaml_str(
+            r#"
+services:
+  web:
+    image: nginx:latest
+    expose:
+      - "3000"
+"#,
+        )
+        .expect("parse compose fixture");
+
+        let plan = planner::build_plan_with_proxy(&project, &[], &proxy::ProxyConfig::default())
+            .expect("build plan");
+        let service = plan.service("web").expect("service exists");
+
+        assert_eq!(
+            service
+                .exposure
+                .as_ref()
+                .map(|exposure| exposure.backend_port),
+            Some(3000)
+        );
+        assert!(service.ports.is_empty());
+    }
+
+    #[test]
+    fn planner_rejects_invalid_exposure_port() {
+        let project = ComposeProject::from_yaml_str(
+            r#"
+services:
+  web:
+    image: nginx:latest
+    ports:
+      - "8080:80"
+    labels:
+      com.commandant.expose: "true"
+      com.commandant.port: "not-a-port"
+"#,
+        )
+        .expect("parse compose fixture");
+
+        let error = planner::build_plan_with_proxy(&project, &[], &proxy::ProxyConfig::default())
+            .expect_err("expected invalid exposure port");
+
+        assert!(matches!(error, crate::Error::InvalidExposurePort { .. }));
+    }
+
     fn temp_dir(prefix: &str) -> std::path::PathBuf {
+        temp_dir_in(&std::env::temp_dir(), prefix)
+    }
+
+    fn temp_dir_in(root: &std::path::Path, prefix: &str) -> std::path::PathBuf {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        let path = root.join(format!("{prefix}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&path).expect("create temp dir");
         path
     }

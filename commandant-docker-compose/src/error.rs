@@ -50,6 +50,22 @@ pub enum Error {
     #[error("service `{service}` cannot be executed because it does not define an `image`")]
     MissingImage { service: String },
 
+    #[error("invalid tag for service `{service}`: {tag}")]
+    InvalidTag { service: String, tag: String },
+
+    #[error("duplicate tag `{tag}` for services `{first}` and `{second}`")]
+    DuplicateTag {
+        tag: String,
+        first: String,
+        second: String,
+    },
+
+    #[error("service `{service}` is exposed but does not define a usable backend port")]
+    MissingExposurePort { service: String },
+
+    #[error("invalid exposure port for service `{service}`: {value}")]
+    InvalidExposurePort { service: String, value: String },
+
     #[error("Docker runtime error: {0}")]
     Docker(#[from] lmrc_docker::DockerError),
 }

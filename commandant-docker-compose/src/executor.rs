@@ -76,7 +76,11 @@ impl ComposeExecutor {
         let plan = self.plan_with_proxy(project, active_profiles, proxy_config)?;
         self.client.ping().await?;
 
-        let (networks, created_network_ids) = self.ensure_networks(&plan.networks).await?;
+        let mut runtime_networks = Vec::with_capacity(plan.networks.len() + 1);
+        runtime_networks.push(plan.app_network.clone());
+        runtime_networks.extend(plan.networks.iter().cloned());
+
+        let (networks, created_network_ids) = self.ensure_networks(&runtime_networks).await?;
         let (volumes, created_volume_names) = match self.ensure_volumes(&plan.volumes).await {
             Ok(result) => result,
             Err(error) => {
@@ -92,14 +96,6 @@ impl ComposeExecutor {
                 let container = self.create_container(service).await?;
                 container.start().await?;
 
-                for attachment in service.networks.iter().skip(1) {
-                    self.client
-                        .networks()
-                        .get(&attachment.runtime_name)
-                        .connect(container.id())
-                        .await?;
-                }
-
                 Ok(container)
             }
             .await;
@@ -107,11 +103,7 @@ impl ComposeExecutor {
             let container = match result {
                 Ok(container) => container,
                 Err(error) => {
-                    self.cleanup_partial(
-                        &created_network_ids,
-                        &created_volume_names,
-                        &containers,
-                    )
+                    self.cleanup_partial(&created_network_ids, &created_volume_names, &containers)
                         .await;
                     return Err(error);
                 }
@@ -331,23 +323,31 @@ impl ComposeExecutor {
             )
         };
 
-        let networking_config = service.networks.first().map(|network| NetworkingConfig {
-            endpoints_config: Some(
-                [(
-                    network.runtime_name.clone(),
-                    EndpointSettings {
-                        aliases: if network.aliases.is_empty() {
-                            None
-                        } else {
-                            Some(network.aliases.clone())
-                        },
-                        ..Default::default()
-                    },
-                )]
-                .into_iter()
-                .collect(),
-            ),
-        });
+        let networking_config = if service.networks.is_empty() {
+            None
+        } else {
+            Some(NetworkingConfig {
+                endpoints_config: Some(
+                    service
+                        .networks
+                        .iter()
+                        .map(|network| {
+                            (
+                                network.runtime_name.clone(),
+                                EndpointSettings {
+                                    aliases: if network.aliases.is_empty() {
+                                        None
+                                    } else {
+                                        Some(network.aliases.clone())
+                                    },
+                                    ..Default::default()
+                                },
+                            )
+                        })
+                        .collect(),
+                ),
+            })
+        };
 
         let host_config = HostConfig {
             binds,
