@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -10,7 +9,7 @@ mod ui;
 use app::App;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use commandant_core::browser::WorkspaceBrowserData;
-use commandant_docker_compose::{ComposeExecutor, ComposeProject};
+use commandant_docker_compose::{ComposeExecutor, ComposeProject, docker_paths};
 use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::DefaultTerminal;
 use terminal::{restore_terminal, setup_terminal};
@@ -58,7 +57,7 @@ enum DockerComposeSubcommand {
 
 #[derive(Debug, Args)]
 struct DockerComposeUpCommand {
-    file: PathBuf,
+    file: std::path::PathBuf,
 
     #[arg(long = "profile")]
     profiles: Vec<String>,
@@ -95,7 +94,7 @@ fn run_docker_compose(command: DockerComposeCommand) -> Result<()> {
 async fn run_docker_compose_up(command: DockerComposeUpCommand) -> Result<()> {
     let project = ComposeProject::from_path(&command.file)
         .with_context(|| format!("failed to read compose file {}", command.file.display()))?;
-    configure_docker_host();
+    docker_paths::configure_docker_host();
     let executor = ComposeExecutor::new().with_context(docker_connection_context)?;
     let running = executor
         .up(&project, &command.profiles)
@@ -113,8 +112,15 @@ async fn run_docker_compose_up(command: DockerComposeUpCommand) -> Result<()> {
     );
 
     if let Some(proxy) = running.plan.proxy.as_ref() {
-        for route in &proxy.routes {
-            println!("http://{}", route.hostname);
+        if proxy.routes.is_empty() {
+            println!("No exposed services found for Traefik.");
+            println!(
+                "Publish a port, add `expose:`, or set `com.commandant.expose: \"true\"` on a service to generate a subdomain."
+            );
+        } else {
+            for route in &proxy.routes {
+                println!("{} -> http://{}", route.service_name, route.hostname);
+            }
         }
     }
 
@@ -132,45 +138,41 @@ async fn run_docker_compose_up(command: DockerComposeUpCommand) -> Result<()> {
     Ok(())
 }
 
-fn configure_docker_host() {
-    if std::env::var_os("DOCKER_HOST").is_some() {
-        return;
-    }
-
-    if let Some(socket) = detect_docker_socket() {
-        unsafe {
-            std::env::set_var("DOCKER_HOST", format!("unix://{}", socket.display()));
-        }
-    }
-}
-
-fn detect_docker_socket() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let candidates = [
-        home.join(".docker/run/docker.sock"),
-        home.join(".colima/default/docker.sock"),
-        home.join(".rd/docker.sock"),
-        home.join(".orbstack/run/docker.sock"),
-        PathBuf::from("/var/run/docker.sock"),
-    ];
-
-    candidates.into_iter().find(|path| path.exists())
-}
-
 fn docker_connection_context() -> String {
     let configured = std::env::var("DOCKER_HOST").ok();
-    let detected = detect_docker_socket()
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let checked = docker_paths::docker_socket_candidates(home.as_deref())
+        .into_iter()
         .map(|path| format!("unix://{}", path.display()))
-        .unwrap_or_else(|| "none detected".to_string());
+        .collect::<Vec<_>>()
+        .join(", ");
 
     match configured {
         Some(host) => format!(
-            "failed to connect to Docker using DOCKER_HOST={host}. On macOS, ensure Docker Desktop/Colima/OrbStack is running and the Docker socket is reachable"
+            "failed to connect to Docker using DOCKER_HOST={host}. {}",
+            docker_platform_hint()
         ),
         None => format!(
-            "failed to connect to Docker. On macOS, ensure Docker Desktop/Colima/OrbStack is running. Common sockets checked: {detected}, /var/run/docker.sock"
+            "failed to connect to Docker. {} Checked sockets: {}",
+            docker_platform_hint(),
+            checked
         ),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn docker_platform_hint() -> &'static str {
+    "On macOS, ensure Docker Desktop, Colima, Rancher Desktop, or OrbStack is running and its Docker socket is reachable"
+}
+
+#[cfg(target_os = "linux")]
+fn docker_platform_hint() -> &'static str {
+    "On Linux, ensure Docker Engine or rootless Docker is running and your user can access the Docker socket"
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn docker_platform_hint() -> &'static str {
+    "Ensure the Docker daemon is running and the Docker socket is reachable"
 }
 
 fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {

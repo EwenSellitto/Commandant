@@ -1,13 +1,8 @@
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::Result;
 use crate::planner::ExecutionPlan;
-use crate::proxy_labels::{build_traefik_service, prepare_service_route};
-
-fn detect_docker_socket_at(home: Option<PathBuf>) -> Option<String> {
-    crate::proxy_socket::detect_docker_socket_at(home)
-}
+use crate::proxy_labels::{PROXY_SERVICE_NAME, build_traefik_service, prepare_service_route};
 
 #[derive(Debug, Clone)]
 pub struct ProxyConfig {
@@ -73,7 +68,7 @@ pub fn prepare_proxy_session(
 
     let mut routes = Vec::new();
     for service in &mut plan.services {
-        if service.name == "__commandant_traefik" {
+        if service.name == PROXY_SERVICE_NAME {
             continue;
         }
         if let Some(route) = prepare_service_route(service, &network_runtime_name)? {

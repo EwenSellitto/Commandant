@@ -5,7 +5,7 @@ use docker_compose_spec::DockerCompose;
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
-use crate::planner::{NetworkPlan, VolumePlan, APP_NETWORK_NAME};
+use crate::planner::{APP_NETWORK_NAME, NetworkPlan, VolumePlan};
 
 pub(crate) fn derive_project_name(base_dir: &Path) -> Option<String> {
     let name = base_dir.file_name()?.to_str()?.trim();

@@ -2,6 +2,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, bail};
 use bollard::exec::{StartExecOptions, StartExecResults};
+use commandant_docker_compose::docker_paths;
 use futures_util::StreamExt;
 use lmrc_docker::DockerClient;
 
@@ -66,4 +67,9 @@ pub async fn volume_exists(client: &DockerClient, name: &str) -> Result<bool> {
         .await?
         .into_iter()
         .any(|volume| volume.name == name))
+}
+
+pub fn docker_client() -> Result<DockerClient> {
+    docker_paths::configure_docker_host();
+    Ok(DockerClient::new()?)
 }

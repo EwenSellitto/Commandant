@@ -15,9 +15,13 @@ pub fn parse_file(path: impl AsRef<Path>) -> Result<(DockerCompose, PathBuf)> {
         path: path.to_path_buf(),
         source,
     })?;
+    let absolute_path = fs::canonicalize(path).map_err(|source| Error::ReadFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
 
     let compose = parse_str(&contents)?;
-    let base_dir = path
+    let base_dir = absolute_path
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));

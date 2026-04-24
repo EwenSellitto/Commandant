@@ -6,7 +6,7 @@ use crate::model::ComposeProject;
 use crate::planner_exposure as exposure;
 use crate::planner_flatten as flatten;
 use crate::planner_runtime as runtime;
-use crate::proxy::{prepare_proxy_session, ProxyConfig};
+use crate::proxy::{ProxyConfig, prepare_proxy_session};
 
 pub(crate) const APP_NETWORK_NAME: &str = "commandant_app";
 
@@ -44,6 +44,7 @@ pub struct ServicePlan {
     pub user: Option<String>,
     pub labels: BTreeMap<String, String>,
     pub exposure: Option<ServiceExposure>,
+    pub exposed_ports: Vec<u16>,
     pub ports: Vec<ResolvedPort>,
     pub mounts: Vec<ResolvedMount>,
     pub networks: Vec<ServiceNetworkAttachment>,

@@ -103,11 +103,7 @@ impl ComposeExecutor {
             let container = match result {
                 Ok(container) => container,
                 Err(error) => {
-                    self.cleanup_partial(
-                        &created_network_ids,
-                        &created_volume_names,
-                        &containers,
-                    )
+                    self.cleanup_partial(&created_network_ids, &created_volume_names, &containers)
                         .await;
                     return Err(error);
                 }

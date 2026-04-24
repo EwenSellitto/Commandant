@@ -37,6 +37,7 @@ pub(crate) fn build_service_plan(
     )?;
     let labels = flatten_labels(service.labels.as_ref());
     let ports = flatten_ports(service_name, service.ports.as_ref())?;
+    let exposed_ports = flatten_exposed_ports(service_name, service.expose.as_ref(), &ports)?;
     let mounts = flatten_mounts(
         base_dir,
         compose,
@@ -76,6 +77,7 @@ pub(crate) fn build_service_plan(
         user: service.user.clone(),
         labels,
         exposure: None,
+        exposed_ports,
         ports,
         mounts,
         networks,
@@ -189,6 +191,50 @@ fn flatten_ports(
         .collect()
 }
 
+fn flatten_exposed_ports(
+    service_name: &str,
+    expose: Option<&Vec<NumOrStr>>,
+    ports: &[ResolvedPort],
+) -> Result<Vec<u16>> {
+    let mut resolved = ports
+        .iter()
+        .map(|port| port.container_port)
+        .collect::<Vec<_>>();
+
+    for port in expose.into_iter().flatten() {
+        let port = parse_exposed_port(service_name, port)?;
+        if !resolved.contains(&port) {
+            resolved.push(port);
+        }
+    }
+
+    Ok(resolved)
+}
+
+fn parse_exposed_port(service_name: &str, port: &NumOrStr) -> Result<u16> {
+    match port {
+        NumOrStr::Number(value) => {
+            if !value.is_finite()
+                || value.fract() != 0.0
+                || *value < 0.0
+                || *value > u16::MAX as f64
+            {
+                return Err(Error::InvalidExposurePort {
+                    service: service_name.to_string(),
+                    value: value.to_string(),
+                });
+            }
+            Ok(*value as u16)
+        }
+        NumOrStr::String(value) => value
+            .parse::<u16>()
+            .map_err(|_| Error::InvalidExposurePort {
+                service: service_name.to_string(),
+                value: value.clone(),
+            }),
+    }
+}
+
 fn parse_service_port(service_name: &str, port: &ServicePort) -> Result<ResolvedPort> {
     match port {
         ServicePort::Object {
@@ -200,18 +246,19 @@ fn parse_service_port(service_name: &str, port: &ServicePort) -> Result<Resolved
         } => {
             let host_port = published
                 .as_ref()
-                .and_then(|value| parse_int_or_str_u16(value))
+                .and_then(parse_int_or_str_u16)
                 .ok_or_else(|| Error::InvalidPortMapping {
                     service: service_name.to_string(),
                     value: format!("{port:?}"),
                 })?;
-            let container_port = target
-                .as_ref()
-                .and_then(|value| parse_int_or_str_u16(value))
-                .ok_or_else(|| Error::InvalidPortMapping {
-                    service: service_name.to_string(),
-                    value: format!("{port:?}"),
-                })?;
+            let container_port =
+                target
+                    .as_ref()
+                    .and_then(parse_int_or_str_u16)
+                    .ok_or_else(|| Error::InvalidPortMapping {
+                        service: service_name.to_string(),
+                        value: format!("{port:?}"),
+                    })?;
 
             Ok(ResolvedPort {
                 host_port,
@@ -257,7 +304,7 @@ fn parse_short_port(service_name: &str, value: &str) -> Result<ResolvedPort> {
             return Err(Error::InvalidPortMapping {
                 service: service_name.to_string(),
                 value: value.to_string(),
-            })
+            });
         }
     };
 
@@ -314,7 +361,7 @@ fn parse_service_volume(
                     return Err(Error::InvalidVolumeMapping {
                         service: service_name.to_string(),
                         value: format!("{volume:?}"),
-                    })
+                    });
                 }
             };
             let anonymous = kind == MountKind::Volume && source.is_empty();
@@ -356,7 +403,7 @@ fn parse_short_volume(
             return Err(Error::InvalidVolumeMapping {
                 service: service_name.to_string(),
                 value: value.to_string(),
-            })
+            });
         }
     };
 
@@ -442,10 +489,7 @@ fn flatten_healthcheck(healthcheck: Option<&Healthcheck>) -> Result<Option<Resol
         test: flatten_healthcheck_test(healthcheck.test.as_ref()),
         interval_ns: parse_duration_ns(healthcheck.interval.as_deref())?,
         timeout_ns: parse_duration_ns(healthcheck.timeout.as_deref())?,
-        retries: healthcheck
-            .retries
-            .as_ref()
-            .and_then(|value| parse_num_or_str_i64(value)),
+        retries: healthcheck.retries.as_ref().and_then(parse_num_or_str_i64),
         start_period_ns: parse_duration_ns(healthcheck.start_period.as_deref())?,
         start_interval_ns: parse_duration_ns(healthcheck.start_interval.as_deref())?,
     }))
@@ -544,7 +588,7 @@ fn parse_memory_string(value: &str) -> Result<i64> {
             return Err(Error::InvalidVolumeMapping {
                 service: "<memory>".to_string(),
                 value: value.to_string(),
-            })
+            });
         }
     };
     Ok(amount.saturating_mul(multiplier))

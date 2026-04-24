@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::docker_paths::{SYSTEM_DOCKER_SOCKET, docker_socket_mount_source};
 use crate::error::Result;
 use crate::naming::sanitize_label_component;
 use crate::planner::{ResolvedMount, ResolvedPort, ServiceNetworkAttachment, ServicePlan};
@@ -12,6 +13,8 @@ pub(crate) fn build_traefik_service(
     container_name: &str,
     config: &ProxyConfig,
 ) -> ServicePlan {
+    let docker_socket_source = docker_socket_mount_source().display().to_string();
+
     ServicePlan {
         name: PROXY_SERVICE_NAME.to_string(),
         image: config.traefik_image.clone(),
@@ -21,7 +24,7 @@ pub(crate) fn build_traefik_service(
             "--providers.docker=true".to_string(),
             "--providers.docker.exposedbydefault=false".to_string(),
             format!("--providers.docker.network={network_runtime_name}"),
-            "--providers.docker.endpoint=unix:///var/run/docker.sock".to_string(),
+            format!("--providers.docker.endpoint=unix://{SYSTEM_DOCKER_SOCKET}"),
             "--entrypoints.web.address=:80".to_string(),
             "--api.dashboard=false".to_string(),
             "--ping=true".to_string(),
@@ -35,6 +38,7 @@ pub(crate) fn build_traefik_service(
         user: None,
         labels: BTreeMap::new(),
         exposure: None,
+        exposed_ports: vec![80],
         ports: vec![ResolvedPort {
             host_port: config.host_port,
             container_port: 80,
@@ -42,10 +46,9 @@ pub(crate) fn build_traefik_service(
             host_ip: Some("127.0.0.1".to_string()),
         }],
         mounts: vec![ResolvedMount {
-            compose_source: Some("/var/run/docker.sock".to_string()),
-            source: crate::proxy_socket::detect_docker_socket()
-                .unwrap_or_else(|| "/var/run/docker.sock".to_string()),
-            target: "/var/run/docker.sock".to_string(),
+            compose_source: Some(docker_socket_source.clone()),
+            source: docker_socket_source,
+            target: SYSTEM_DOCKER_SOCKET.to_string(),
             kind: crate::planner::MountKind::Bind,
             read_only: true,
             anonymous: false,
@@ -124,5 +127,33 @@ fn ensure_proxy_network(service: &mut ServicePlan, network_runtime_name: &str) {
         .any(|network| network.runtime_name == attachment.runtime_name)
     {
         service.networks.push(attachment);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SYSTEM_DOCKER_SOCKET, build_traefik_service};
+    use crate::proxy::ProxyConfig;
+
+    #[test]
+    fn proxy_mounts_system_docker_socket_for_traefik() {
+        let service = build_traefik_service(
+            "commandant_app_test",
+            "commandant-traefik-test",
+            &ProxyConfig::default(),
+        );
+        let mount = service.mounts.first().expect("traefik socket mount exists");
+
+        assert_eq!(mount.source, SYSTEM_DOCKER_SOCKET);
+        assert_eq!(mount.target, SYSTEM_DOCKER_SOCKET);
+        assert_eq!(mount.compose_source.as_deref(), Some(SYSTEM_DOCKER_SOCKET));
+        assert!(
+            service
+                .command
+                .as_ref()
+                .expect("traefik command exists")
+                .iter()
+                .any(|arg| arg == "--providers.docker.endpoint=unix:///var/run/docker.sock")
+        );
     }
 }

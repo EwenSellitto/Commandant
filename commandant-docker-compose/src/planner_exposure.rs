@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::error::{Error, Result};
 use crate::naming::sanitize_hostname_component;
-use crate::planner::{ExecutionPlan, ServiceExposure, TagSource};
+use crate::planner::{ExecutionPlan, ServiceExposure, ServicePlan, TagSource};
 use crate::proxy::ProxyConfig;
 
 const COMMANDANT_EXPOSE_LABEL: &str = "com.commandant.expose";
@@ -16,10 +16,7 @@ pub(crate) fn resolve_service_exposure(
     let mut seen = BTreeMap::new();
 
     for service in &mut plan.services {
-        let Some(expose) = service.labels.get(COMMANDANT_EXPOSE_LABEL) else {
-            continue;
-        };
-        if !matches!(expose.as_str(), "1" | "true" | "yes" | "on") {
+        if !should_expose_service(service) {
             continue;
         }
 
@@ -51,13 +48,11 @@ pub(crate) fn resolve_service_exposure(
                     service: service.name.clone(),
                     value: value.clone(),
                 })?,
-            None => service
-                .ports
-                .first()
-                .map(|port| port.container_port)
-                .ok_or_else(|| Error::MissingExposurePort {
+            None => service.exposed_ports.first().copied().ok_or_else(|| {
+                Error::MissingExposurePort {
                     service: service.name.clone(),
-                })?,
+                }
+            })?,
         };
 
         service.exposure = Some(ServiceExposure {
@@ -71,9 +66,21 @@ pub(crate) fn resolve_service_exposure(
                 TagSource::AutoTag
             },
         });
+        service.ports.clear();
     }
 
     Ok(())
+}
+
+fn should_expose_service(service: &ServicePlan) -> bool {
+    matches!(
+        service
+            .labels
+            .get(COMMANDANT_EXPOSE_LABEL)
+            .map(String::as_str),
+        Some("1" | "true" | "yes" | "on")
+    ) || (!service.labels.contains_key(COMMANDANT_EXPOSE_LABEL)
+        && !service.exposed_ports.is_empty())
 }
 
 fn auto_tag(service_name: &str) -> String {

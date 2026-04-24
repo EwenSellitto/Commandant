@@ -5,7 +5,7 @@ use tempfile::TempDir;
 
 use commandant_docker_compose::{ComposeExecutor, ComposeProject, proxy::ProxyConfig};
 
-use common::{exec_stdout, network_exists, unique_name, volume_exists};
+use common::{docker_client, exec_stdout, network_exists, unique_name, volume_exists};
 
 const IMAGE: &str = "alpine:3.19";
 
@@ -34,6 +34,7 @@ async fn executor_applies_runtime_config_in_container() -> AnyhowResult<()> {
             &project,
             &[],
             &ProxyConfig {
+                enabled: false,
                 host_port: 18081,
                 ..ProxyConfig::default()
             },
@@ -101,6 +102,7 @@ async fn executor_injects_dotenv_and_env_file_values() -> AnyhowResult<()> {
             &project,
             &[],
             &ProxyConfig {
+                enabled: false,
                 host_port: 18082,
                 ..ProxyConfig::default()
             },
@@ -154,6 +156,7 @@ async fn executor_creates_target_only_mount_as_anonymous_volume() -> AnyhowResul
             &project,
             &[],
             &ProxyConfig {
+                enabled: false,
                 host_port: 18083,
                 ..ProxyConfig::default()
             },
@@ -256,7 +259,7 @@ async fn executor_partial_cleanup_preserves_external_resources() -> AnyhowResult
 }
 
 async fn ensure_executor() -> AnyhowResult<ComposeExecutor> {
-    let executor = ComposeExecutor::new()?;
+    let executor = ComposeExecutor::from_client(docker_client()?);
     executor.client().ping().await?;
     Ok(executor)
 }
