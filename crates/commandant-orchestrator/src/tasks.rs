@@ -96,7 +96,7 @@ impl TaskHub {
                     task_id: task_id.clone(),
                     exit_code: None,
                     error: error.to_string(),
-                    cancelled: false,
+                    ..Default::default()
                 });
                 task_id
             })

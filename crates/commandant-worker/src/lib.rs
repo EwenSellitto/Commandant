@@ -1,19 +1,22 @@
 //! The Commandant worker: dials into an orchestrator and runs what it's told.
 
 mod exec;
+mod harness;
+mod opencode;
 pub mod state;
 
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use commandant_proto::hello::Auth;
 use commandant_proto::node_link_client::NodeLinkClient;
 use commandant_proto::{
-    CancelTask, Heartbeat, Hello, NodeCredential, OrchestratorMsg, Welcome, WorkerMsg,
-    orchestrator_msg,
+    AgentPrompt, CancelTask, Heartbeat, Hello, NodeCredential, OrchestratorMsg, TaskFinished,
+    Welcome, WorkerMsg, orchestrator_msg,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -21,6 +24,8 @@ use tonic::transport::{Channel, Endpoint};
 use tonic::{Code, Streaming};
 use tracing::{info, warn};
 
+pub use crate::harness::HarnessKind;
+use crate::opencode::Opencode;
 use crate::state::Credentials;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
@@ -36,6 +41,8 @@ pub struct WorkerConfig {
     /// Defaults to the hostname.
     pub name: Option<String>,
     pub state_dir: PathBuf,
+    /// The coding agent to host, if any.
+    pub harness: Option<HarnessKind>,
 }
 
 /// Why a session ended.
@@ -55,13 +62,19 @@ impl From<tonic::Status> for Stop {
     }
 }
 
-/// Stays connected to the orchestrator, reconnecting with backoff, until a
-/// fatal error occurs.
+/// Sets up the harness, then stays connected to the orchestrator,
+/// reconnecting with backoff, until a fatal error occurs.
 pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
+    let harness = match config.harness {
+        Some(HarnessKind::Opencode) => Some(Arc::new(
+            Opencode::start().await.context("setting up opencode")?,
+        )),
+        None => None,
+    };
     let mut backoff = MIN_BACKOFF;
     loop {
         let started = Instant::now();
-        let Err(stop) = session(&config).await;
+        let Err(stop) = session(&config, harness.as_ref()).await;
         match stop {
             Stop::Fatal(e) => return Err(e),
             Stop::Retry(e) => warn!("connection to {} lost: {e:#}", config.server),
@@ -77,7 +90,10 @@ pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
 }
 
 /// One connection to the orchestrator, from handshake until it breaks.
-async fn session(config: &WorkerConfig) -> Result<Infallible, Stop> {
+async fn session(
+    config: &WorkerConfig,
+    harness: Option<&Arc<Opencode>>,
+) -> Result<Infallible, Stop> {
     let saved = state::load(&config.state_dir).map_err(Stop::Fatal)?;
     let hello = hello(config, saved.as_ref())?;
     let channel = connect(&config.server).await?;
@@ -103,7 +119,7 @@ async fn session(config: &WorkerConfig) -> Result<Infallible, Stop> {
     }
     info!(node_id = %welcome.node_id, server = %config.server, "connected to orchestrator");
 
-    serve(&mut inbound, &outbound).await
+    serve(&mut inbound, &outbound, harness).await
 }
 
 fn hello(config: &WorkerConfig, saved: Option<&Credentials>) -> Result<Hello, Stop> {
@@ -128,7 +144,9 @@ fn hello(config: &WorkerConfig, saved: Option<&Credentials>) -> Result<Hello, St
         os: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),
         version: commandant_common::VERSION.into(),
-        capabilities: vec!["exec".into()],
+        capabilities: std::iter::once("exec".into())
+            .chain(config.harness.map(HarnessKind::capability))
+            .collect(),
     })
 }
 
@@ -169,6 +187,7 @@ fn credentials_to_save(
 async fn serve(
     inbound: &mut Streaming<OrchestratorMsg>,
     outbound: &mpsc::Sender<WorkerMsg>,
+    harness: Option<&Arc<Opencode>>,
 ) -> Result<Infallible, Stop> {
     // Dropping a cancel sender kills its task, so ending the session kills them all.
     let mut cancels: HashMap<String, oneshot::Sender<()>> = HashMap::new();
@@ -180,10 +199,18 @@ async fn serve(
                 match msg.msg {
                     Some(orchestrator_msg::Msg::Run(task)) => {
                         info!(task_id = %task.task_id, argv = ?task.argv, "running task");
-                        cancels.retain(|_, cancel| !cancel.is_closed());
-                        let (cancel, cancelled) = oneshot::channel();
-                        cancels.insert(task.task_id.clone(), cancel);
+                        let cancelled = track(&mut cancels, &task.task_id);
                         tokio::spawn(exec::run(task, outbound.clone(), cancelled));
+                    }
+                    Some(orchestrator_msg::Msg::Prompt(task)) => {
+                        info!(task_id = %task.task_id, "prompting the agent");
+                        let cancelled = track(&mut cancels, &task.task_id);
+                        match harness {
+                            Some(opencode) => {
+                                tokio::spawn(opencode::run(opencode.clone(), task, outbound.clone(), cancelled));
+                            }
+                            None => refuse_prompt(task, outbound).await,
+                        }
                     }
                     Some(orchestrator_msg::Msg::Cancel(CancelTask { task_id })) => {
                         if let Some(cancel) = cancels.remove(&task_id) {
@@ -201,6 +228,26 @@ async fn serve(
             }
         }
     }
+}
+
+/// Returns what fires when the task is cancelled (or the session ends).
+fn track(
+    cancels: &mut HashMap<String, oneshot::Sender<()>>,
+    task_id: &str,
+) -> oneshot::Receiver<()> {
+    cancels.retain(|_, cancel| !cancel.is_closed());
+    let (cancel, cancelled) = oneshot::channel();
+    cancels.insert(task_id.to_string(), cancel);
+    cancelled
+}
+
+async fn refuse_prompt(task: AgentPrompt, outbound: &mpsc::Sender<WorkerMsg>) {
+    let refused = TaskFinished {
+        task_id: task.task_id,
+        error: "this node runs no agent harness".into(),
+        ..Default::default()
+    };
+    let _ = outbound.send(refused.into()).await;
 }
 
 fn hostname() -> String {

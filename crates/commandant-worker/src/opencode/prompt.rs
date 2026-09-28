@@ -1,0 +1,479 @@
+//! Runs one prompt in an OpenCode session and streams the reply back.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use anyhow::{Result, bail};
+use commandant_proto::{AgentPrompt, OutputStream, TaskFinished, TaskOutput, WorkerMsg};
+use serde::Deserialize;
+use tokio::sync::{mpsc, oneshot};
+
+use super::Opencode;
+use super::api::{Api, Event, Prompt};
+
+/// Runs `task` until the agent goes idle or `cancel` fires (or its sender is
+/// dropped), then reports a TaskFinished.
+pub async fn run(
+    opencode: Arc<Opencode>,
+    task: AgentPrompt,
+    out: mpsc::Sender<WorkerMsg>,
+    cancel: oneshot::Receiver<()>,
+) {
+    let task_id = task.task_id.clone();
+    let finished = converse(&opencode, task, &out, cancel)
+        .await
+        .unwrap_or_else(|e| TaskFinished {
+            task_id,
+            error: format!("{e:#}"),
+            ..Default::default()
+        });
+    let _ = out.send(finished.into()).await;
+}
+
+async fn converse(
+    opencode: &Opencode,
+    task: AgentPrompt,
+    out: &mpsc::Sender<WorkerMsg>,
+    mut cancel: oneshot::Receiver<()>,
+) -> Result<TaskFinished> {
+    let api = opencode.api().await?;
+    let prompt = Prompt::new(&task.prompt, &task.model, &task.agent)?;
+    let directory = directory(&api, &task).await?;
+    let session_id = match task.session_id.as_str() {
+        "" => api.create_session(&directory).await?,
+        id => id.to_string(),
+    };
+    // Subscribed before prompting, so no event is missed.
+    let mut events = api.events(&directory).await?;
+    api.prompt(&session_id, &directory, &prompt).await?;
+
+    let mut transcript = Transcript::new(&task.task_id, &session_id, out);
+    loop {
+        let event = tokio::select! {
+            event = events.next() => event?,
+            _ = &mut cancel => {
+                transcript.end_line().await;
+                api.abort(&session_id, &directory).await?;
+                return Ok(TaskFinished {
+                    task_id: task.task_id,
+                    cancelled: true,
+                    session_id,
+                    ..Default::default()
+                });
+            }
+        };
+        let Some(event) = event else {
+            bail!("the opencode server closed its event stream");
+        };
+        if let Some(permission) = transcript.follow(event).await {
+            // Nobody is there to answer. The admin could run any command on
+            // this node anyway, so this grants nothing new.
+            api.reply_permission(&permission, &directory, "once")
+                .await?;
+        }
+        if let Some(finished) = transcript.finished() {
+            transcript.end_line().await;
+            return Ok(finished);
+        }
+    }
+}
+
+/// The task's working directory, else the session's, else the worker's.
+async fn directory(api: &Api, task: &AgentPrompt) -> Result<String> {
+    let directory = if !task.cwd.is_empty() {
+        std::path::absolute(&task.cwd)?
+    } else if !task.session_id.is_empty() {
+        return api.session_directory(&task.session_id).await;
+    } else {
+        std::env::current_dir()?
+    };
+    Ok(directory.to_string_lossy().into_owned())
+}
+
+#[derive(Deserialize)]
+struct MessageInfo {
+    id: String,
+    #[serde(rename = "sessionID")]
+    session_id: String,
+    role: String,
+}
+
+#[derive(Deserialize)]
+struct PartDelta {
+    #[serde(rename = "sessionID")]
+    session_id: String,
+    #[serde(rename = "messageID")]
+    message_id: String,
+    #[serde(rename = "partID")]
+    part_id: String,
+    field: String,
+    delta: String,
+}
+
+#[derive(Deserialize)]
+struct Part {
+    id: String,
+    #[serde(rename = "sessionID")]
+    session_id: String,
+    #[serde(rename = "messageID")]
+    message_id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    tool: String,
+    #[serde(default)]
+    state: Option<ToolState>,
+}
+
+#[derive(Deserialize)]
+struct ToolState {
+    status: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    error: String,
+}
+
+#[derive(Deserialize)]
+struct SessionStatus {
+    #[serde(rename = "sessionID")]
+    session_id: String,
+    status: StatusKind,
+}
+
+#[derive(Deserialize)]
+struct StatusKind {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+#[derive(Deserialize)]
+struct SessionError {
+    #[serde(rename = "sessionID")]
+    session_id: Option<String>,
+    error: Option<ErrorInfo>,
+}
+
+#[derive(Deserialize)]
+struct ErrorInfo {
+    name: String,
+    #[serde(default)]
+    data: ErrorData,
+}
+
+#[derive(Default, Deserialize)]
+struct ErrorData {
+    #[serde(default)]
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct PermissionAsked {
+    id: String,
+    #[serde(rename = "sessionID")]
+    session_id: String,
+    permission: String,
+    #[serde(default)]
+    patterns: Vec<String>,
+}
+
+/// Follows one session's events: the agent's text goes to stdout, its tool
+/// activity to stderr.
+struct Transcript<'a> {
+    task_id: &'a str,
+    session_id: &'a str,
+    out: &'a mpsc::Sender<WorkerMsg>,
+    /// The agent's messages. The prompt itself comes back as a user message.
+    replies: HashSet<String>,
+    /// How many bytes of each text part were sent.
+    sent: HashMap<String, usize>,
+    /// The text part being written, and whether its last line is unfinished.
+    current_part: Option<String>,
+    mid_line: bool,
+    /// Tool calls already reported.
+    reported_tools: HashSet<String>,
+    /// Set once the agent starts on the prompt, so going idle means it's done.
+    busy: bool,
+    idle: bool,
+    error: Option<String>,
+}
+
+impl<'a> Transcript<'a> {
+    fn new(task_id: &'a str, session_id: &'a str, out: &'a mpsc::Sender<WorkerMsg>) -> Self {
+        Self {
+            task_id,
+            session_id,
+            out,
+            replies: HashSet::new(),
+            sent: HashMap::new(),
+            current_part: None,
+            mid_line: false,
+            reported_tools: HashSet::new(),
+            busy: false,
+            idle: false,
+            error: None,
+        }
+    }
+
+    /// Handles an event. Returns the id of a permission request to grant.
+    async fn follow(&mut self, event: Event) -> Option<String> {
+        let properties = event.properties;
+        match event.kind.as_str() {
+            "message.updated" => {
+                let info = parse::<MessageInfo>(&properties["info"])?;
+                if info.session_id == self.session_id && info.role == "assistant" {
+                    self.replies.insert(info.id);
+                }
+            }
+            "message.part.delta" => {
+                let delta = parse::<PartDelta>(&properties)?;
+                if delta.session_id == self.session_id
+                    && delta.field == "text"
+                    && self.replies.contains(&delta.message_id)
+                {
+                    self.say(delta.part_id, delta.delta).await;
+                }
+            }
+            "message.part.updated" => {
+                let part = parse::<Part>(&properties["part"])?;
+                if part.session_id == self.session_id && self.replies.contains(&part.message_id) {
+                    self.follow_part(part).await;
+                }
+            }
+            "session.status" => {
+                let status = parse::<SessionStatus>(&properties)?;
+                if status.session_id == self.session_id {
+                    match status.status.kind.as_str() {
+                        "idle" => self.idle = self.busy,
+                        _ => self.busy = true,
+                    }
+                }
+            }
+            "session.error" => {
+                let SessionError {
+                    session_id: Some(session_id),
+                    error: Some(error),
+                } = parse(&properties)?
+                else {
+                    return None;
+                };
+                if session_id == self.session_id && error.name != "MessageAbortedError" {
+                    self.error = Some(match error.data.message.as_str() {
+                        "" => error.name,
+                        message => format!("{}: {message}", error.name),
+                    });
+                }
+            }
+            "permission.asked" => {
+                let asked = parse::<PermissionAsked>(&properties)?;
+                if asked.session_id == self.session_id {
+                    let what = format!("{} {}", asked.permission, asked.patterns.join(" "));
+                    self.note(&format!("allowed {}", what.trim())).await;
+                    return Some(asked.id);
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    async fn follow_part(&mut self, part: Part) {
+        match part.kind.as_str() {
+            "text" => {
+                // Catches up on text that came without deltas.
+                let sent = self.sent.get(&part.id).copied().unwrap_or_default();
+                if let Some(unsent) = part.text.get(sent..).filter(|t| !t.is_empty()) {
+                    self.say(part.id, unsent.to_string()).await;
+                }
+            }
+            "tool" => {
+                let Some(state) = part.state else { return };
+                let line = match state.status.as_str() {
+                    "completed" => format!("{} {}", part.tool, state.title),
+                    "error" => format!("{} failed: {}", part.tool, state.error),
+                    _ => return,
+                };
+                if self.reported_tools.insert(part.id) {
+                    self.note(line.trim()).await;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn finished(&self) -> Option<TaskFinished> {
+        self.idle.then(|| TaskFinished {
+            task_id: self.task_id.to_string(),
+            exit_code: Some(if self.error.is_some() { 1 } else { 0 }),
+            error: self.error.clone().unwrap_or_default(),
+            cancelled: false,
+            session_id: self.session_id.to_string(),
+        })
+    }
+
+    /// Writes the agent's text, starting each new part on a new line.
+    async fn say(&mut self, part_id: String, text: String) {
+        *self.sent.entry(part_id.clone()).or_default() += text.len();
+        if self.current_part.as_ref() != Some(&part_id) {
+            self.end_line().await;
+            self.current_part = Some(part_id);
+        }
+        self.mid_line = !text.ends_with('\n');
+        self.write(OutputStream::Stdout, text).await;
+    }
+
+    /// Finishes the agent's unfinished line, if any.
+    async fn end_line(&mut self) {
+        if std::mem::take(&mut self.mid_line) {
+            self.write(OutputStream::Stdout, "\n".into()).await;
+        }
+    }
+
+    /// A line about what the agent is doing, on stderr.
+    async fn note(&mut self, line: &str) {
+        self.end_line().await;
+        self.write(OutputStream::Stderr, format!("[opencode] {line}\n"))
+            .await;
+    }
+
+    async fn write(&self, stream: OutputStream, text: String) {
+        let output = TaskOutput {
+            task_id: self.task_id.to_string(),
+            stream: stream.into(),
+            data: text.into_bytes(),
+        };
+        let _ = self.out.send(output.into()).await;
+    }
+}
+
+/// Reads an event's properties, skipping the event if they don't fit.
+fn parse<T: for<'de> Deserialize<'de>>(value: &serde_json::Value) -> Option<T> {
+    T::deserialize(value).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use commandant_proto::worker_msg::Msg;
+    use serde_json::json;
+
+    use super::*;
+
+    fn event(kind: &str, properties: serde_json::Value) -> Event {
+        Event {
+            kind: kind.into(),
+            properties,
+        }
+    }
+
+    fn part(message: &str, id: &str, extra: serde_json::Value) -> Event {
+        let mut part = json!({ "id": id, "sessionID": "s", "messageID": message });
+        part.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        event("message.part.updated", json!({ "part": part }))
+    }
+
+    fn delta(part: &str, text: &str) -> Event {
+        event(
+            "message.part.delta",
+            json!({ "sessionID": "s", "messageID": "reply", "partID": part, "field": "text", "delta": text }),
+        )
+    }
+
+    fn status(session: &str, kind: &str) -> Event {
+        event(
+            "session.status",
+            json!({ "sessionID": session, "status": { "type": kind } }),
+        )
+    }
+
+    fn message(id: &str, role: &str) -> Event {
+        event(
+            "message.updated",
+            json!({ "info": { "id": id, "sessionID": "s", "role": role } }),
+        )
+    }
+
+    #[tokio::test]
+    async fn streams_the_reply_and_ends_when_idle() {
+        let (out, mut rx) = mpsc::channel(64);
+        let mut transcript = Transcript::new("t", "s", &out);
+        let events = [
+            status("s", "idle"),
+            message("prompt", "user"),
+            part(
+                "prompt",
+                "p0",
+                json!({ "type": "text", "text": "the prompt" }),
+            ),
+            message("reply", "assistant"),
+            status("s", "busy"),
+            status("other", "idle"),
+            delta("p1", "po"),
+            delta("p1", "ng"),
+            part("reply", "p1", json!({ "type": "text", "text": "pong" })),
+            part(
+                "reply",
+                "p2",
+                json!({ "type": "tool", "tool": "bash", "state": { "status": "running" } }),
+            ),
+            part(
+                "reply",
+                "p2",
+                json!({ "type": "tool", "tool": "bash", "state": { "status": "completed", "title": "ls" } }),
+            ),
+            part(
+                "reply",
+                "p2",
+                json!({ "type": "tool", "tool": "bash", "state": { "status": "completed", "title": "ls" } }),
+            ),
+            part("reply", "p3", json!({ "type": "text", "text": "bye" })),
+        ];
+        for event in events {
+            assert_eq!(transcript.follow(event).await, None);
+            assert!(transcript.finished().is_none());
+        }
+        transcript.follow(status("s", "idle")).await;
+        let finished = transcript.finished().expect("idle after busy");
+        transcript.end_line().await;
+        assert_eq!(finished.exit_code, Some(0));
+        assert_eq!(finished.session_id, "s");
+
+        drop(transcript);
+        drop(out);
+        let (mut stdout, mut stderr) = (String::new(), String::new());
+        while let Some(WorkerMsg {
+            msg: Some(Msg::Output(output)),
+        }) = rx.recv().await
+        {
+            let stream = output.stream();
+            let text = String::from_utf8(output.data).unwrap();
+            match stream {
+                OutputStream::Stderr => stderr += &text,
+                _ => stdout += &text,
+            }
+        }
+        assert_eq!(stdout, "pong\nbye\n");
+        assert_eq!(stderr, "[opencode] bash ls\n");
+    }
+
+    #[tokio::test]
+    async fn reports_errors_and_grants_permissions() {
+        let (out, _rx) = mpsc::channel(64);
+        let mut transcript = Transcript::new("t", "s", &out);
+        let asked = event(
+            "permission.asked",
+            json!({ "id": "per1", "sessionID": "s", "permission": "edit", "patterns": ["/etc/x"] }),
+        );
+        assert_eq!(transcript.follow(asked).await, Some("per1".into()));
+        transcript.follow(status("s", "busy")).await;
+        let error = json!({ "sessionID": "s", "error": { "name": "UnknownError", "data": { "message": "boom" } } });
+        transcript.follow(event("session.error", error)).await;
+        transcript.follow(status("s", "idle")).await;
+        let finished = transcript.finished().unwrap();
+        assert_eq!(finished.exit_code, Some(1));
+        assert_eq!(finished.error, "UnknownError: boom");
+    }
+}

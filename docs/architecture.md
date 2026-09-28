@@ -7,7 +7,7 @@ How Commandant's pieces fit together. For the code layout, see [crates.md](crate
 ```mermaid
 flowchart LR
     subgraph clients["Your machines"]
-        CLI["commandant CLI<br/>(node / run / task / token)"]
+        CLI["commandant CLI<br/>(node / run / prompt / task / token)"]
     end
 
     subgraph orch["Orchestrator — commandant server"]
@@ -181,11 +181,48 @@ task's whole process group, so child processes die too, and reports
 falls behind sees a `[commandant: N output chunks dropped]` note, but the task
 itself isn't affected.
 
+## Prompting a coding agent
+
+A worker started with `--harness opencode` installs OpenCode if needed and keeps
+`opencode serve` running on loopback. It lists `harness:opencode` in its
+`Hello` capabilities, and the orchestrator keeps that with the live connection.
+A prompt is a task like any other: it goes through the same TaskHub, history
+and cancel path. Only its payload and the worker-side runner differ.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as CLI (commandant prompt)
+    participant O as Orchestrator
+    participant W as Worker
+    participant S as opencode serve (loopback)
+
+    C->>O: Prompt{node, prompt, session_id, cwd, model, agent}
+    O->>O: node online and has a harness? store task ["opencode", prompt]
+    O->>W: AgentPrompt{task_id, …}
+    O-->>C: TaskStarted{task_id}
+    W->>S: POST /session (unless continuing one)
+    W->>S: GET /event (subscribe first, so nothing is missed)
+    W->>S: POST /session/:id/prompt_async
+    loop until the session goes idle
+        S-->>W: message.part.delta / message.part.updated
+        W->>O: TaskOutput (text → stdout, tool calls → stderr)
+        O-->>C: printed as it arrives
+        S-->>W: permission.asked
+        W->>S: reply "once"
+    end
+    W->>O: TaskFinished{exit_code: 0 or 1, error, session_id}
+    O-->>C: TaskFinished → "continue with --session …"
+```
+
+**Cancelling** aborts the session (`POST /session/:id/abort`) instead of
+killing a process. The OpenCode server keeps running for the next prompt.
+
 ## Task states
 
 ```mermaid
 stateDiagram-v2
-    [*] --> running: RunCommand dispatched
+    [*] --> running: RunCommand or Prompt dispatched
     running --> succeeded: exit code 0
     running --> failed: non-zero exit, signal, or spawn error
     running --> cancelled: CancelTask
@@ -227,7 +264,13 @@ All traffic is plaintext today, so that address should be on a private network
 
 ## What's next
 
-- **Agents (M3).** Fields 10–19 of `WorkerMsg` and `OrchestratorMsg` are
-  reserved for agent events and agent control.
-- **TUI.** An interactive front-end on the same `Control` API.
+- **More harnesses.** `HarnessKind` in the worker has one variant today. A
+  node may announce several; `Prompt` uses the first.
+- **Interactive agents.** Questions and permission requests are auto-answered
+  today. Forwarding them to the CLI would use the remaining reserved fields
+  (`WorkerMsg` 10–19, `OrchestratorMsg` 11–19).
+- **A fuller TUI.** `commandant tui` chats with one node's agent through the
+  same `Control` API. Next: showing a resumed session's history (the API only
+  streams new turns), picking nodes and sessions from within it, and answering
+  the agent's permission requests there.
 - **TLS** for the gRPC port.

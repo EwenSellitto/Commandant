@@ -13,6 +13,7 @@ use tracing::info;
 use commandant_common::lookup::{self, Match};
 
 use crate::auth::{JOIN_PREFIX, generate_token, hash_token};
+use crate::registry::Connection;
 use crate::store::{NodeRecord, now};
 use crate::tasks::Owner;
 use crate::{Shared, internal};
@@ -21,6 +22,7 @@ const DEFAULT_TASK_LIMIT: u32 = 20;
 const MAX_TASK_LIMIT: u32 = 1000;
 
 type EventTx = mpsc::Sender<Result<TaskEvent, Status>>;
+type TaskStream = ReceiverStream<Result<TaskEvent, Status>>;
 
 pub struct ControlService {
     shared: Arc<Shared>,
@@ -46,6 +48,60 @@ impl ControlService {
             Match::None => Err(Status::not_found(format!("no node matches {needle:?}"))),
         }
     }
+
+    /// Records a task, sends it to the node's worker, and streams its events
+    /// back. `record` is what `task ls` shows; `message` builds what the
+    /// worker receives from the new task id.
+    async fn dispatch(
+        &self,
+        node: NodeRecord,
+        conn: Connection,
+        record: &[String],
+        message: impl FnOnce(String) -> OrchestratorMsg,
+    ) -> Result<Response<TaskStream>, Status> {
+        let task_id = uuid::Uuid::new_v4().to_string();
+        let store = &self.shared.store;
+        store
+            .insert_task(&task_id, &node.id, record)
+            .await
+            .map_err(internal)?;
+        let owner = Owner {
+            node_id: node.id.clone(),
+            conn_id: conn.id,
+        };
+        let events = self.shared.hub.start(&task_id, owner);
+
+        if conn.tx.send(Ok(message(task_id.clone()))).await.is_err() {
+            self.shared.hub.abandon(&task_id);
+            let _ = store.lose_task(&task_id).await;
+            return Err(offline(&node));
+        }
+        info!(%task_id, node = %node.name, "task dispatched");
+
+        let (tx, rx) = mpsc::channel(256);
+        let started = TaskStarted {
+            task_id,
+            node_id: node.id,
+        };
+        let _ = tx.send(Ok(started.into())).await;
+        tokio::spawn(relay(events, tx));
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    /// Resolves a node and its live connection.
+    async fn connected_node(&self, needle: &str) -> Result<(NodeRecord, Connection), Status> {
+        let node = self.resolve_node(needle).await?;
+        let conn = self
+            .shared
+            .registry
+            .get(&node.id)
+            .ok_or_else(|| offline(&node))?;
+        Ok((node, conn))
+    }
+}
+
+fn offline(node: &NodeRecord) -> Status {
+    Status::unavailable(format!("node {} is offline", node.name))
 }
 
 #[tonic::async_trait]
@@ -75,6 +131,7 @@ impl Control for ControlService {
             .into_iter()
             .map(|n| NodeInfo {
                 online: registry.is_online(&n.id),
+                harnesses: registry.harnesses(&n.id),
                 id: n.id,
                 name: n.name,
                 hostname: n.hostname,
@@ -103,53 +160,60 @@ impl Control for ControlService {
         Ok(Response::new(RemoveNodeResponse {}))
     }
 
-    type RunCommandStream = ReceiverStream<Result<TaskEvent, Status>>;
+    type RunCommandStream = TaskStream;
 
     async fn run_command(
         &self,
         request: Request<RunCommandRequest>,
-    ) -> Result<Response<Self::RunCommandStream>, Status> {
+    ) -> Result<Response<TaskStream>, Status> {
         let req = request.into_inner();
         if req.argv.is_empty() {
             return Err(Status::invalid_argument("a command is required"));
         }
-        let node = self.resolve_node(&req.node).await?;
-        let offline = || Status::unavailable(format!("node {} is offline", node.name));
-        let conn = self.shared.registry.get(&node.id).ok_or_else(offline)?;
+        let (node, conn) = self.connected_node(&req.node).await?;
+        let record = req.argv.clone();
+        self.dispatch(node, conn, &record, |task_id| {
+            RunTask {
+                task_id,
+                argv: req.argv,
+                cwd: req.cwd,
+                env: req.env,
+            }
+            .into()
+        })
+        .await
+    }
 
-        let task_id = uuid::Uuid::new_v4().to_string();
-        let store = &self.shared.store;
-        store
-            .insert_task(&task_id, &node.id, &req.argv)
-            .await
-            .map_err(internal)?;
-        let owner = Owner {
-            node_id: node.id.clone(),
-            conn_id: conn.id,
-        };
-        let events = self.shared.hub.start(&task_id, owner);
+    type PromptStream = TaskStream;
 
-        let run = RunTask {
-            task_id: task_id.clone(),
-            argv: req.argv,
-            cwd: req.cwd,
-            env: req.env,
-        };
-        if conn.tx.send(Ok(run.into())).await.is_err() {
-            self.shared.hub.abandon(&task_id);
-            let _ = store.lose_task(&task_id).await;
-            return Err(offline());
+    async fn prompt(
+        &self,
+        request: Request<PromptRequest>,
+    ) -> Result<Response<TaskStream>, Status> {
+        let req = request.into_inner();
+        if req.prompt.trim().is_empty() {
+            return Err(Status::invalid_argument("a prompt is required"));
         }
-        info!(%task_id, node = %node.name, "task dispatched");
-
-        let (tx, rx) = mpsc::channel(256);
-        let started = TaskStarted {
-            task_id,
-            node_id: node.id,
+        let (node, conn) = self.connected_node(&req.node).await?;
+        let Some(harness) = conn.harnesses.first().cloned() else {
+            return Err(Status::failed_precondition(format!(
+                "node {} runs no agent harness; start its worker with --harness opencode",
+                node.name
+            )));
         };
-        let _ = tx.send(Ok(started.into())).await;
-        tokio::spawn(relay(events, tx));
-        Ok(Response::new(ReceiverStream::new(rx)))
+        let record = [harness, req.prompt.clone()];
+        self.dispatch(node, conn, &record, |task_id| {
+            AgentPrompt {
+                task_id,
+                prompt: req.prompt,
+                session_id: req.session_id,
+                cwd: req.cwd,
+                model: req.model,
+                agent: req.agent,
+            }
+            .into()
+        })
+        .await
     }
 
     async fn list_tasks(

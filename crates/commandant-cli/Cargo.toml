@@ -15,8 +15,11 @@ clap.workspace = true
 commandant-orchestrator.workspace = true
 commandant-proto.workspace = true
 commandant-worker.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
 serde.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
 toml.workspace = true
 tonic.workspace = true
 tracing.workspace = true
@@ -24,4 +27,3 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio-stream.workspace = true

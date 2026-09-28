@@ -41,6 +41,7 @@ fn spawn_worker(
         join_token,
         name: Some("w1".into()),
         state_dir: state_dir.to_path_buf(),
+        harness: None,
     }))
 }
 
@@ -134,6 +135,16 @@ async fn worker_joins_runs_commands_and_reconnects() {
     let node = wait_for_node(&mut client, true).await;
     assert_eq!(node.os, std::env::consts::OS);
 
+    // Without a harness, the node has no agent to prompt.
+    assert!(node.harnesses.is_empty());
+    let prompt = PromptRequest {
+        node: "w1".into(),
+        prompt: "hello".into(),
+        ..Default::default()
+    };
+    let err = client.prompt(prompt).await.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+
     // Output and exit code are streamed back.
     let (_, events) = start_task(&mut client, &["sh", "-c", "echo hi; echo err >&2; exit 3"]).await;
     let result = collect(events).await;
@@ -183,6 +194,7 @@ async fn worker_joins_runs_commands_and_reconnects() {
             join_token: Some(join),
             name: Some("w2".into()),
             state_dir: other.path().to_path_buf(),
+            harness: None,
         }),
     )
     .await

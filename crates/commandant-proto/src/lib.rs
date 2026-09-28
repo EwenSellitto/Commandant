@@ -37,6 +37,7 @@ envelope!(OrchestratorMsg.msg, orchestrator_msg::Msg {
     Welcome(Welcome),
     Run(RunTask),
     Cancel(CancelTask),
+    Prompt(AgentPrompt),
 });
 
 envelope!(TaskEvent.event, task_event::Event {

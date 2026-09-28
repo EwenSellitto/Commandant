@@ -8,6 +8,7 @@ use commandant_common::link::{self, Link};
 use commandant_common::{dirs, fs};
 use commandant_orchestrator::Orchestrator;
 use commandant_worker::WorkerConfig;
+use tokio::task::JoinHandle;
 
 use crate::cli::ServerArgs;
 
@@ -30,20 +31,27 @@ pub async fn run(args: ServerArgs) -> Result<()> {
     fs::write_private(&data_dir.join(LINK_FILE), &format!("{link}\n"))?;
     print_welcome(args.listen, &link);
 
-    if args.local_worker {
+    let local_worker = args.local_worker.then(|| {
         spawn_local_worker(WorkerConfig {
             server: format!("http://{}", reachable_locally(args.listen)),
             join_token: Some(orchestrator.admin_token().to_string()),
             name: None,
             state_dir: data_dir.join(LOCAL_WORKER_DIR),
-        });
-    }
+            harness: args.harness,
+        })
+    });
 
-    orchestrator
+    let served = orchestrator
         .serve(listener, async {
             let _ = tokio::signal::ctrl_c().await;
         })
-        .await
+        .await;
+    // Dropping the worker stops its harness; exiting the process would not.
+    if let Some(worker) = local_worker {
+        worker.abort();
+        let _ = worker.await;
+    }
+    served
 }
 
 fn print_welcome(listen: SocketAddr, link: &Link) {
@@ -103,10 +111,10 @@ fn reachable_locally(listen: SocketAddr) -> SocketAddr {
     SocketAddr::new(ip, listen.port())
 }
 
-fn spawn_local_worker(config: WorkerConfig) {
+fn spawn_local_worker(config: WorkerConfig) -> JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(e) = commandant_worker::run(config).await {
             tracing::error!("local worker stopped: {e:#}");
         }
-    });
+    })
 }

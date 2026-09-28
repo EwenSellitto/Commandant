@@ -1,4 +1,5 @@
-//! `commandant run`: runs a command on a node and streams its output.
+//! `commandant run` and `commandant prompt`: start a task on a node and
+//! stream its output.
 
 use std::io::Write;
 
@@ -6,7 +7,7 @@ use anyhow::{Result, bail};
 use commandant_proto::task_event::Event;
 use commandant_proto::*;
 
-use crate::cli::RunArgs;
+use crate::cli::{PromptArgs, RunArgs};
 use crate::config::Client;
 
 /// The shell convention for "interrupted by Ctrl-C".
@@ -23,6 +24,21 @@ pub async fn run(client: &Client, args: RunArgs) -> Result<i32> {
         env: args.env.into_iter().collect(),
     };
     let mut events = control.run_command(request).await?.into_inner();
+    stream_task(&mut control, &mut events).await
+}
+
+/// Returns 0 once the agent has replied.
+pub async fn prompt(client: &Client, args: PromptArgs) -> Result<i32> {
+    let mut control = client.connect().await?;
+    let request = PromptRequest {
+        node: args.node,
+        prompt: args.prompt.join(" "),
+        session_id: args.session.unwrap_or_default(),
+        cwd: args.cwd.unwrap_or_default(),
+        model: args.model.unwrap_or_default(),
+        agent: args.agent.unwrap_or_default(),
+    };
+    let mut events = control.prompt(request).await?.into_inner();
     stream_task(&mut control, &mut events).await
 }
 
@@ -62,6 +78,12 @@ async fn stream_task(
             Event::Finished(finished) => {
                 if !finished.error.is_empty() {
                     eprintln!("commandant: {}", finished.error);
+                }
+                if !finished.session_id.is_empty() {
+                    eprintln!(
+                        "commandant: continue with --session {}",
+                        finished.session_id
+                    );
                 }
                 return Ok(exit_code(&finished));
             }

@@ -73,8 +73,8 @@ pub async fn list_nodes(client: &Client) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{:<10} {:<20} {:<8} {:<20} {:<16} LAST SEEN",
-        "ID", "NAME", "STATUS", "HOSTNAME", "PLATFORM"
+        "{:<10} {:<20} {:<8} {:<20} {:<16} {:<10} LAST SEEN",
+        "ID", "NAME", "STATUS", "HOSTNAME", "PLATFORM", "HARNESS"
     );
     for node in nodes {
         let (status, last_seen) = if node.online {
@@ -82,13 +82,18 @@ pub async fn list_nodes(client: &Client) -> Result<()> {
         } else {
             ("offline", ago(node.last_seen))
         };
+        let harnesses = match node.harnesses.is_empty() {
+            true => "-".to_string(),
+            false => node.harnesses.join(","),
+        };
         println!(
-            "{:<10} {:<20} {:<8} {:<20} {:<16} {}",
+            "{:<10} {:<20} {:<8} {:<20} {:<16} {:<10} {}",
             short_id(&node.id),
             node.name,
             status,
             node.hostname,
             format!("{}/{}", node.os, node.arch),
+            harnesses,
             last_seen
         );
     }

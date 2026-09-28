@@ -24,6 +24,7 @@ pub async fn run(args: WorkerArgs) -> Result<()> {
         join_token,
         name: args.name,
         state_dir,
+        harness: args.harness,
     };
     tokio::select! {
         result = commandant_worker::run(config) => result,

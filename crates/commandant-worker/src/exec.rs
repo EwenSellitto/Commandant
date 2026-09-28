@@ -23,7 +23,7 @@ pub async fn run(task: RunTask, out: mpsc::Sender<WorkerMsg>, cancel: oneshot::R
             task_id,
             exit_code: None,
             error: e.to_string(),
-            cancelled: false,
+            ..Default::default()
         });
     let _ = out.send(finished.into()).await;
 }
@@ -69,6 +69,7 @@ async fn execute(
         exit_code: status.code(),
         error: signal_description(status).unwrap_or_default(),
         cancelled,
+        ..Default::default()
     })
 }
 

@@ -26,7 +26,7 @@ message Hello {
   string os = 5;
   string arch = 6;
   string version = 7;
-  repeated string capabilities = 8;
+  repeated string capabilities = 8;  // "exec", "harness:<name>"
 }
 
 message Heartbeat {}
@@ -48,6 +48,7 @@ message TaskFinished {
   optional int32 exit_code = 2;      // unset when killed by a signal or never started
   string error = 3;
   bool cancelled = 4;
+  string session_id = 5;             // agent tasks: the session to continue
 }
 
 message WorkerMsg {
@@ -57,7 +58,7 @@ message WorkerMsg {
     TaskOutput output = 3;
     TaskFinished finished = 4;
   }
-  reserved 10 to 19; // agent events (M3)
+  reserved 10 to 19; // agent events
 }
 
 message Welcome {
@@ -76,13 +77,25 @@ message CancelTask {
   string task_id = 1;
 }
 
+// Sends a prompt to the node's agent harness. The reply streams back as
+// TaskOutput: the agent's text on stdout, its tool activity on stderr.
+message AgentPrompt {
+  string task_id = 1;
+  string prompt = 2;
+  string session_id = 3;             // continue this session; empty = new one
+  string cwd = 4;                    // empty = the session's, or the worker's
+  string model = 5;                  // "provider/model"; empty = harness default
+  string agent = 6;                  // empty = harness default
+}
+
 message OrchestratorMsg {
   oneof msg {
     Welcome welcome = 1;
     RunTask run = 2;
     CancelTask cancel = 3;
+    AgentPrompt prompt = 10;
   }
-  reserved 10 to 19; // agent control (M3)
+  reserved 11 to 19; // agent control
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +107,7 @@ service Control {
   rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
   rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
   rpc RunCommand(RunCommandRequest) returns (stream TaskEvent);
+  rpc Prompt(PromptRequest) returns (stream TaskEvent);
   rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
   rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
 }
@@ -118,6 +132,7 @@ message NodeInfo {
   bool online = 7;
   int64 last_seen = 8;
   int64 created_at = 9;
+  repeated string harnesses = 10;    // agent harnesses, while online
 }
 
 message ListNodesRequest {}
@@ -137,6 +152,15 @@ message RunCommandRequest {
   repeated string argv = 2;
   string cwd = 3;
   map<string, string> env = 4;
+}
+
+message PromptRequest {
+  string node = 1;                   // id, id prefix or name
+  string prompt = 2;
+  string session_id = 3;
+  string cwd = 4;
+  string model = 5;
+  string agent = 6;
 }
 
 message TaskStarted {

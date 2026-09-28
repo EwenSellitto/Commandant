@@ -123,6 +123,16 @@ fn node_name(hello: &Hello) -> Result<&str, Status> {
     Ok(name)
 }
 
+/// `harness:opencode` in the hello's capabilities becomes `opencode`.
+fn harnesses(hello: &Hello) -> Vec<String> {
+    hello
+        .capabilities
+        .iter()
+        .filter_map(|c| c.strip_prefix("harness:"))
+        .map(String::from)
+        .collect()
+}
+
 fn name_taken(name: &str) -> Status {
     Status::already_exists(format!("a node named {name:?} already exists"))
 }
@@ -142,7 +152,10 @@ impl NodeLink for LinkService {
 
         let (tx, rx) = mpsc::channel(256);
         tx.send(Ok(welcome.into())).await.map_err(internal)?;
-        let conn_id = self.shared.registry.connect(&node_id, tx);
+        let conn_id = self
+            .shared
+            .registry
+            .connect(&node_id, tx, harnesses(&hello));
         info!(%node_id, conn_id, hostname = %hello.hostname, "node connected");
 
         let shared = self.shared.clone();

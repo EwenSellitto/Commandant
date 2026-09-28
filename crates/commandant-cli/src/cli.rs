@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use commandant_common::link::Link;
+use commandant_worker::HarnessKind;
 
 #[derive(Parser)]
 #[command(
@@ -50,6 +51,10 @@ pub enum Command {
     Node(NodeCommand),
     /// Run a command on a node and stream its output.
     Run(RunArgs),
+    /// Send a prompt to a node's coding agent and stream its reply.
+    Prompt(PromptArgs),
+    /// Chat with a node's coding agent in a terminal UI.
+    Tui(TuiArgs),
     /// Inspect tasks.
     #[command(subcommand)]
     Task(TaskCommand),
@@ -69,6 +74,9 @@ pub struct ServerArgs {
     /// Also run a worker on this machine.
     #[arg(long, env = "COMMANDANT_LOCAL_WORKER")]
     pub local_worker: bool,
+    /// Coding agent for the local worker to host (with --local-worker).
+    #[arg(long, env = "COMMANDANT_HARNESS", requires = "local_worker")]
+    pub harness: Option<HarnessKind>,
 }
 
 #[derive(Args)]
@@ -89,6 +97,9 @@ pub struct WorkerArgs {
     /// Where node credentials are kept.
     #[arg(long, env = "COMMANDANT_STATE_DIR")]
     pub state_dir: Option<PathBuf>,
+    /// Coding agent to host (installed if missing): opencode.
+    #[arg(long, env = "COMMANDANT_HARNESS")]
+    pub harness: Option<HarnessKind>,
 }
 
 #[derive(Args)]
@@ -112,6 +123,46 @@ pub struct RunArgs {
     pub env: Vec<(String, String)>,
     #[arg(last = true, required = true)]
     pub argv: Vec<String>,
+}
+
+#[derive(Args)]
+pub struct PromptArgs {
+    /// Node name, id or id prefix.
+    pub node: String,
+    /// What to ask the agent.
+    #[arg(required = true, num_args = 1..)]
+    pub prompt: Vec<String>,
+    /// Continue this session instead of starting a new one.
+    #[arg(long, short)]
+    pub session: Option<String>,
+    /// Working directory on the node; defaults to the session's, or the worker's.
+    #[arg(long)]
+    pub cwd: Option<String>,
+    /// Model as provider/model, e.g. anthropic/claude-sonnet-5.
+    #[arg(long, short)]
+    pub model: Option<String>,
+    /// Agent to use, e.g. build or plan.
+    #[arg(long)]
+    pub agent: Option<String>,
+}
+
+#[derive(Args)]
+pub struct TuiArgs {
+    /// Node name, id or id prefix; defaults to the only online node with an
+    /// agent harness.
+    pub node: Option<String>,
+    /// Continue this session instead of starting a new one.
+    #[arg(long, short)]
+    pub session: Option<String>,
+    /// Working directory on the node; defaults to the session's, or the worker's.
+    #[arg(long)]
+    pub cwd: Option<String>,
+    /// Model as provider/model, e.g. anthropic/claude-sonnet-5.
+    #[arg(long, short)]
+    pub model: Option<String>,
+    /// Agent to use, e.g. build or plan.
+    #[arg(long)]
+    pub agent: Option<String>,
 }
 
 #[derive(Subcommand)]

@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod run;
 mod server;
+mod tui;
 mod worker;
 
 use anyhow::Result;
@@ -50,6 +51,8 @@ async fn dispatch(cli: Cli) -> Result<i32> {
             admin::cancel_task(&client()?, task_id).await?
         }
         Command::Run(args) => return run::run(&client()?, args).await,
+        Command::Prompt(args) => return run::prompt(&client()?, args).await,
+        Command::Tui(args) => tui::run(&client()?, args).await?,
     }
     Ok(0)
 }

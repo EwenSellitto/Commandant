@@ -18,6 +18,8 @@ pub type NodeTx = mpsc::Sender<Result<OrchestratorMsg, Status>>;
 pub struct Connection {
     pub id: ConnId,
     pub tx: NodeTx,
+    /// Agent harnesses the worker announced, e.g. `opencode`.
+    pub harnesses: Vec<String>,
 }
 
 #[derive(Default)]
@@ -28,12 +30,13 @@ pub struct Registry {
 
 impl Registry {
     /// Registers a connection, replacing (and thereby closing) any previous one.
-    pub fn connect(&self, node_id: &str, tx: NodeTx) -> ConnId {
+    pub fn connect(&self, node_id: &str, tx: NodeTx, harnesses: Vec<String>) -> ConnId {
         let id = self.last_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let connection = Connection { id, tx, harnesses };
         self.nodes
             .lock()
             .unwrap()
-            .insert(node_id.to_string(), Connection { id, tx });
+            .insert(node_id.to_string(), connection);
         id
     }
 
@@ -43,6 +46,11 @@ impl Registry {
         if nodes.get(node_id).is_some_and(|c| c.id == conn_id) {
             nodes.remove(node_id);
         }
+    }
+
+    /// Drops every connection, which ends their streams.
+    pub fn disconnect_all(&self) {
+        self.nodes.lock().unwrap().clear();
     }
 
     /// Drops the node's connection, whichever it is.
@@ -60,5 +68,10 @@ impl Registry {
 
     pub fn is_online(&self, node_id: &str) -> bool {
         self.nodes.lock().unwrap().contains_key(node_id)
+    }
+
+    /// The harnesses of the node's live connection; empty when offline.
+    pub fn harnesses(&self, node_id: &str) -> Vec<String> {
+        self.get(node_id).map(|c| c.harnesses).unwrap_or_default()
     }
 }

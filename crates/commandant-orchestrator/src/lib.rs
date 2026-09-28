@@ -88,6 +88,13 @@ impl Orchestrator {
     ) -> Result<()> {
         info!(addr = %listener.local_addr()?, "orchestrator listening");
         let shared = self.shared.clone();
+        // Worker links never end on their own, and a graceful shutdown waits
+        // for every open stream.
+        let shutdown = async move {
+            shutdown.await;
+            shared.registry.disconnect_all();
+        };
+        let shared = self.shared.clone();
         let control =
             ControlServer::with_interceptor(ControlService::new(self.shared.clone()), move |req| {
                 shared.admin_tokens.check(req)
