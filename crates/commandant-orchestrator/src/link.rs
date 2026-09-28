@@ -204,6 +204,7 @@ async fn handle_messages(
             }
             worker_msg::Msg::Output(output) => shared.hub.output(conn_id, output),
             worker_msg::Msg::Finished(finished) => record_finished(shared, conn_id, finished).await,
+            worker_msg::Msg::Options(options) => shared.queries.answer(options),
             worker_msg::Msg::Hello(_) => warn!(%node_id, "ignoring duplicate hello"),
         }
     }

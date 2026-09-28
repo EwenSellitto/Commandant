@@ -31,6 +31,7 @@ envelope!(WorkerMsg.msg, worker_msg::Msg {
     Heartbeat(Heartbeat),
     Output(TaskOutput),
     Finished(TaskFinished),
+    Options(AgentOptions),
 });
 
 envelope!(OrchestratorMsg.msg, orchestrator_msg::Msg {
@@ -38,6 +39,7 @@ envelope!(OrchestratorMsg.msg, orchestrator_msg::Msg {
     Run(RunTask),
     Cancel(CancelTask),
     Prompt(AgentPrompt),
+    ListOptions(ListAgentOptions),
 });
 
 envelope!(TaskEvent.event, task_event::Event {

@@ -15,8 +15,8 @@ use anyhow::{Context, anyhow};
 use commandant_proto::hello::Auth;
 use commandant_proto::node_link_client::NodeLinkClient;
 use commandant_proto::{
-    AgentPrompt, CancelTask, Heartbeat, Hello, NodeCredential, OrchestratorMsg, TaskFinished,
-    Welcome, WorkerMsg, orchestrator_msg,
+    AgentOptions, AgentPrompt, CancelTask, Heartbeat, Hello, ListAgentOptions, NodeCredential,
+    OrchestratorMsg, TaskFinished, Welcome, WorkerMsg, orchestrator_msg,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -31,6 +31,7 @@ use crate::state::Credentials;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+const NO_HARNESS: &str = "this node runs no agent harness";
 
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
@@ -212,6 +213,9 @@ async fn serve(
                             None => refuse_prompt(task, outbound).await,
                         }
                     }
+                    Some(orchestrator_msg::Msg::ListOptions(ListAgentOptions { request_id })) => {
+                        tokio::spawn(answer_options(harness.cloned(), request_id, outbound.clone()));
+                    }
                     Some(orchestrator_msg::Msg::Cancel(CancelTask { task_id })) => {
                         if let Some(cancel) = cancels.remove(&task_id) {
                             info!(%task_id, "cancelling task");
@@ -244,10 +248,27 @@ fn track(
 async fn refuse_prompt(task: AgentPrompt, outbound: &mpsc::Sender<WorkerMsg>) {
     let refused = TaskFinished {
         task_id: task.task_id,
-        error: "this node runs no agent harness".into(),
+        error: NO_HARNESS.into(),
         ..Default::default()
     };
     let _ = outbound.send(refused.into()).await;
+}
+
+/// Tells the orchestrator which agents, models and efforts the harness offers.
+async fn answer_options(
+    harness: Option<Arc<Opencode>>,
+    request_id: String,
+    outbound: mpsc::Sender<WorkerMsg>,
+) {
+    let options = match harness {
+        Some(opencode) => opencode::list_options(&opencode, request_id).await,
+        None => AgentOptions {
+            request_id,
+            error: NO_HARNESS.into(),
+            ..Default::default()
+        },
+    };
+    let _ = outbound.send(options.into()).await;
 }
 
 fn hostname() -> String {

@@ -37,6 +37,7 @@ pub async fn prompt(client: &Client, args: PromptArgs) -> Result<i32> {
         cwd: args.cwd.unwrap_or_default(),
         model: args.model.unwrap_or_default(),
         agent: args.agent.unwrap_or_default(),
+        variant: args.effort.unwrap_or_default(),
     };
     let mut events = control.prompt(request).await?.into_inner();
     stream_task(&mut control, &mut events).await

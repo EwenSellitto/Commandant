@@ -1,13 +1,14 @@
 //! Drawing: the agent's details on top, the thread in the middle, the prompt
-//! at the bottom.
+//! at the bottom, and the picker floating over them.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
 use super::app::{Activity, App, Role};
+use super::picker::Picker;
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const PROMPT: &str = "› ";
@@ -22,6 +23,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_header(frame, app, header);
     draw_thread(frame, app, thread);
     draw_input(frame, app, input);
+    if let Some(picker) = &app.picker {
+        draw_picker(frame, picker);
+    }
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -49,8 +53,6 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         "session",
         or(&settings.session_id, "new"),
     );
-    field(&mut conversation, "model", or(&settings.model, "default"));
-    field(&mut conversation, "agent", or(&settings.agent, "default"));
     field(&mut conversation, "cwd", or(&settings.cwd, "worker's"));
     let (machine, conversation) = (Line::from(machine), Line::from(conversation));
     frame.render_widget(Paragraph::new(vec![machine, conversation]), inner);
@@ -136,11 +138,13 @@ fn thread_lines(app: &App) -> Vec<Line<'static>> {
 
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     let hints = match app.activity {
-        Activity::Idle => " Enter send · /new new session · PgUp/PgDn scroll · Ctrl-C quit ",
+        Activity::Idle => {
+            " Enter send · Tab agent · /model · /effort · /new · PgUp/PgDn scroll · Ctrl-C quit "
+        }
         Activity::Working { .. } => " Esc cancel · PgUp/PgDn scroll · Ctrl-C quit ",
     };
     let block = Block::bordered()
-        .title(" Prompt ")
+        .title(choices(app))
         .title_bottom(Line::from(hints).dark_gray().right_aligned());
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -154,4 +158,81 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(line), inner);
     let x = inner.x + (PROMPT.chars().count() + input.cursor - offset) as u16;
     frame.set_cursor_position((x, inner.y));
+}
+
+/// The agent, model and effort the next prompt goes to, as the prompt's title.
+fn choices(app: &App) -> Line<'static> {
+    let settings = &app.settings;
+    let model = match (settings.model.as_str(), app.model()) {
+        ("", "") => "default model".to_string(),
+        ("", known) => format!("{known} (default)"),
+        (chosen, _) => chosen.to_string(),
+    };
+    let effort = match settings.effort.as_str() {
+        "" => "default effort".to_string(),
+        effort => format!("{effort} effort"),
+    };
+    Line::from(vec![
+        Span::raw(" "),
+        Span::raw(or(app.agent(), "default agent").to_string())
+            .cyan()
+            .bold(),
+        Span::raw(" · ").dark_gray(),
+        Span::raw(model),
+        Span::raw(" · ").dark_gray(),
+        Span::raw(effort).magenta(),
+        Span::raw(" "),
+    ])
+}
+
+/// The picker, centred over everything else.
+fn draw_picker(frame: &mut Frame, picker: &Picker) {
+    let screen = frame.area();
+    let width = screen.width.saturating_sub(4).min(90);
+    // Border, filter line, and the list.
+    let height = (picker.shown_len() as u16 + 3).clamp(6, screen.height.saturating_sub(2));
+    let area = screen.centered(Constraint::Length(width), Constraint::Length(height));
+    frame.render_widget(Clear, area);
+
+    let block = Block::bordered()
+        .title(picker.pick.title().bold())
+        .title_bottom(
+            Line::from(" ↑↓ move · type to filter · Enter choose · Esc close ")
+                .dark_gray()
+                .right_aligned(),
+        )
+        .border_style(Style::new().cyan());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [filter, list] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+
+    let prompt = Line::from(vec![
+        Span::raw(PROMPT).cyan().bold(),
+        Span::raw(picker.filter.clone()),
+    ]);
+    frame.render_widget(Paragraph::new(prompt), filter);
+    let x = filter.x + (PROMPT.chars().count() + picker.filter.chars().count()) as u16;
+    frame.set_cursor_position((x.min(filter.right().saturating_sub(1)), filter.y));
+
+    if picker.shown_len() == 0 {
+        frame.render_widget(
+            Paragraph::new(Line::from("nothing matches").dark_gray()),
+            list,
+        );
+        return;
+    }
+    let items: Vec<ListItem> = picker
+        .shown()
+        .map(|choice| {
+            ListItem::new(Line::from(vec![
+                Span::raw(choice.label.clone()),
+                Span::raw(format!("  {}", choice.detail)).dark_gray(),
+            ]))
+        })
+        .collect();
+    let list_widget = List::new(items)
+        .highlight_symbol("› ")
+        .highlight_style(Style::new().bg(Color::DarkGray).bold());
+    let mut state = ListState::default().with_selected(Some(picker.selected));
+    frame.render_stateful_widget(list_widget, list, &mut state);
 }

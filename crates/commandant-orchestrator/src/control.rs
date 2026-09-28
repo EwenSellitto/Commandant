@@ -1,6 +1,7 @@
 //! Control service: the admin API used by the CLI.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use commandant_proto::control_server::Control;
 use commandant_proto::*;
@@ -20,6 +21,8 @@ use crate::{Shared, internal};
 
 const DEFAULT_TASK_LIMIT: u32 = 20;
 const MAX_TASK_LIMIT: u32 = 1000;
+/// How long a worker gets to answer a question.
+const QUERY_TIMEOUT: Duration = Duration::from_secs(15);
 
 type EventTx = mpsc::Sender<Result<TaskEvent, Status>>;
 type TaskStream = ReceiverStream<Result<TaskEvent, Status>>;
@@ -98,6 +101,16 @@ impl ControlService {
             .ok_or_else(|| offline(&node))?;
         Ok((node, conn))
     }
+}
+
+/// The node's agent harness; a prompt needs one.
+fn harness(node: &NodeRecord, conn: &Connection) -> Result<String, Status> {
+    conn.harnesses.first().cloned().ok_or_else(|| {
+        Status::failed_precondition(format!(
+            "node {} runs no agent harness; start its worker with --harness opencode",
+            node.name
+        ))
+    })
 }
 
 fn offline(node: &NodeRecord) -> Status {
@@ -195,12 +208,7 @@ impl Control for ControlService {
             return Err(Status::invalid_argument("a prompt is required"));
         }
         let (node, conn) = self.connected_node(&req.node).await?;
-        let Some(harness) = conn.harnesses.first().cloned() else {
-            return Err(Status::failed_precondition(format!(
-                "node {} runs no agent harness; start its worker with --harness opencode",
-                node.name
-            )));
-        };
+        let harness = harness(&node, &conn)?;
         let record = [harness, req.prompt.clone()];
         self.dispatch(node, conn, &record, |task_id| {
             AgentPrompt {
@@ -210,10 +218,38 @@ impl Control for ControlService {
                 cwd: req.cwd,
                 model: req.model,
                 agent: req.agent,
+                variant: req.variant,
             }
             .into()
         })
         .await
+    }
+
+    async fn get_agent_options(
+        &self,
+        request: Request<GetAgentOptionsRequest>,
+    ) -> Result<Response<AgentOptions>, Status> {
+        let (node, conn) = self.connected_node(&request.into_inner().node).await?;
+        harness(&node, &conn)?;
+        let queries = &self.shared.queries;
+        let (request_id, answer) = queries.open();
+        let question = ListAgentOptions {
+            request_id: request_id.clone(),
+        };
+        if conn.tx.send(Ok(question.into())).await.is_err() {
+            queries.close(&request_id);
+            return Err(offline(&node));
+        }
+        let answer = tokio::time::timeout(QUERY_TIMEOUT, answer).await;
+        queries.close(&request_id);
+        match answer {
+            Ok(Ok(options)) if options.error.is_empty() => Ok(Response::new(options)),
+            Ok(Ok(options)) => Err(Status::unavailable(options.error)),
+            Ok(Err(_)) | Err(_) => Err(Status::deadline_exceeded(format!(
+                "node {} didn't say what its agent offers",
+                node.name
+            ))),
+        }
     }
 
     async fn list_tasks(

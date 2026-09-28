@@ -142,8 +142,8 @@ The worker reconnects on its own (backoff up to 30 s) if the orchestrator restar
 | `commandant node ls` | List nodes with online status, hostname, platform, harness, last seen |
 | `commandant node rm <node>` | Forget a node (it must rejoin with a token) |
 | `commandant run <node> [--cwd DIR] [-e K=V]… -- <cmd> [args…]` | Run a command and stream its output |
-| `commandant prompt <node> [-s SESSION] [--cwd DIR] [-m PROVIDER/MODEL] [--agent NAME] <prompt>…` | Ask the node's coding agent and stream its reply |
-| `commandant tui [node] [-s SESSION] [--cwd DIR] [-m PROVIDER/MODEL] [--agent NAME]` | Chat with the node's coding agent in a terminal UI |
+| `commandant prompt <node> [-s SESSION] [--cwd DIR] [-m PROVIDER/MODEL] [--agent NAME] [--effort E] <prompt>…` | Ask the node's coding agent and stream its reply |
+| `commandant tui [node] [-s SESSION] [--cwd DIR] [-m PROVIDER/MODEL] [--agent NAME] [--effort E]` | Chat with the node's coding agent in a terminal UI |
 | `commandant task ls [--limit N]` | Recent tasks and their status |
 | `commandant task cancel <id>` | Cancel a running task |
 | `commandant token create [--ttl 1h] [--reusable]` | Worker-only join token and link (`--ttl 0` = never expires) |
@@ -188,8 +188,9 @@ commandant prompt my-box -s ses_1f3a… "now make it pass"
   continues one (in that session's directory). The id is printed at the end.
 - **Directory.** `--cwd` on the node. It defaults to the session's directory,
   else the worker's.
-- **Model and agent.** `--model provider/model` and `--agent build|plan|…`
-  override OpenCode's defaults. Providers are configured on the node the usual
+- **Model, agent and effort.** `--model provider/model`, `--agent build|plan|…`
+  and `--effort low|high|…` (the model's thinking effort, which OpenCode calls a
+  variant) override OpenCode's defaults. Providers are configured on the node the usual
   OpenCode way: API keys in the environment, `opencode auth login`, or
   `~/.config/opencode`. With none, OpenCode's free models are used.
 - **Ctrl-C** aborts the agent (status `cancelled`); a second one detaches.
@@ -210,22 +211,39 @@ commandant tui my-box --cwd ~/src/app
 ```
 ┌ opencode on my-box ──────────────────────────────────────────────────────┐
 │● online   host my-box   os linux/x86_64   worker 0.1.0      ⠋ working 4s│
-│session ses_1f3a…   model default   agent default   cwd ~/src/app         │
+│session ses_1f3a…   cwd ~/src/app                                         │
 └──────────────────────────────────────────────────────────────────────────┘
 ┌ Thread ──────────────────────────────────────────────────────────────────┐
 │› add a test for the parser                                               │
 │I'll add a round-trip test.                                               │
 │  ⚙ edit src/parser_test.rs                                               │
 └──────────────────────────────────────────────────────────────────────────┘
-┌ Prompt ──────────────────────────────────────────────────────────────────┐
+┌ build · anthropic/claude-sonnet-5 · high effort ─────────────────────────┐
 │› now make it pass                                                        │
 └──────────────── Esc cancel · PgUp/PgDn scroll · Ctrl-C quit ─────────────┘
 ```
 
-The node defaults to the only online one with a harness. **Enter** sends,
-**Esc** cancels the agent's turn, **PgUp/PgDn** scroll the thread, `/new`
-starts a new session, and **Ctrl-C** quits (cancelling a running turn) and
-prints the session id for `prompt -s` or `tui -s`.
+The prompt box's title shows the agent, model and effort the next prompt uses.
+
+The node defaults to the only online one with a harness.
+
+| Key or command | Does |
+|---|---|
+| **Enter** | Send the prompt |
+| **Tab** / **Shift-Tab** | Next / previous agent (`build`, `plan`, …) |
+| `/model [filter]` | Choose a model in a floating window |
+| `/effort [filter]` | Choose the thinking effort the model offers |
+| **Ctrl-T** | Next thinking effort |
+| `/agent [filter]` | Choose an agent in a floating window |
+| `/new` | Start a new session |
+| **Esc** | Cancel the agent's turn |
+| **PgUp** / **PgDn** | Scroll the thread |
+| **Ctrl-C**, `/quit` | Quit, cancelling a running turn, and print the session id for `prompt -s` or `tui -s` |
+
+In the floating window, typing narrows the list (every word must match),
+**↑/↓** move, **Enter** chooses and **Esc** closes. The agents, models and
+efforts come from the node's OpenCode: subagents and deprecated models are
+left out. Changing the model drops an effort it doesn't offer.
 
 ---
 

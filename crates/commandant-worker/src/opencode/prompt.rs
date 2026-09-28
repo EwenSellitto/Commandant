@@ -37,7 +37,7 @@ async fn converse(
     mut cancel: oneshot::Receiver<()>,
 ) -> Result<TaskFinished> {
     let api = opencode.api().await?;
-    let prompt = Prompt::new(&task.prompt, &task.model, &task.agent)?;
+    let prompt = Prompt::new(&task.prompt, &task.model, &task.agent, &task.variant)?;
     let directory = directory(&api, &task).await?;
     let session_id = match task.session_id.as_str() {
         "" => api.create_session(&directory).await?,
@@ -96,6 +96,11 @@ struct MessageInfo {
     #[serde(rename = "sessionID")]
     session_id: String,
     role: String,
+    /// Set on the agent's messages.
+    #[serde(rename = "providerID", default)]
+    provider_id: String,
+    #[serde(rename = "modelID", default)]
+    model_id: String,
 }
 
 #[derive(Deserialize)]
@@ -198,6 +203,8 @@ struct Transcript<'a> {
     busy: bool,
     idle: bool,
     error: Option<String>,
+    /// The `provider/model` that replied.
+    model: String,
 }
 
 impl<'a> Transcript<'a> {
@@ -214,6 +221,7 @@ impl<'a> Transcript<'a> {
             busy: false,
             idle: false,
             error: None,
+            model: String::new(),
         }
     }
 
@@ -224,6 +232,9 @@ impl<'a> Transcript<'a> {
             "message.updated" => {
                 let info = parse::<MessageInfo>(&properties["info"])?;
                 if info.session_id == self.session_id && info.role == "assistant" {
+                    if !info.provider_id.is_empty() {
+                        self.model = format!("{}/{}", info.provider_id, info.model_id);
+                    }
                     self.replies.insert(info.id);
                 }
             }
@@ -310,6 +321,7 @@ impl<'a> Transcript<'a> {
             error: self.error.clone().unwrap_or_default(),
             cancelled: false,
             session_id: self.session_id.to_string(),
+            model: self.model.clone(),
         })
     }
 
@@ -392,7 +404,7 @@ mod tests {
     fn message(id: &str, role: &str) -> Event {
         event(
             "message.updated",
-            json!({ "info": { "id": id, "sessionID": "s", "role": role } }),
+            json!({ "info": { "id": id, "sessionID": "s", "role": role, "providerID": "p", "modelID": "m" } }),
         )
     }
 
@@ -440,6 +452,7 @@ mod tests {
         transcript.end_line().await;
         assert_eq!(finished.exit_code, Some(0));
         assert_eq!(finished.session_id, "s");
+        assert_eq!(finished.model, "p/m");
 
         drop(transcript);
         drop(out);

@@ -1,10 +1,13 @@
 //! The chat's state, and how keys and task events change it.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use commandant_proto::task_event::Event as TaskEvent;
 use commandant_proto::*;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+use super::picker::{Choice, Outcome, Pick, Picker};
 
 /// What the worker prefixes its notes with.
 const NOTE_PREFIX: &str = "[opencode] ";
@@ -17,12 +20,15 @@ pub struct Settings {
     pub cwd: String,
     pub model: String,
     pub agent: String,
+    pub effort: String,
 }
 
 /// Something for the event loop to do.
 pub enum Action {
     Send(PromptRequest),
     Cancel(String),
+    /// Ask the node what its agent offers.
+    FetchOptions,
     Quit,
 }
 
@@ -32,6 +38,7 @@ pub enum Message {
     /// The prompt couldn't be sent, or its stream broke.
     Failed(String),
     Node(NodeInfo),
+    Options(Result<AgentOptions, String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +80,13 @@ pub struct App {
     partial_stderr: Vec<u8>,
     /// A note line still waiting for its newline.
     partial_note: String,
+    /// The agents, models and efforts the node offers, once it has said.
+    pub options: Option<Arc<AgentOptions>>,
+    fetching_options: bool,
+    /// The model that last replied, which tells what "default" means.
+    pub used_model: String,
+    /// The floating window, when open.
+    pub picker: Option<Picker>,
 }
 
 impl App {
@@ -87,7 +101,39 @@ impl App {
             partial_stdout: Vec::new(),
             partial_stderr: Vec::new(),
             partial_note: String::new(),
+            options: None,
+            // The event loop asks as soon as it starts.
+            fetching_options: true,
+            used_model: String::new(),
+            picker: None,
         }
+    }
+
+    /// The agent prompts go to: the chosen one, else the harness's default.
+    pub fn agent(&self) -> &str {
+        match (&self.settings.agent, &self.options) {
+            (agent, _) if !agent.is_empty() => agent,
+            (_, Some(options)) => &options.default_agent,
+            _ => "",
+        }
+    }
+
+    /// The model prompts go to, if known: the chosen one, else the one that
+    /// last replied, else the configured default.
+    pub fn model(&self) -> &str {
+        let default = self.options.as_ref().map_or("", |o| &o.default_model);
+        [&self.settings.model, &self.used_model]
+            .into_iter()
+            .find(|m| !m.is_empty())
+            .map_or(default, String::as_str)
+    }
+
+    /// The thinking efforts of the current model; `None` if it's unknown.
+    fn efforts(&self) -> Option<&[String]> {
+        let model = self.model();
+        let options = self.options.as_ref()?;
+        let model = options.models.iter().find(|m| m.id == model)?;
+        Some(&model.variants)
     }
 
     pub fn harness(&self) -> Option<&str> {
@@ -115,9 +161,26 @@ impl App {
 
     fn on_key(&mut self, key: KeyEvent) -> Option<Action> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && matches!(key.code, KeyCode::Char('c' | 'd')) {
+            return Some(Action::Quit);
+        }
+        if let Some(picker) = &mut self.picker {
+            match picker.on_key(key) {
+                Outcome::Open => {}
+                Outcome::Closed => self.picker = None,
+                Outcome::Chosen(value) => {
+                    let pick = picker.pick;
+                    self.picker = None;
+                    self.choose(pick, value);
+                }
+            }
+            return None;
+        }
         match key.code {
-            KeyCode::Char('c' | 'd') if ctrl => return Some(Action::Quit),
             KeyCode::Char('u') if ctrl => self.input.clear(),
+            KeyCode::Char('t') if ctrl => return self.cycle_effort(),
+            KeyCode::Tab => return self.cycle_agent(1),
+            KeyCode::BackTab => return self.cycle_agent(-1),
             KeyCode::Char(c) => self.input.insert(c),
             KeyCode::Enter => return self.submit(),
             KeyCode::Esc => return self.cancel(),
@@ -140,17 +203,30 @@ impl App {
         if text.is_empty() {
             return None;
         }
-        match text.as_str() {
-            "/quit" | "/exit" => return Some(Action::Quit),
-            "/new" => {
-                self.input.clear();
-                self.thread.clear();
-                self.settings.session_id.clear();
-                self.info("started a new session");
-                return None;
-            }
-            _ => {}
+        if let Some(command) = text.strip_prefix('/') {
+            let (command, filter) = command.split_once(' ').unwrap_or((command, ""));
+            let pick = match command {
+                "quit" | "exit" => return Some(Action::Quit),
+                "new" => {
+                    self.input.clear();
+                    self.thread.clear();
+                    self.settings.session_id.clear();
+                    self.info("started a new session");
+                    return None;
+                }
+                "agent" => Pick::Agent,
+                "model" => Pick::Model,
+                "effort" => Pick::Effort,
+                // Not a command: a prompt that starts with a slash.
+                _ => return self.send(text),
+            };
+            self.input.clear();
+            return self.open_picker(pick, filter.trim());
         }
+        self.send(text)
+    }
+
+    fn send(&mut self, text: String) -> Option<Action> {
         if matches!(self.activity, Activity::Working { .. }) {
             // Keep the text; it can be sent once the agent is done.
             return None;
@@ -170,7 +246,126 @@ impl App {
             cwd: self.settings.cwd.clone(),
             model: self.settings.model.clone(),
             agent: self.settings.agent.clone(),
+            variant: self.settings.effort.clone(),
         }))
+    }
+
+    /// Asks the node what its agent offers, unless that's under way.
+    fn ask_for_options(&mut self) -> Option<Action> {
+        if self.fetching_options {
+            self.info("still asking the node what its agent offers…");
+            return None;
+        }
+        self.fetching_options = true;
+        self.info("asking the node what its agent offers…");
+        Some(Action::FetchOptions)
+    }
+
+    fn open_picker(&mut self, pick: Pick, filter: &str) -> Option<Action> {
+        let Some(options) = self.options.clone() else {
+            return self.ask_for_options();
+        };
+        let (choices, current) = match pick {
+            Pick::Agent => {
+                let choices = options
+                    .agents
+                    .iter()
+                    .map(|a| Choice::new(&a.name, &a.name, &a.description))
+                    .collect();
+                (choices, self.agent().to_string())
+            }
+            Pick::Model => {
+                let default = match options.default_model.as_str() {
+                    "" => "OpenCode picks".to_string(),
+                    model => model.to_string(),
+                };
+                let models = options
+                    .models
+                    .iter()
+                    .map(|m| Choice::new(&m.id, &m.name, format!("{} · {}", m.provider, m.id)));
+                let choices = std::iter::once(Choice::new("", "Default", default))
+                    .chain(models)
+                    .collect();
+                (choices, self.settings.model.clone())
+            }
+            Pick::Effort => {
+                let efforts = self.efforts_or_explain()?;
+                let choices = std::iter::once(Choice::new("", "Default", "the model's own"))
+                    .chain(efforts.iter().map(|e| Choice::new(e, e, "")))
+                    .collect();
+                (choices, self.settings.effort.clone())
+            }
+        };
+        let mut picker = Picker::new(pick, choices, &current);
+        for c in filter.chars() {
+            picker.on_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        self.picker = Some(picker);
+        None
+    }
+
+    /// The current model's efforts, or `None` after saying why there are none.
+    fn efforts_or_explain(&mut self) -> Option<Vec<String>> {
+        match self.efforts() {
+            Some([]) => {
+                let model = self.model().to_string();
+                self.info(&format!("{model} has no thinking efforts"));
+                None
+            }
+            Some(efforts) => Some(efforts.to_vec()),
+            None => {
+                self.info(
+                    "pick a model with /model first (the default one is known after a reply)",
+                );
+                None
+            }
+        }
+    }
+
+    fn choose(&mut self, pick: Pick, value: String) {
+        match pick {
+            Pick::Agent => self.settings.agent = value,
+            Pick::Effort => self.settings.effort = value,
+            Pick::Model => {
+                self.settings.model = value;
+                // An effort the new model doesn't know would be refused.
+                let effort = &self.settings.effort;
+                if !effort.is_empty() && self.efforts().is_some_and(|e| !e.contains(effort)) {
+                    let model = self.model().to_string();
+                    let effort = std::mem::take(&mut self.settings.effort);
+                    self.info(&format!(
+                        "{model} has no {effort:?} effort; back to its default"
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Switches to the next (or previous) agent.
+    fn cycle_agent(&mut self, step: isize) -> Option<Action> {
+        let Some(options) = self.options.clone() else {
+            return self.ask_for_options();
+        };
+        let names: Vec<&str> = options.agents.iter().map(|a| a.name.as_str()).collect();
+        if let Some(next) = cycle(&names, self.agent(), step) {
+            self.settings.agent = next.to_string();
+        }
+        None
+    }
+
+    /// Switches to the next effort, wrapping round to the model's default.
+    fn cycle_effort(&mut self) -> Option<Action> {
+        if self.options.is_none() {
+            return self.ask_for_options();
+        }
+        let efforts = self.efforts_or_explain()?;
+        let choices: Vec<&str> = std::iter::once("")
+            .chain(efforts.iter().map(String::as_str))
+            .collect();
+        if let Some(next) = cycle(&choices, &self.settings.effort, 1) {
+            self.settings.effort = next.to_string();
+        }
+        None
     }
 
     fn cancel(&mut self) -> Option<Action> {
@@ -192,6 +387,16 @@ impl App {
     pub fn on_message(&mut self, message: Message) {
         match message {
             Message::Node(node) => self.node = node,
+            Message::Options(options) => {
+                self.fetching_options = false;
+                match options {
+                    Ok(options) => self.options = Some(Arc::new(options)),
+                    Err(e) => self.push(
+                        Role::Error,
+                        &format!("couldn't list the agent's options: {e}"),
+                    ),
+                }
+            }
             Message::Failed(error) => {
                 self.flush_output();
                 self.push(Role::Error, &error);
@@ -219,6 +424,9 @@ impl App {
         self.flush_output();
         if !finished.session_id.is_empty() {
             self.settings.session_id = finished.session_id;
+        }
+        if !finished.model.is_empty() {
+            self.used_model = finished.model;
         }
         if finished.cancelled {
             self.info("cancelled");
@@ -270,6 +478,20 @@ impl App {
             _ => self.push(role, text),
         }
     }
+}
+
+/// The item `step` places after `current`, wrapping round; the first item if
+/// `current` isn't there.
+fn cycle<'a>(items: &[&'a str], current: &str, step: isize) -> Option<&'a str> {
+    let len = items.len() as isize;
+    if len == 0 {
+        return None;
+    }
+    let next = match items.iter().position(|&i| i == current) {
+        Some(at) => (at as isize + step).rem_euclid(len),
+        None => 0,
+    };
+    Some(items[next as usize])
 }
 
 /// Decodes output, holding back a character split across chunks in `partial`.
@@ -366,6 +588,7 @@ mod tests {
             cwd: String::new(),
             model: String::new(),
             agent: String::new(),
+            effort: String::new(),
         };
         App::new(node, settings)
     }
@@ -455,6 +678,94 @@ mod tests {
             Some(Action::Cancel(id)) if id == "t1"
         ));
         assert!(app.on_key(KeyEvent::from(KeyCode::Esc)).is_none());
+    }
+
+    fn with_options() -> App {
+        let mut app = app();
+        let model = |id: &str, variants: &[&str]| ModelChoice {
+            id: id.into(),
+            name: id.into(),
+            variants: variants.iter().map(|v| v.to_string()).collect(),
+            ..Default::default()
+        };
+        let agent = |name: &str| AgentChoice {
+            name: name.into(),
+            ..Default::default()
+        };
+        app.on_message(Message::Options(Ok(AgentOptions {
+            agents: vec![agent("build"), agent("plan"), agent("review")],
+            models: vec![model("a/fast", &[]), model("a/smart", &["low", "high"])],
+            default_agent: "build".into(),
+            ..Default::default()
+        })));
+        app
+    }
+
+    fn command(app: &mut App, text: &str) -> Option<Action> {
+        type_text(app, text);
+        app.on_key(KeyEvent::from(KeyCode::Enter))
+    }
+
+    #[test]
+    fn tab_cycles_agents_once_the_node_has_said_which() {
+        let mut app = app();
+        assert!(app.on_key(KeyEvent::from(KeyCode::Tab)).is_none());
+        assert_eq!(app.thread.last().unwrap().role, Role::Info);
+
+        let mut app = with_options();
+        assert_eq!(app.agent(), "build");
+        app.on_key(KeyEvent::from(KeyCode::Tab));
+        assert_eq!(app.agent(), "plan");
+        app.on_key(KeyEvent::from(KeyCode::BackTab));
+        app.on_key(KeyEvent::from(KeyCode::BackTab));
+        assert_eq!(app.agent(), "review");
+
+        // A failed fetch can be retried.
+        let mut failed = self::app();
+        failed.on_message(Message::Options(Err("offline".into())));
+        assert!(matches!(
+            failed.on_key(KeyEvent::from(KeyCode::Tab)),
+            Some(Action::FetchOptions)
+        ));
+    }
+
+    #[test]
+    fn model_and_effort_are_picked_in_the_floating_window() {
+        let mut app = with_options();
+        // The default model is unknown until a reply names it.
+        command(&mut app, "/effort");
+        assert!(app.picker.is_none());
+
+        command(&mut app, "/model smart");
+        let picker = app.picker.as_ref().expect("/model opens the picker");
+        assert_eq!(picker.shown_len(), 1);
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        assert!(app.picker.is_none());
+        assert_eq!(app.settings.model, "a/smart");
+        assert!(app.input.text.is_empty());
+
+        command(&mut app, "/effort");
+        app.on_key(KeyEvent::from(KeyCode::Down));
+        app.on_key(KeyEvent::from(KeyCode::Down));
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.settings.effort, "high");
+        // Ctrl-T wraps round to the model's default.
+        app.on_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+        assert_eq!(app.settings.effort, "");
+        app.on_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+        assert_eq!(app.settings.effort, "low");
+
+        // A model without that effort drops it.
+        command(&mut app, "/model fast");
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.settings.model, "a/fast");
+        assert_eq!(app.settings.effort, "");
+
+        let Some(Action::Send(request)) = command(&mut app, "hi") else {
+            panic!("a prompt is sent");
+        };
+        assert_eq!(request.model, "a/fast");
+        assert_eq!(request.agent, "");
     }
 
     #[test]

@@ -3,6 +3,7 @@
 mod auth;
 mod control;
 mod link;
+mod queries;
 mod registry;
 mod store;
 mod tasks;
@@ -25,6 +26,7 @@ use commandant_common::fs::{read_trimmed, write_private};
 use crate::auth::{ADMIN_PREFIX, AdminTokens, generate_token, hash_token};
 use crate::control::ControlService;
 use crate::link::LinkService;
+use crate::queries::Queries;
 use crate::registry::Registry;
 use crate::store::Store;
 use crate::tasks::TaskHub;
@@ -37,6 +39,7 @@ pub(crate) struct Shared {
     pub admin_tokens: AdminTokens,
     pub registry: Registry,
     pub hub: TaskHub,
+    pub queries: Queries,
 }
 
 pub struct Orchestrator {
@@ -68,6 +71,7 @@ impl Orchestrator {
             admin_tokens,
             registry: Registry::default(),
             hub: TaskHub::default(),
+            queries: Queries::default(),
         });
         Ok(Self {
             shared,

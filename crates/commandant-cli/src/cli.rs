@@ -144,6 +144,9 @@ pub struct PromptArgs {
     /// Agent to use, e.g. build or plan.
     #[arg(long)]
     pub agent: Option<String>,
+    /// Thinking effort, e.g. low or high; the model's own names apply.
+    #[arg(long)]
+    pub effort: Option<String>,
 }
 
 #[derive(Args)]
@@ -163,6 +166,9 @@ pub struct TuiArgs {
     /// Agent to use, e.g. build or plan.
     #[arg(long)]
     pub agent: Option<String>,
+    /// Thinking effort, e.g. low or high; the model's own names apply.
+    #[arg(long)]
+    pub effort: Option<String>,
 }
 
 #[derive(Subcommand)]

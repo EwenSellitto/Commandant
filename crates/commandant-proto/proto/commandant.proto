@@ -49,6 +49,29 @@ message TaskFinished {
   string error = 3;
   bool cancelled = 4;
   string session_id = 5;             // agent tasks: the session to continue
+  string model = 6;                  // agent tasks: the "provider/model" that replied
+}
+
+// What a node's agent harness offers, in answer to ListAgentOptions.
+message AgentOptions {
+  string request_id = 1;
+  repeated AgentChoice agents = 2;   // the ones a prompt can use
+  repeated ModelChoice models = 3;   // from the providers the node has set up
+  string default_agent = 4;
+  string default_model = 5;          // empty when the harness decides per prompt
+  string error = 6;                  // set when the harness couldn't answer
+}
+
+message AgentChoice {
+  string name = 1;
+  string description = 2;
+}
+
+message ModelChoice {
+  string id = 1;                     // "provider/model"
+  string name = 2;
+  string provider = 3;               // display name
+  repeated string variants = 4;      // thinking efforts, e.g. "low", "high"
 }
 
 message WorkerMsg {
@@ -57,8 +80,9 @@ message WorkerMsg {
     Heartbeat heartbeat = 2;
     TaskOutput output = 3;
     TaskFinished finished = 4;
+    AgentOptions options = 10;
   }
-  reserved 10 to 19; // agent events
+  reserved 11 to 19; // agent events
 }
 
 message Welcome {
@@ -86,6 +110,12 @@ message AgentPrompt {
   string cwd = 4;                    // empty = the session's, or the worker's
   string model = 5;                  // "provider/model"; empty = harness default
   string agent = 6;                  // empty = harness default
+  string variant = 7;                // thinking effort; empty = the model's default
+}
+
+// Asks the node's agent harness for its AgentOptions.
+message ListAgentOptions {
+  string request_id = 1;
 }
 
 message OrchestratorMsg {
@@ -94,8 +124,9 @@ message OrchestratorMsg {
     RunTask run = 2;
     CancelTask cancel = 3;
     AgentPrompt prompt = 10;
+    ListAgentOptions list_options = 11;
   }
-  reserved 11 to 19; // agent control
+  reserved 12 to 19; // agent control
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +139,7 @@ service Control {
   rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
   rpc RunCommand(RunCommandRequest) returns (stream TaskEvent);
   rpc Prompt(PromptRequest) returns (stream TaskEvent);
+  rpc GetAgentOptions(GetAgentOptionsRequest) returns (AgentOptions);
   rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
   rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
 }
@@ -161,6 +193,11 @@ message PromptRequest {
   string cwd = 4;
   string model = 5;
   string agent = 6;
+  string variant = 7;
+}
+
+message GetAgentOptionsRequest {
+  string node = 1;                   // id, id prefix or name
 }
 
 message TaskStarted {

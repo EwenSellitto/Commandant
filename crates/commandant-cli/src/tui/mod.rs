@@ -4,6 +4,7 @@
 //! one reply to the next so the conversation continues.
 
 mod app;
+mod picker;
 mod ui;
 
 use std::io::stdout;
@@ -37,11 +38,17 @@ pub async fn run(client: &Client, args: TuiArgs) -> Result<()> {
             cwd: args.cwd.unwrap_or_default(),
             model: args.model.unwrap_or_default(),
             agent: args.agent.unwrap_or_default(),
+            effort: args.effort.unwrap_or_default(),
         },
     );
 
     let (tx, rx) = mpsc::unbounded_channel();
     let watcher = tokio::spawn(watch_node(control.clone(), app.node.id.clone(), tx.clone()));
+    tokio::spawn(fetch_options(
+        control.clone(),
+        app.node.id.clone(),
+        tx.clone(),
+    ));
     let mut terminal = ratatui::init();
     execute!(stdout(), EnableBracketedPaste)?;
     let result = event_loop(&mut terminal, &mut app, &mut control, tx, rx).await;
@@ -84,6 +91,13 @@ async fn event_loop(
         match action {
             Some(Action::Send(request)) => {
                 tokio::spawn(stream_prompt(control.clone(), request, tx.clone()));
+            }
+            Some(Action::FetchOptions) => {
+                tokio::spawn(fetch_options(
+                    control.clone(),
+                    app.node.id.clone(),
+                    tx.clone(),
+                ));
             }
             Some(Action::Cancel(task_id)) => {
                 if let Err(status) = control.cancel_task(CancelTaskRequest { task_id }).await {
@@ -134,6 +148,20 @@ async fn stream_prompt(
     let _ = tx.send(Message::Failed(
         "the stream ended before the agent finished".into(),
     ));
+}
+
+/// Asks the node which agents, models and efforts its harness offers.
+async fn fetch_options(
+    mut control: ControlClient,
+    node: String,
+    tx: mpsc::UnboundedSender<Message>,
+) {
+    let options = control
+        .get_agent_options(GetAgentOptionsRequest { node })
+        .await
+        .map(tonic::Response::into_inner)
+        .map_err(|status| status.message().to_string());
+    let _ = tx.send(Message::Options(options));
 }
 
 /// Keeps the node's details (online, harnesses) current.

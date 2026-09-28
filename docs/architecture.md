@@ -218,6 +218,12 @@ sequenceDiagram
 **Cancelling** aborts the session (`POST /session/:id/abort`) instead of
 killing a process. The OpenCode server keeps running for the next prompt.
 
+**Choices.** `GetAgentOptions` asks a node which agents, models and thinking
+efforts its harness offers, so the TUI can show them. It is not a task: the
+orchestrator sends `ListAgentOptions{request_id}` down the link, waits up to
+15 s for the matching `AgentOptions`, and returns it. The worker builds the
+answer from OpenCode's `GET /agent`, `/config/providers` and `/config`.
+
 ## Task states
 
 ```mermaid
@@ -268,7 +274,7 @@ All traffic is plaintext today, so that address should be on a private network
   node may announce several; `Prompt` uses the first.
 - **Interactive agents.** Questions and permission requests are auto-answered
   today. Forwarding them to the CLI would use the remaining reserved fields
-  (`WorkerMsg` 10–19, `OrchestratorMsg` 11–19).
+  (`WorkerMsg` 11–19, `OrchestratorMsg` 12–19).
 - **A fuller TUI.** `commandant tui` chats with one node's agent through the
   same `Control` API. Next: showing a resumed session's history (the API only
   streams new turns), picking nodes and sessions from within it, and answering

@@ -2,6 +2,7 @@
 //! running on loopback, and relays prompts to it.
 
 mod api;
+mod options;
 mod prompt;
 
 use std::path::{Path, PathBuf};
@@ -15,6 +16,7 @@ use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, info, warn};
 
 use self::api::Api;
+pub use self::options::list as list_options;
 pub use self::prompt::run;
 
 const INSTALL_SCRIPT: &str = "https://opencode.ai/install";

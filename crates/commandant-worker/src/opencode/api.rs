@@ -3,6 +3,7 @@
 //! Every call names the directory it works in: one server serves any number
 //! of projects.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -25,9 +26,12 @@ pub struct Api {
 pub struct Prompt<'a> {
     parts: [TextPart<'a>; 1],
     #[serde(skip_serializing_if = "Option::is_none")]
-    model: Option<Model<'a>>,
+    model: Option<ModelRef<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<&'a str>,
+    /// The model's thinking effort, e.g. `high`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    variant: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -38,7 +42,7 @@ struct TextPart<'a> {
 }
 
 #[derive(Serialize)]
-struct Model<'a> {
+struct ModelRef<'a> {
     #[serde(rename = "providerID")]
     provider_id: &'a str,
     #[serde(rename = "modelID")]
@@ -47,14 +51,14 @@ struct Model<'a> {
 
 impl<'a> Prompt<'a> {
     /// `model` is `provider/model`; empty strings mean the defaults.
-    pub fn new(text: &'a str, model: &'a str, agent: &'a str) -> Result<Self> {
+    pub fn new(text: &'a str, model: &'a str, agent: &'a str, variant: &'a str) -> Result<Self> {
         let model = match model {
             "" => None,
             _ => {
                 let Some((provider_id, model_id)) = model.split_once('/') else {
                     bail!("model must look like provider/model, got {model:?}");
                 };
-                Some(Model {
+                Some(ModelRef {
                     provider_id,
                     model_id,
                 })
@@ -64,8 +68,48 @@ impl<'a> Prompt<'a> {
             parts: [TextPart { kind: "text", text }],
             model,
             agent: Some(agent).filter(|a| !a.is_empty()),
+            variant: Some(variant).filter(|v| !v.is_empty()),
         })
     }
+}
+
+// OpenCode sends `null` for unset fields, hence the options.
+
+#[derive(Deserialize)]
+pub struct Agent {
+    pub name: String,
+    pub description: Option<String>,
+    /// `primary`, `subagent` or `all`.
+    pub mode: String,
+    pub hidden: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub struct Providers {
+    pub providers: Vec<Provider>,
+}
+
+#[derive(Deserialize)]
+pub struct Provider {
+    pub id: String,
+    pub name: String,
+    pub models: HashMap<String, Model>,
+}
+
+#[derive(Deserialize)]
+pub struct Model {
+    pub id: String,
+    pub name: String,
+    pub status: Option<String>,
+    /// Keyed by effort name; the values are provider settings.
+    pub variants: Option<HashMap<String, serde_json::Value>>,
+}
+
+/// The parts of OpenCode's configuration that pick defaults.
+#[derive(Deserialize)]
+pub struct Config {
+    pub model: Option<String>,
+    pub default_agent: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -115,6 +159,26 @@ impl Api {
         let request = self.request(Method::GET, &format!("/session/{session_id}"), None);
         let session: Session = send(request).await?.json().await?;
         Ok(session.directory)
+    }
+
+    pub async fn agents(&self) -> Result<Vec<Agent>> {
+        Ok(send(self.request(Method::GET, "/agent", None))
+            .await?
+            .json()
+            .await?)
+    }
+
+    /// The providers that are set up, with their models.
+    pub async fn providers(&self) -> Result<Providers> {
+        let request = self.request(Method::GET, "/config/providers", None);
+        Ok(send(request).await?.json().await?)
+    }
+
+    pub async fn config(&self) -> Result<Config> {
+        Ok(send(self.request(Method::GET, "/config", None))
+            .await?
+            .json()
+            .await?)
     }
 
     /// Queues a prompt; the reply arrives as events.
