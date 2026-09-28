@@ -1,0 +1,233 @@
+# Architecture
+
+How Commandant's pieces fit together. For the code layout, see [crates.md](crates.md).
+
+## Overview
+
+```mermaid
+flowchart LR
+    subgraph clients["Your machines"]
+        CLI["commandant CLI<br/>(node / run / task / token)"]
+    end
+
+    subgraph orch["Orchestrator — commandant server"]
+        direction TB
+        CTRL["Control service<br/>admin API"]
+        LINK["NodeLink service<br/>worker streams"]
+        REG["Registry<br/>who is online"]
+        HUB["TaskHub<br/>live task output fan-out"]
+        DB[("SQLite<br/>tokens · nodes · tasks")]
+        CTRL --> REG
+        CTRL --> HUB
+        CTRL --> DB
+        LINK --> REG
+        LINK --> HUB
+        LINK --> DB
+    end
+
+    subgraph workers["Worker nodes — commandant worker"]
+        W1["worker A<br/>(same machine, --local-worker)"]
+        W2["worker B<br/>(remote host)"]
+        W3["worker C<br/>(Docker container)"]
+    end
+
+    CLI -- "gRPC, Bearer admin token" --> CTRL
+    W1 -- "bidirectional stream<br/>(worker dials in)" --> LINK
+    W2 -- "bidirectional stream" --> LINK
+    W3 -- "bidirectional stream" --> LINK
+```
+
+- **One port (7400) serves two gRPC services.** `Control` is for the CLI.
+  `NodeLink` is for workers.
+- **Workers always initiate the connection.** The orchestrator never connects
+  to a worker; it pushes commands down the stream the worker opened. That's why
+  workers can sit behind NAT or firewalls.
+- **Durable state lives in SQLite** (tokens, nodes, task history). **Live state
+  lives in memory**: which connection belongs to which node (Registry) and which
+  CLI streams are watching which task (TaskHub).
+
+## The connection link
+
+```
+commandant://AQAdN1FCkeiI9FArDH_E6daoWyceNYmqlKQbc08y2fOXvaEZMgh4wKyT…
+             └──────────────── opaque payload ────────────────────┘
+```
+
+The payload is built from `cmda_<64 hex chars>@192.168.1.10:7400` (secret +
+host:port):
+
+```mermaid
+flowchart LR
+    P["token@host:port"] --> X["XOR with a fixed key<br/>(position-dependent)"]
+    X --> F["prepend format byte (1)<br/>append checksum byte"]
+    F --> B["base64url, no padding"]
+    B --> L["commandant://…"]
+```
+
+This is **obfuscation, not encryption**: the key is in the source, so anyone
+with the link can recover the token. It keeps the token and IP from being read
+over a shoulder or grepped out of logs, and the checksum rejects truncated or
+mistyped links. The format byte leaves room for a future format. Parsers also
+accept the plain `commandant://<token>@<host>:<port>` form.
+
+```mermaid
+flowchart TD
+    S["commandant server starts"] --> T{"admin token<br/>exists?"}
+    T -- no --> G["generate cmda_… token<br/>store its SHA-256 hash<br/>write data-dir/admin.token"]
+    T -- yes --> R["read data-dir/admin.token"]
+    G --> H
+    R --> H{"host for the link"}
+    H -- "--advertise given" --> A["use it and remember it<br/>(data-dir/advertise)"]
+    H -- "remembered" --> A2["use data-dir/advertise"]
+    H -- "otherwise" --> P["primary IP<br/>(source address of the default route)"]
+    A --> L["print link, write data-dir/link"]
+    A2 --> L
+    P --> L
+```
+
+The same secret works in two places:
+
+- **CLI** (`login`): used as the admin bearer token on every Control call.
+- **Worker** (`worker <link>`): used as a join token, but only the first time.
+  In return the worker gets its own node credential.
+
+Before connecting, every client resolves the link's host. If one of the
+resulting addresses belongs to the local machine (it can `bind()` to it), the
+client connects to `127.0.0.1` instead.
+
+## Tokens and credentials
+
+| Prefix | Name | Created by | Used for | Lifetime |
+|---|---|---|---|---|
+| `cmda_` | admin token | first server start | Control API; also valid as a join token | permanent |
+| `cmdj_` | join token | `commandant token create` | enrolling one (or, `--reusable`, many) workers | TTL, default 1 h |
+| `cmdn_` | node secret | orchestrator, at join | a worker reconnecting as itself | until `node rm` |
+
+Only SHA-256 hashes of these are stored, and they are compared in constant time.
+
+## Worker lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as Worker
+    participant O as Orchestrator (NodeLink)
+    participant DB as SQLite
+
+    Note over W: state-dir has no node.json
+    W->>O: open Link stream
+    W->>O: Hello{join_token, name, hostname, os, arch}
+    O->>DB: token valid? (admin hash, or unexpired join token → uses+1)
+    O->>DB: insert node (id, name, hash(node secret))
+    O-->>W: Welcome{node_id, node_secret}
+    W->>W: save node.json {node_id, secret, server}
+
+    loop every 10 s
+        W->>O: Heartbeat
+        O->>DB: touch last_seen
+    end
+
+    Note over W,O: connection drops or the worker restarts
+    W->>O: Hello{credential: node_id + secret}
+    O->>DB: check hash(secret)
+    O-->>W: Welcome{node_id}  (no new secret)
+```
+
+- If no message arrives for **30 s**, the orchestrator drops the connection and
+  marks the node offline.
+- The worker reconnects with exponential backoff (1 s → 30 s). It gives up only
+  on fatal errors: bad credentials, a name that's already taken, or bad input.
+- If a node reconnects while an old connection is still registered, the new one
+  **replaces** it. Every connection has a unique `conn_id`, so a stale connection
+  closing late can't evict the new one.
+
+## Running a task
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as CLI (commandant run)
+    participant O as Orchestrator
+    participant H as TaskHub
+    participant W as Worker
+    participant P as Process
+
+    C->>O: RunCommand{node, argv, cwd, env}
+    O->>O: resolve node (name / id / prefix), must be online
+    O->>O: store task as "running"
+    O->>H: register task (before dispatch, so no output is missed)
+    O->>W: RunTask{task_id, argv, cwd, env}
+    O-->>C: TaskStarted{task_id}
+    W->>P: spawn in its own process group
+    loop while it runs
+        P-->>W: stdout / stderr (16 KiB chunks)
+        W->>O: TaskOutput
+        O->>H: publish
+        H-->>C: TaskOutput → printed to stdout / stderr
+    end
+    P-->>W: exit
+    W->>O: TaskFinished{exit_code, error, cancelled}
+    O->>O: store final status
+    H-->>C: TaskFinished
+    Note over C: CLI exits with the remote exit code
+```
+
+**Cancelling** (`task cancel <id>` or Ctrl-C during `run`): the orchestrator
+sends `CancelTask` down the worker's stream. The worker sends `SIGKILL` to the
+task's whole process group, so child processes die too, and reports
+`TaskFinished{cancelled: true}`.
+
+**Slow viewers.** The TaskHub keeps a 4096-event buffer per task. A CLI that
+falls behind sees a `[commandant: N output chunks dropped]` note, but the task
+itself isn't affected.
+
+## Task states
+
+```mermaid
+stateDiagram-v2
+    [*] --> running: RunCommand dispatched
+    running --> succeeded: exit code 0
+    running --> failed: non-zero exit, signal, or spawn error
+    running --> cancelled: CancelTask
+    running --> lost: node disconnected
+    running --> lost: orchestrator restarted
+    succeeded --> [*]
+    failed --> [*]
+    cancelled --> [*]
+    lost --> [*]
+```
+
+## Deployment shapes
+
+```mermaid
+flowchart LR
+    subgraph hostA["Host A (orchestrator)"]
+        S["commandant server<br/>--local-worker"]
+    end
+    subgraph hostB["Host B"]
+        WB["commandant worker"]
+    end
+    subgraph hostC["Host C (Docker)"]
+        WC1["worker container 1"]
+        WC2["worker container 2"]
+    end
+    subgraph laptop["Laptop"]
+        L["commandant CLI"]
+    end
+
+    WB -- "link → 192.168.1.10:7400" --> S
+    WC1 -- "link" --> S
+    WC2 -- "link" --> S
+    L -- "link (login)" --> S
+```
+
+Everything connects to a single address, and the same link works everywhere.
+All traffic is plaintext today, so that address should be on a private network
+(LAN, VPN, Tailscale).
+
+## What's next
+
+- **Agents (M3).** Fields 10–19 of `WorkerMsg` and `OrchestratorMsg` are
+  reserved for agent events and agent control.
+- **TUI.** An interactive front-end on the same `Control` API.
+- **TLS** for the gRPC port.

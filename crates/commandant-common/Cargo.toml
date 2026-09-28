@@ -1,0 +1,12 @@
+[package]
+name = "commandant-common"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+directories.workspace = true
+tokio.workspace = true
+tracing.workspace = true

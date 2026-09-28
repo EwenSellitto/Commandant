@@ -1,0 +1,49 @@
+# Local dev cluster: one orchestrator and two workers.
+#
+#   docker compose up -d server
+#   export COMMANDANT_JOIN_TOKEN=$(docker compose exec server commandant token create --reusable)
+#   docker compose --profile workers up -d
+#   docker compose exec server commandant node ls
+
+x-worker: &worker
+  image: commandant:dev
+  profiles: [workers]
+  command: ["worker"]
+  depends_on: [server]
+  restart: unless-stopped
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: commandant:dev
+    command: ["server", "--listen", "0.0.0.0:7400"]
+    environment:
+      # Lets `docker compose exec server commandant ...` act as admin.
+      COMMANDANT_ADDR: http://127.0.0.1:7400
+      COMMANDANT_TOKEN_FILE: /data/admin.token
+    ports: ["7400:7400"]
+    volumes: [server-data:/data]
+    restart: unless-stopped
+
+  worker-1:
+    <<: *worker
+    environment:
+      COMMANDANT_SERVER: http://server:7400
+      COMMANDANT_JOIN_TOKEN: ${COMMANDANT_JOIN_TOKEN:-}
+      COMMANDANT_NODE_NAME: worker-1
+    volumes: [worker-1-state:/state]
+
+  worker-2:
+    <<: *worker
+    environment:
+      COMMANDANT_SERVER: http://server:7400
+      COMMANDANT_JOIN_TOKEN: ${COMMANDANT_JOIN_TOKEN:-}
+      COMMANDANT_NODE_NAME: worker-2
+    volumes: [worker-2-state:/state]
+
+volumes:
+  server-data:
+  worker-1-state:
+  worker-2-state:

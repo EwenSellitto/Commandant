@@ -1,0 +1,27 @@
+# A worker joining an orchestrator, using the link `commandant server` printed:
+#
+#   COMMANDANT_LINK='commandant://...' docker compose -f docker/worker.compose.yml up -d --build
+#
+# The link is only needed on the first start; credentials are kept in the
+# volume. For several workers on one host, give each its own project name
+# (and optionally a node name):
+#
+#   COMMANDANT_LINK='commandant://...' COMMANDANT_NODE_NAME=box-2b \
+#     docker compose -p box-2b -f docker/worker.compose.yml up -d
+
+name: commandant-worker
+
+services:
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ${COMMANDANT_IMAGE:-commandant:dev}
+    command: ["worker"]
+    # Passed through only when set in your shell.
+    environment: [COMMANDANT_LINK, COMMANDANT_NODE_NAME]
+    volumes: [state:/state]
+    restart: unless-stopped
+
+volumes:
+  state:

@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[workspace.dependencies]
+commandant-common = { path = "crates/commandant-common" }
+commandant-proto = { path = "crates/commandant-proto" }
+commandant-orchestrator = { path = "crates/commandant-orchestrator" }
+commandant-worker = { path = "crates/commandant-worker" }
+
+anyhow = "1.0.104"
+base64 = "0.23.1"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+directories = "6.0.0"
+getrandom = "0.4.3"
+hex = "0.4.3"
+libc = "0.2.189"
+prost = "0.14.4"
+protoc-bin-vendored = "3.2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "json"] }
+subtle = "2.6.1"
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "process", "signal", "net", "time", "sync", "io-util", "fs"] }
+tokio-stream = { version = "0.1.19", features = ["net"] }
+toml = "1.1.6"
+tonic = "0.14.6"
+tonic-prost = "0.14.6"
+tonic-prost-build = "0.14.6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.26.1", features = ["v4"] }

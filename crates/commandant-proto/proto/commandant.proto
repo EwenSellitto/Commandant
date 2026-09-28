@@ -1,0 +1,179 @@
+syntax = "proto3";
+
+package commandant.v1;
+
+// ---------------------------------------------------------------------------
+// Worker <-> Orchestrator. Workers dial in and keep this stream open.
+// ---------------------------------------------------------------------------
+
+service NodeLink {
+  // The first WorkerMsg must be a Hello; the first reply is a Welcome.
+  rpc Link(stream WorkerMsg) returns (stream OrchestratorMsg);
+}
+
+message NodeCredential {
+  string node_id = 1;
+  string secret = 2;
+}
+
+message Hello {
+  oneof auth {
+    string join_token = 1;           // first join
+    NodeCredential credential = 2;   // reconnect with issued credentials
+  }
+  string name = 3;                   // defaults to hostname on first join
+  string hostname = 4;
+  string os = 5;
+  string arch = 6;
+  string version = 7;
+  repeated string capabilities = 8;
+}
+
+message Heartbeat {}
+
+enum OutputStream {
+  OUTPUT_STREAM_UNSPECIFIED = 0;
+  OUTPUT_STREAM_STDOUT = 1;
+  OUTPUT_STREAM_STDERR = 2;
+}
+
+message TaskOutput {
+  string task_id = 1;
+  OutputStream stream = 2;
+  bytes data = 3;
+}
+
+message TaskFinished {
+  string task_id = 1;
+  optional int32 exit_code = 2;      // unset when killed by a signal or never started
+  string error = 3;
+  bool cancelled = 4;
+}
+
+message WorkerMsg {
+  oneof msg {
+    Hello hello = 1;
+    Heartbeat heartbeat = 2;
+    TaskOutput output = 3;
+    TaskFinished finished = 4;
+  }
+  reserved 10 to 19; // agent events (M3)
+}
+
+message Welcome {
+  string node_id = 1;
+  string node_secret = 2;            // only set on first join; persist it
+}
+
+message RunTask {
+  string task_id = 1;
+  repeated string argv = 2;
+  string cwd = 3;
+  map<string, string> env = 4;
+}
+
+message CancelTask {
+  string task_id = 1;
+}
+
+message OrchestratorMsg {
+  oneof msg {
+    Welcome welcome = 1;
+    RunTask run = 2;
+    CancelTask cancel = 3;
+  }
+  reserved 10 to 19; // agent control (M3)
+}
+
+// ---------------------------------------------------------------------------
+// CLI -> Orchestrator. Requires `authorization: Bearer <admin token>`.
+// ---------------------------------------------------------------------------
+
+service Control {
+  rpc CreateJoinToken(CreateJoinTokenRequest) returns (CreateJoinTokenResponse);
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse);
+  rpc RunCommand(RunCommandRequest) returns (stream TaskEvent);
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
+}
+
+message CreateJoinTokenRequest {
+  uint64 ttl_secs = 1;               // 0 = never expires
+  bool reusable = 2;
+}
+
+message CreateJoinTokenResponse {
+  string token = 1;
+  optional int64 expires_at = 2;
+}
+
+message NodeInfo {
+  string id = 1;
+  string name = 2;
+  string hostname = 3;
+  string os = 4;
+  string arch = 5;
+  string version = 6;
+  bool online = 7;
+  int64 last_seen = 8;
+  int64 created_at = 9;
+}
+
+message ListNodesRequest {}
+
+message ListNodesResponse {
+  repeated NodeInfo nodes = 1;
+}
+
+message RemoveNodeRequest {
+  string node = 1;                   // id, id prefix or name
+}
+
+message RemoveNodeResponse {}
+
+message RunCommandRequest {
+  string node = 1;                   // id, id prefix or name
+  repeated string argv = 2;
+  string cwd = 3;
+  map<string, string> env = 4;
+}
+
+message TaskStarted {
+  string task_id = 1;
+  string node_id = 2;
+}
+
+message TaskEvent {
+  oneof event {
+    TaskStarted started = 1;
+    TaskOutput output = 2;
+    TaskFinished finished = 3;
+  }
+}
+
+message TaskInfo {
+  string id = 1;
+  string node_id = 2;
+  string node_name = 3;
+  repeated string argv = 4;
+  string status = 5;                 // running | succeeded | failed | cancelled | lost
+  optional int32 exit_code = 6;
+  string error = 7;
+  int64 created_at = 8;
+  optional int64 finished_at = 9;
+}
+
+message ListTasksRequest {
+  uint32 limit = 1;
+}
+
+message ListTasksResponse {
+  repeated TaskInfo tasks = 1;
+}
+
+message CancelTaskRequest {
+  string task_id = 1;
+}
+
+message CancelTaskResponse {}

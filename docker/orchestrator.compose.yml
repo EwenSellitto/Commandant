@@ -1,0 +1,36 @@
+# Orchestrator deployment. Start it and print its connection link:
+#
+#   docker compose -f docker/orchestrator.compose.yml up -d --build && \
+#     docker compose -f docker/orchestrator.compose.yml exec server cat /data/link
+#
+# Settings (environment or a .env file next to where you run compose):
+#   COMMANDANT_LOCAL_WORKER=true   also run a worker in the orchestrator container
+#   COMMANDANT_ADVERTISE=host      host (or host:port) put in the link; defaults
+#                                  to the machine's primary IP
+#   COMMANDANT_BIND / _PORT        listen address, default 0.0.0.0:7400
+#
+# Host networking lets the orchestrator see the machine's real IP for the link.
+# Traffic is plaintext gRPC: keep the port on a private network (VPN, Tailscale).
+
+name: commandant-orchestrator
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ${COMMANDANT_IMAGE:-commandant:dev}
+    command: ["server"]
+    network_mode: host
+    environment:
+      COMMANDANT_LISTEN: ${COMMANDANT_BIND:-0.0.0.0}:${COMMANDANT_PORT:-7400}
+      COMMANDANT_ADVERTISE: # passed through only when set
+      COMMANDANT_LOCAL_WORKER: ${COMMANDANT_LOCAL_WORKER:-false}
+      # Lets `docker compose exec server commandant ...` act as admin.
+      COMMANDANT_ADDR: http://127.0.0.1:${COMMANDANT_PORT:-7400}
+      COMMANDANT_TOKEN_FILE: /data/admin.token
+    volumes: [server-data:/data]
+    restart: unless-stopped
+
+volumes:
+  server-data:
