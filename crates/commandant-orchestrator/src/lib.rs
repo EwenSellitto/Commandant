@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use commandant_proto::control_server::ControlServer;
 use commandant_proto::node_link_server::NodeLinkServer;
 use tokio::net::TcpListener;
@@ -32,6 +32,8 @@ use crate::store::Store;
 use crate::tasks::TaskHub;
 
 pub const ADMIN_TOKEN_FILE: &str = "admin.token";
+/// The database, in the data directory.
+pub const DB_FILE: &str = "commandant.db";
 
 pub(crate) struct Shared {
     pub store: Store,
@@ -57,7 +59,10 @@ impl Orchestrator {
     pub async fn open(data_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(data_dir)
             .with_context(|| format!("creating data dir {}", data_dir.display()))?;
-        let store = Store::open(&data_dir.join("commandant.db")).await?;
+        let db = data_dir.join(DB_FILE);
+        let store = Store::open(&db)
+            .await
+            .with_context(|| format!("opening database {}", db.display()))?;
         let lost = store.mark_running_tasks_lost().await?;
         if lost > 0 {
             info!(lost, "marked tasks from a previous run as lost");
@@ -113,13 +118,88 @@ impl Orchestrator {
     }
 }
 
-/// Only the hash is kept in the database, so the token itself lives in a file.
+/// The database keeps the token, so it alone brings the same link back. The
+/// file is a copy for `COMMANDANT_TOKEN_FILE`, and the source for databases
+/// from before, which only kept its hash.
 async fn load_or_create_admin_token(store: &Store, token_file: &Path) -> Result<String> {
+    if let Some(token) = store.admin_token().await? {
+        write_private(token_file, &format!("{token}\n"))?;
+        return Ok(token);
+    }
     if !store.admin_token_hashes().await?.is_empty() {
-        return read_trimmed(token_file);
+        let token = read_trimmed(token_file)
+            .context("the database only holds the admin token's hash, so its file is needed")?;
+        if !store.keep_admin_token(&hash_token(&token), &token).await? {
+            bail!(
+                "{} doesn't hold this database's admin token; restore it, or start \
+                 afresh with --reset",
+                token_file.display()
+            );
+        }
+        return Ok(token);
     }
     let token = generate_token(ADMIN_PREFIX);
-    store.add_admin_token(&hash_token(&token)).await?;
+    store.add_admin_token(&hash_token(&token), &token).await?;
     write_private(token_file, &format!("{token}\n"))?;
     Ok(token)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_database_alone_keeps_the_admin_token() {
+        let tmp = std::env::temp_dir().join(format!("commandant-admin-{}", std::process::id()));
+        let data_dir = tmp.join("data");
+        let db = data_dir.join(DB_FILE);
+        let token_file = data_dir.join(ADMIN_TOKEN_FILE);
+
+        let first = Orchestrator::open(&data_dir).await.unwrap();
+        let token = first.admin_token().to_string();
+        drop(first);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&db).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        // Losing the file doesn't lose the token; the file comes back.
+        std::fs::remove_file(&token_file).unwrap();
+        let again = Orchestrator::open(&data_dir).await.unwrap();
+        assert_eq!(again.admin_token(), token);
+        assert_eq!(read_trimmed(&token_file).unwrap(), token);
+
+        // A database that only kept the hash takes the token from the file.
+        let store = &again.shared.store;
+        sqlx::query("UPDATE admin_tokens SET token = NULL")
+            .execute(store.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            load_or_create_admin_token(store, &token_file)
+                .await
+                .unwrap(),
+            token
+        );
+        assert_eq!(
+            store.admin_token().await.unwrap().as_deref(),
+            Some(token.as_str())
+        );
+
+        // ...but not a token it doesn't know.
+        sqlx::query("UPDATE admin_tokens SET token = NULL")
+            .execute(store.pool())
+            .await
+            .unwrap();
+        write_private(&token_file, "cmda_wrong\n").unwrap();
+        assert!(
+            load_or_create_admin_token(store, &token_file)
+                .await
+                .is_err()
+        );
+
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
 }

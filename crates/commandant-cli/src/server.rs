@@ -1,12 +1,13 @@
 //! `commandant server`: the orchestrator, plus the link to reach it.
 
+use std::io::{BufRead, IsTerminal, Write};
 use std::net::SocketAddr;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use commandant_common::link::{self, Link};
 use commandant_common::{dirs, fs};
-use commandant_orchestrator::Orchestrator;
+use commandant_orchestrator::{ADMIN_TOKEN_FILE, DB_FILE, Orchestrator};
 use commandant_worker::WorkerConfig;
 use tokio::task::JoinHandle;
 
@@ -21,10 +22,15 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         Some(dir) => dir,
         None => dirs::server_data()?,
     };
-    let orchestrator = Orchestrator::open(&data_dir).await?;
+    // Bound first, so a reset never pulls the database from under a server
+    // that is already running here.
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("binding {}", args.listen))?;
+    if args.reset {
+        reset(&data_dir)?;
+    }
+    let orchestrator = Orchestrator::open(&data_dir).await?;
 
     let host = advertised_host(&data_dir, args.advertise, args.listen)?;
     let link = Link::new(orchestrator.admin_token(), &host);
@@ -52,6 +58,59 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         let _ = worker.await;
     }
     served
+}
+
+/// Deletes the database and what only works with it: the admin token, the
+/// link and the local worker's credentials. The advertised host stays.
+fn reset(data_dir: &Path) -> Result<()> {
+    if !std::io::stdin().is_terminal() {
+        bail!("--reset asks for confirmation, so it needs a terminal");
+    }
+    eprintln!(
+        "\nThis deletes every node, join token and task recorded in {}.\n\
+         The admin token changes: the current link stops working, clients must\n\
+         log in again and every worker must join again.\n",
+        data_dir.display()
+    );
+    if !ask("Reset the database? [y/N] ")?.eq_ignore_ascii_case("y") {
+        bail!("reset cancelled");
+    }
+    if ask("Type \"reset\" to confirm: ")? != "reset" {
+        bail!("reset cancelled");
+    }
+    for file in [
+        DB_FILE.into(),
+        format!("{DB_FILE}-wal"),
+        format!("{DB_FILE}-shm"),
+        ADMIN_TOKEN_FILE.into(),
+        LINK_FILE.into(),
+    ] {
+        let path = data_dir.join(file);
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(e).with_context(|| format!("deleting {}", path.display()));
+            }
+            _ => {}
+        }
+    }
+    let worker = data_dir.join(LOCAL_WORKER_DIR);
+    match std::fs::remove_dir_all(&worker) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(e).with_context(|| format!("deleting {}", worker.display()));
+        }
+        _ => {}
+    }
+    eprintln!("Database reset.");
+    Ok(())
+}
+
+/// Prints `question` and reads one line, trimmed.
+fn ask(question: &str) -> Result<String> {
+    eprint!("{question}");
+    std::io::stderr().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().lock().read_line(&mut answer)?;
+    Ok(answer.trim().to_string())
 }
 
 fn print_welcome(listen: SocketAddr, link: &Link) {

@@ -77,6 +77,10 @@ pub struct ServerArgs {
     /// Coding agent for the local worker to host (with --local-worker).
     #[arg(long, env = "COMMANDANT_HARNESS", requires = "local_worker")]
     pub harness: Option<HarnessKind>,
+    /// Delete the database (nodes, tokens, task history) and start afresh
+    /// with a new admin token. Asks twice first.
+    #[arg(long)]
+    pub reset: bool,
 }
 
 #[derive(Args)]

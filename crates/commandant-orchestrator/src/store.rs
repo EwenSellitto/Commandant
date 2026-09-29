@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use commandant_proto::TaskFinished;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use sqlx::types::Json;
@@ -102,6 +102,7 @@ impl std::fmt::Display for InsertNodeError {
 
 impl Store {
     pub async fn open(path: &Path) -> Result<Self> {
+        create_private(path)?;
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -116,6 +117,11 @@ impl Store {
         Ok(Self { pool })
     }
 
+    #[cfg(test)]
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     // --- admin tokens -------------------------------------------------------
 
     pub async fn admin_token_hashes(&self) -> Result<Vec<String>> {
@@ -124,13 +130,34 @@ impl Store {
             .await?)
     }
 
-    pub async fn add_admin_token(&self, hash: &str) -> Result<()> {
-        sqlx::query("INSERT INTO admin_tokens (hash, created_at) VALUES (?, ?)")
+    /// The oldest admin token the database holds in full.
+    pub async fn admin_token(&self) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT token FROM admin_tokens WHERE token IS NOT NULL ORDER BY created_at LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn add_admin_token(&self, hash: &str, token: &str) -> Result<()> {
+        sqlx::query("INSERT INTO admin_tokens (hash, token, created_at) VALUES (?, ?, ?)")
             .bind(hash)
+            .bind(token)
             .bind(now())
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Keeps the full token of an admin token stored as a hash only. Returns
+    /// false if no admin token has that hash.
+    pub async fn keep_admin_token(&self, hash: &str, token: &str) -> Result<bool> {
+        let res = sqlx::query("UPDATE admin_tokens SET token = ? WHERE hash = ?")
+            .bind(token)
+            .bind(hash)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() == 1)
     }
 
     // --- join tokens --------------------------------------------------------
@@ -323,4 +350,35 @@ impl Store {
         .fetch_all(&self.pool)
         .await?)
     }
+}
+
+/// Creates the database file readable by its owner only, since it holds the
+/// admin token, or makes an existing one so. SQLite creates its `-wal` and
+/// `-shm` files with the same permissions; ones left from before are fixed.
+fn create_private(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    #[cfg(unix)]
+    for suffix in ["", "-wal", "-shm"] {
+        use std::os::unix::fs::PermissionsExt;
+        let mut file = path.as_os_str().to_owned();
+        file.push(suffix);
+        let file = Path::new(&file);
+        match std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(e).with_context(|| format!("restricting {}", file.display()));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
