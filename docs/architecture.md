@@ -49,17 +49,27 @@ flowchart LR
 ## The connection link
 
 ```
-commandant://AQAdN1FCkeiI9FArDH_E6daoWyceNYmqlKQbc08y2fOXvaEZMgh4wKyT…
-             └──────────────── opaque payload ────────────────────┘
+commandant://AuMPUzAc6IS5ocQ1a_7AWy_ocXe-CvHX8jw
+             └──── opaque payload ────────┘
 ```
 
-The payload is built from `cmda_<64 hex chars>@192.168.1.10:7400` (secret +
-host:port):
+The payload packs the host and the secret as bytes:
+
+| Bytes | Content |
+|---|---|
+| 1 | address kind: IPv4, IPv6 or a name, plus a flag when a port follows |
+| 4, 16 or 1 + length | the IP, or the name's length and the name |
+| 2, only with the flag | the port, when it isn't 7400 |
+| 1 | token kind: `cmda`, `cmdj`, `cmdn`, or 0 for any other text |
+| the rest | the token's hex as raw bytes (16 for new tokens), or its text |
+
+A new admin link for `192.168.1.10:7400` is 1 + 5 + 17 + 1 = 24 bytes, so 32
+characters after `commandant://`.
 
 ```mermaid
 flowchart LR
-    P["token@host:port"] --> X["XOR with a fixed key<br/>(position-dependent)"]
-    X --> F["prepend format byte (1)<br/>append checksum byte"]
+    P["packed host + token"] --> X["XOR with a fixed key<br/>(position-dependent)"]
+    X --> F["prepend format byte (2)<br/>append checksum byte"]
     F --> B["base64url, no padding"]
     B --> L["commandant://…"]
 ```
@@ -67,14 +77,15 @@ flowchart LR
 This is **obfuscation, not encryption**: the key is in the source, so anyone
 with the link can recover the token. It keeps the token and IP from being read
 over a shoulder or grepped out of logs, and the checksum rejects truncated or
-mistyped links. The format byte leaves room for a future format. Parsers also
+mistyped links. The format byte leaves room for a future format; format 1, the
+older `token@host:port` text, still parses. Parsers also
 accept the plain `commandant://<token>@<host>:<port>` form.
 
 ```mermaid
 flowchart TD
-    S["commandant server starts"] --> T{"admin token<br/>exists?"}
-    T -- no --> G["generate cmda_… token<br/>store its SHA-256 hash<br/>write data-dir/admin.token"]
-    T -- yes --> R["read data-dir/admin.token"]
+    S["commandant server starts"] --> T{"admin token<br/>in the database?"}
+    T -- no --> G["generate cmda_… token<br/>store it and its SHA-256 hash<br/>write data-dir/admin.token"]
+    T -- yes --> R["use it<br/>rewrite data-dir/admin.token"]
     G --> H
     R --> H{"host for the link"}
     H -- "--advertise given" --> A["use it and remember it<br/>(data-dir/advertise)"]
@@ -103,7 +114,12 @@ client connects to `127.0.0.1` instead.
 | `cmdj_` | join token | `commandant token create` | enrolling one (or, `--reusable`, many) workers | TTL, default 1 h |
 | `cmdn_` | node secret | orchestrator, at join | a worker reconnecting as itself | until `node rm` |
 
-Only SHA-256 hashes of these are stored, and they are compared in constant time.
+Only SHA-256 hashes of these are checked, and they are compared in constant time.
+The admin token is also kept in full, so the database alone brings the same link
+back. A database from before that only has its hash takes the token from
+`admin.token` once. The database file (`<data-dir>/commandant.db`) is readable by
+its owner only. `server --reset` deletes it, together with `admin.token`, `link`
+and the local worker's credentials, which only work with that database.
 
 ## Worker lifecycle
 
@@ -206,12 +222,12 @@ sequenceDiagram
     W->>S: POST /session/:id/prompt_async
     loop until the session goes idle
         S-->>W: message.part.delta / message.part.updated
-        W->>O: TaskOutput (text → stdout, tool calls → stderr)
+        W->>O: TaskOutput (text → stdout, thinking → reasoning, tool calls → stderr)
         O-->>C: printed as it arrives
         S-->>W: permission.asked
         W->>S: reply "once"
     end
-    W->>O: TaskFinished{exit_code: 0 or 1, error, session_id}
+    W->>O: TaskFinished{exit_code: 0 or 1, error, session_id, model, usage}
     O-->>C: TaskFinished → "continue with --session …"
 ```
 
@@ -222,7 +238,18 @@ killing a process. The OpenCode server keeps running for the next prompt.
 efforts its harness offers, so the TUI can show them. It is not a task: the
 orchestrator sends `ListAgentOptions{request_id}` down the link, waits up to
 15 s for the matching `AgentOptions`, and returns it. The worker builds the
-answer from OpenCode's `GET /agent`, `/config/providers` and `/config`.
+answer from OpenCode's `GET /agent`, `/config/providers`, `/config`, `/command`
+(commands, skills and MCP prompts) and `/mcp`. `SwitchMcpServer` is the same
+round trip with a `McpSwitch` in `ListAgentOptions`: the worker calls
+`POST /mcp/:name/connect` or `/disconnect` first, then answers with the
+options, so the caller sees the new status.
+
+**Commands and skills.** A prompt with `command` set runs that command through
+`POST /session/:id/command`, the prompt being its arguments. The worker checks
+the name against `/command` first (OpenCode answers an unknown one with a bare
+500). That request only returns once the turn is over, so it runs beside the
+event stream, which drives the output and the end of the turn as for a plain
+prompt; cancelling still aborts the session.
 
 ## Task states
 

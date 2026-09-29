@@ -43,10 +43,10 @@ It prints a **connection link**:
 ```
 Commandant is listening on 0.0.0.0:7400. Connection link:
 
-    commandant://AQAdN1FCkeiI9FArDH_E6d…
+    commandant://AuMPUzAc6IS5ocQ1a_7AWy_ocXe-CvHX8jw
 
-  Add a worker:    commandant worker commandant://AQAdN1FCkeiI9FArDH_E6d…
-  Control it:      commandant login commandant://AQAdN1FCkeiI9FArDH_E6d…
+  Add a worker:    commandant worker commandant://AuMPUzAc6IS5ocQ1a_7AWy_ocXe-CvHX8jw
+  Control it:      commandant login commandant://AuMPUzAc6IS5ocQ1a_7AWy_ocXe-CvHX8jw
 ```
 
 `--local-worker` also runs a worker inside the server process, so this machine
@@ -55,7 +55,7 @@ can execute tasks too. Leave it out for a coordinator-only server.
 **2. Add workers**: on every other machine, paste the link:
 
 ```sh
-commandant worker commandant://AQAdN1FCkeiI9FArDH_E6d…
+commandant worker commandant://AuMPUzAc6IS5ocQ1a_7AWy_ocXe-CvHX8jw
 ```
 
 The worker saves its own credentials, so afterwards `commandant worker` with no
@@ -64,7 +64,7 @@ arguments is enough.
 **3. Connect your client** (laptop or anywhere), once:
 
 ```sh
-commandant login commandant://AQAdN1FCkeiI9FArDH_E6d…
+commandant login commandant://AuMPUzAc6IS5ocQ1a_7AWy_ocXe-CvHX8jw
 ```
 
 **4. Use it:**
@@ -87,8 +87,12 @@ See [Coding agents](#coding-agents) below.
 
 ### About the link
 
-- **Stable.** The token is created on first start and kept in the data dir, so the
-  link survives restarts. It is also written to `<data-dir>/link`.
+- **Stable.** The token is created on first start and kept in the database, so
+  the link survives restarts. It is also written to `<data-dir>/link`, and the
+  token to `<data-dir>/admin.token`.
+- **Reset.** `commandant server --reset` deletes the database (nodes, tokens,
+  task history) and starts afresh with a new link. It asks twice (`y`, then
+  typing `reset`), needs a terminal, and keeps the `--advertise` host.
 - **Host.** It is the machine's primary IP by default. If that isn't what others
   reach it on (a WSL VM, a cloud box behind NAT, a Tailscale network), pass
   `--advertise <host or host:port>` once. It is remembered.
@@ -117,6 +121,7 @@ Every command has `--help`. Client commands find the orchestrator from, in order
 |---|---|---|---|
 | `--listen` | `COMMANDANT_LISTEN` | `0.0.0.0:7400` | Address to listen on |
 | `--data-dir` | `COMMANDANT_DATA_DIR` | `~/.local/share/commandant/server` | Database, token, link |
+| `--reset` | | off | Delete the database and start afresh, after confirming twice |
 | `--advertise` | `COMMANDANT_ADVERTISE` | primary IP | Host put in the link (remembered) |
 | `--local-worker` | `COMMANDANT_LOCAL_WORKER` | off | Also run a worker in-process |
 | `--harness` | `COMMANDANT_HARNESS` | none | Coding agent for the local worker (`opencode`) |
@@ -141,8 +146,10 @@ The worker reconnects on its own (backoff up to 30 s) if the orchestrator restar
 | `commandant login <LINK>` | Save address and admin token (`login <URL> --with-token cmda_…` also works) |
 | `commandant node ls` | List nodes with online status, hostname, platform, harness, last seen |
 | `commandant node rm <node>` | Forget a node (it must rejoin with a token) |
+| `commandant node commands <node>` | The commands and skills of the node's coding agent |
+| `commandant node mcp <node> [--connect NAME \| --disconnect NAME]` | The agent's MCP servers and their status; connects or disconnects one first |
 | `commandant run <node> [--cwd DIR] [-e K=V]… -- <cmd> [args…]` | Run a command and stream its output |
-| `commandant prompt <node> [-s SESSION] [--cwd DIR] [-m PROVIDER/MODEL] [--agent NAME] [--effort E] <prompt>…` | Ask the node's coding agent and stream its reply |
+| `commandant prompt <node> [-s SESSION] [--cwd DIR] [-m PROVIDER/MODEL] [--agent NAME] [--effort E] [-c COMMAND] <prompt>…` | Ask the node's coding agent and stream its reply |
 | `commandant tui [node] [-s SESSION] [--cwd DIR] [-m PROVIDER/MODEL] [--agent NAME] [--effort E]` | Chat with the node's coding agent in a terminal UI |
 | `commandant task ls [--limit N]` | Recent tasks and their status |
 | `commandant task cancel <id>` | Cancel a running task |
@@ -178,7 +185,8 @@ A worker started with `--harness opencode`:
 
 ```sh
 commandant prompt my-box --cwd ~/src/app "add a test for the parser"
-# …the agent's reply streams on stdout, its tool calls on stderr:
+# …the agent's reply streams on stdout, its tool calls on stderr
+# (its thinking is left out):
 # [opencode] edit src/parser_test.rs
 commandant: continue with --session ses_1f3a…
 commandant prompt my-box -s ses_1f3a… "now make it pass"
@@ -193,6 +201,9 @@ commandant prompt my-box -s ses_1f3a… "now make it pass"
   variant) override OpenCode's defaults. Providers are configured on the node the usual
   OpenCode way: API keys in the environment, `opencode auth login`, or
   `~/.config/opencode`. With none, OpenCode's free models are used.
+- **Commands and skills.** `--command review` runs one of the agent's commands
+  or skills (listed by `node commands`), with the prompt as its arguments,
+  which are then optional.
 - **Ctrl-C** aborts the agent (status `cancelled`); a second one detaches.
   The exit code is 0 when the agent finished its turn, 1 on error.
 - **Permissions.** Nobody is there to answer OpenCode's permission prompts, so
@@ -209,21 +220,29 @@ commandant tui my-box --cwd ~/src/app
 ```
 
 ```
-┌ opencode on my-box ──────────────────────────────────────────────────────┐
-│● online   host my-box   os linux/x86_64   worker 0.1.0      ⠋ working 4s│
-│session ses_1f3a…   cwd ~/src/app                                         │
-└──────────────────────────────────────────────────────────────────────────┘
-┌ Thread ──────────────────────────────────────────────────────────────────┐
-│› add a test for the parser                                               │
-│I'll add a round-trip test.                                               │
-│  ⚙ edit src/parser_test.rs                                               │
-└──────────────────────────────────────────────────────────────────────────┘
-┌ build · anthropic/claude-sonnet-5 · high effort ─────────────────────────┐
-│› now make it pass                                                        │
-└──────────────── Esc cancel · PgUp/PgDn scroll · Ctrl-C quit ─────────────┘
+ ● my-box  opencode · linux/x86_64 · v0.1.0    ses_1f3a… · ~/src/app
+
+ ▌ add a test for the parser
+
+ ┊ The parser has no tests yet; a round-trip one covers the most.
+ ⚙ edit src/parser_test.rs
+   I added a **round-trip** test in `src/parser_test.rs`.
+ ◆ build · Claude Sonnet 5 · high · 18.2s · 24.7k in · 412 out · $0.08
+
+ ⠋ writing 4s  esc to cancel
+ ▌
+ ▌ now make it pass
+ ▌
+ build · Claude Sonnet 5 · high effort      24.9k/200k 12% · $0.08
 ```
 
-The prompt box's title shows the agent, model and effort the next prompt uses.
+- The reply streams in as the model writes it, with light markdown styling.
+  The model's thinking streams too, dimmed behind `┊`, and tool calls show
+  as `⚙`.
+- `◆` closes each turn: the agent, model, effort, time, tokens and cost.
+- The prompt sits on a solid slab edged in the agent's color. Under it are the
+  agent, model and effort the next prompt uses, how full the context window
+  is, and what the session has cost (as OpenCode reckons it).
 
 The node defaults to the only online one with a harness.
 
@@ -235,8 +254,11 @@ The node defaults to the only online one with a harness.
 | `/effort [filter]` | Choose the thinking effort the model offers |
 | **Ctrl-T** | Next thinking effort |
 | `/agent [filter]` | Choose an agent in a floating window |
+| `/<command> [args]` | Run one of the agent's commands or skills |
+| `/skills`, `/commands` | Choose a command or skill in a floating window, then type its arguments |
+| `/mcp` | The agent's MCP servers and their status; **Enter** connects or disconnects one |
 | `/new` | Start a new session |
-| **Esc** | Cancel the agent's turn |
+| **Esc** | Cancel the agent's turn (even before it has started) |
 | **PgUp** / **PgDn** | Scroll the thread |
 | **Ctrl-C**, `/quit` | Quit, cancelling a running turn, and print the session id for `prompt -s` or `tui -s` |
 

@@ -44,7 +44,7 @@ It has no gRPC dependency, so every crate can use it.
 | `time.rs` | `now()` in Unix seconds, used for database timestamps. `ago(ts)` gives `12s ago`-style ages for CLI tables |
 | `dirs.rs` | Platform default locations: `server_data()`, `worker_state()`, `client_config()` |
 | `lookup.rs` | `find(items, needle, key)`: the item whose key equals `needle`, otherwise the only one it prefixes (`Match::One`/`Ambiguous`/`None`). Used to resolve node ids and task ids |
-| `link.rs` | The `Link` type. It prints `commandant://<opaque>`: `token@host:port` XOR-scrambled with a fixed key, with a format byte and a checksum added, then base64url. It parses both that form and the plain `commandant://token@host:port`. `Link::for_addr(token, url)` builds a link from an orchestrator URL. `with_port`. `primary_ip()` gives the default advertised host. `prefer_loopback(url)` rewrites to `127.0.0.1` (or `[::1]`) when the host is this machine |
+| `link.rs` | The `Link` type. It prints `commandant://<opaque>`: the host (an IP as bytes, the port only if it isn't 7400) and the token (prefix as a byte, hex as raw bytes) packed, XOR-scrambled with a fixed key, with a format byte and a checksum added, then base64url. It parses that form, the older textual one (format 1) and the plain `commandant://token@host:port`. `Link::for_addr(token, url)` builds a link from an orchestrator URL. `with_port`. `primary_ip()` gives the default advertised host. `prefer_loopback(url)` rewrites to `127.0.0.1` (or `[::1]`) when the host is this machine |
 
 ---
 
@@ -64,7 +64,7 @@ The gRPC contract, plus the client-side connection helper.
 |---|---|
 | Worker → orchestrator | `Hello` (join token or node credential, plus host facts), `Heartbeat`, `TaskOutput`, `TaskFinished`, `AgentOptions` |
 | Orchestrator → worker | `Welcome` (node id, plus a secret on first join), `RunTask`, `AgentPrompt`, `CancelTask`, `ListAgentOptions` |
-| CLI → orchestrator | `CreateJoinToken`, `ListNodes`, `RemoveNode`, `RunCommand` and `Prompt` (both stream `TaskEvent`s), `GetAgentOptions`, `ListTasks`, `CancelTask` |
+| CLI → orchestrator | `CreateJoinToken`, `ListNodes`, `RemoveNode`, `RunCommand` and `Prompt` (both stream `TaskEvent`s), `GetAgentOptions`, `SwitchMcpServer`, `ListTasks`, `CancelTask` |
 
 ---
 
@@ -74,15 +74,16 @@ Entry point: `Orchestrator::open(data_dir)` followed by `.serve(listener, shutdo
 
 | Module | Role |
 |---|---|
-| `lib.rs` | Opens the data dir and database. Marks tasks left `running` by a previous run as `lost`. Creates the admin token on first start (`admin.token`) and loads it on later starts. `admin_token()` returns it. Serves both gRPC services, with HTTP/2 keepalive. Holds `Shared` (store, registry, hub, queries and `AdminTokens`) and `internal()`, which maps unexpected errors to a gRPC status |
-| `auth.rs` | Token generation (`cmda_`/`cmdj_`/`cmdn_` + 32 random bytes), SHA-256 hashing, constant-time comparison. `AdminTokens` answers "is this an admin token?" for both the `Control` interceptor and worker joins |
+| `lib.rs` | Opens the data dir and its database (`DB_FILE`). Marks tasks left `running` by a previous run as `lost`. Creates the admin token on first start and loads it from the database on later starts (from `admin.token` once, for databases that only kept its hash), rewriting `admin.token`. `admin_token()` returns it. Serves both gRPC services, with HTTP/2 keepalive. Holds `Shared` (store, registry, hub, queries and `AdminTokens`) and `internal()`, which maps unexpected errors to a gRPC status |
+| `auth.rs` | Token generation (`cmda_`/`cmdj_`/`cmdn_` + 16 random bytes; older 32-byte tokens still work), SHA-256 hashing, constant-time comparison. `AdminTokens` answers "is this an admin token?" for both the `Control` interceptor and worker joins |
 | `link.rs` | `NodeLink` service. Waits up to 10 s for a `Hello` and admits it: `enrol` (a join token, admin or `cmdj_`, creates a node) or `reconnect` (a node credential). It then registers the connection and handles messages until the stream ends or goes idle for 30 s. `forget_connection` marks the node offline and its unfinished tasks `lost` |
-| `control.rs` | `Control` service. Resolves nodes by name, id or prefix, creates join tokens, and lists/removes nodes. `run_command` and `prompt` share `dispatch`: it stores the task, registers it in the hub, sends `RunTask` or `AgentPrompt`, and `relay`s events back to the CLI. `prompt` first checks that the node has a harness. `cancel_task` sends `CancelTask` to the node that owns the task. `get_agent_options` sends `ListAgentOptions` and waits up to 15 s for the answer |
+| `control.rs` | `Control` service. Resolves nodes by name, id or prefix, creates join tokens, and lists/removes nodes. `run_command` and `prompt` share `dispatch`: it stores the task, registers it in the hub, sends `RunTask` or `AgentPrompt`, and `relay`s events back to the CLI. `prompt` first checks that the node has a harness. `cancel_task` sends `CancelTask` to the node that owns the task. `get_agent_options` and `switch_mcp_server` send `ListAgentOptions` (the latter with an `McpSwitch`) and wait up to 15 s for the answer |
 | `queries.rs` | `Queries`: requests to workers awaiting an answer, keyed by request id. `open` returns the id and a receiver, `answer` delivers a worker's `AgentOptions`, `close` forgets a request that timed out |
 | `registry.rs` | In-memory map from node id to its live connection: a sender, a unique `ConnId`, and the harnesses the worker announced. A new connection replaces the old one, and a stale disconnect can't evict a newer connection. `disconnect_all` ends every worker stream at shutdown, which a graceful shutdown would otherwise wait on forever |
 | `tasks.rs` | `TaskHub`: running tasks, each with a `broadcast` channel that fans out output to CLI streams. Each task records its `Owner` (node and connection), and events are accepted only from that connection. `fail_connection` ends all tasks of a dropped connection |
-| `store.rs` | SQLite via `sqlx` (WAL mode). Queries for admin/join tokens, nodes and tasks. Rows map to `NodeRecord`/`TaskRecord` via `sqlx::FromRow` (argv is stored as JSON). Task statuses are typed (`TaskStatus::of(&finished)`), and `lose_task` records a task whose node disconnected. Migrations run on open |
+| `store.rs` | SQLite via `sqlx` (WAL mode). Queries for admin/join tokens, nodes and tasks. Rows map to `NodeRecord`/`TaskRecord` via `sqlx::FromRow` (argv is stored as JSON). Task statuses are typed (`TaskStatus::of(&finished)`), and `lose_task` records a task whose node disconnected. Migrations run on open. The database file and its `-wal`/`-shm` are made owner-only |
 | `migrations/0001_init.sql` | Tables `admin_tokens`, `join_tokens`, `nodes`, `tasks` |
+| `migrations/0002_admin_token.sql` | `admin_tokens.token`: the admin token in full, so the database alone keeps the link |
 
 ---
 
@@ -98,9 +99,9 @@ It sets up the harness, if any, then runs until a fatal error occurs.
 | `state.rs` | `node.json` in the state dir: `{node_id, secret, server}`, written `0600` |
 | `harness.rs` | `HarnessKind` (just `Opencode` today), parsed from `--harness` and announced as the capability `harness:<name>` |
 | `opencode/mod.rs` | `Opencode::start()` finds `opencode` (on `PATH` or in `~/.opencode/bin`) or runs the official installer with `--no-modify-path`. It then starts `opencode serve` on loopback with a random `OPENCODE_SERVER_PASSWORD`, reading the URL from its output. `api()` restarts the server if it has died. Dropping it stops the server's whole process group |
-| `opencode/api.rs` | A small `reqwest` client for the endpoints used: health, create/get session, `prompt_async` (with model, agent and variant), abort, permission reply, agents, providers, config, and the `/event` server-sent event stream |
-| `opencode/options.rs` | Answers `ListAgentOptions`: the agents a prompt can use (no subagents or hidden ones), each provider's models (deprecated ones left out) with their efforts ordered from least to most, and the defaults |
-| `opencode/prompt.rs` | Runs one `AgentPrompt`: picks the directory, creates or continues the session, subscribes to events, then prompts. `Transcript` keeps only this session's assistant output: text deltas go to stdout (with catch-up for text that came without deltas), finished tool calls to stderr. It grants permission requests, records `session.error`, and finishes when the session goes idle. Cancelling aborts the session |
+| `opencode/api.rs` | A small `reqwest` client for the endpoints used: health, create/get session, `prompt_async` (with model, agent and variant), `command`, abort, permission reply, agents, providers, config, commands, MCP status and connect/disconnect, and the `/event` server-sent event stream |
+| `opencode/options.rs` | Answers `ListAgentOptions`: the agents a prompt can use (no subagents or hidden ones), each provider's models (deprecated ones left out) with their context windows and efforts ordered from least to most, and the defaults, plus the commands and skills and the MCP servers (switching one first when asked) |
+| `opencode/prompt.rs` | Runs one `AgentPrompt`: picks the directory, creates or continues the session, subscribes to events, then prompts, or runs the `command` (checked against `/command`) beside the event stream. `Transcript` keeps only this session's assistant output: text deltas go to stdout (with catch-up for text that came without deltas), thinking to the reasoning stream, finished tool calls to stderr. It adds up each reply's tokens and cost for `TaskFinished`. It grants permission requests, records `session.error`, and finishes when the session goes idle. Cancelling aborts the session |
 
 When a session ends, all of its running tasks are killed. Dropping the cancel
 senders triggers the kill, and the orchestrator marks those tasks `lost`.
@@ -112,17 +113,18 @@ senders triggers the kill, and the orchestrator marks those tasks `lost`.
 | File | Role |
 |---|---|
 | `src/main.rs` | Sets up logging and dispatches each command to its module. Maps errors to exit code 1 |
-| `src/cli.rs` | The `clap` command tree (`server`, `worker`, `login`, `token create`, `node ls/rm`, `run`, `prompt`, `tui`, `task ls/cancel`) and its value parsers |
-| `src/server.rs` | Opens the orchestrator, works out the advertised host, prints and saves the link, and optionally spawns the in-process local worker (with its harness). It stops that worker before exiting, so the harness server doesn't outlive it |
+| `src/cli.rs` | The `clap` command tree (`server`, `worker`, `login`, `token create`, `node ls/rm/commands/mcp`, `run`, `prompt`, `tui`, `task ls/cancel`) and its value parsers |
+| `src/server.rs` | Binds the port, then (with `--reset`, after two confirmations) deletes the database, admin token, link and local worker credentials. Opens the orchestrator, works out the advertised host, prints and saves the link, and optionally spawns the in-process local worker (with its harness). It stops that worker before exiting, so the harness server doesn't outlive it |
 | `src/worker.rs` | Picks the orchestrator and token from a link, flags, or the remembered server, then runs the worker |
-| `src/admin.rs` | `login`, `token create`, `node ls/rm` and `task ls/cancel`, with their table output |
-| `src/run.rs` | `run` and `prompt`: stream stdout/stderr, map Ctrl-C to cancel then detach, exit with the task's exit code, and print the session to continue after a prompt |
+| `src/admin.rs` | `login`, `token create`, `node ls/rm/commands/mcp` and `task ls/cancel`, with their table output |
+| `src/run.rs` | `run` and `prompt`: stream stdout/stderr (leaving out the agent's thinking), map Ctrl-C to cancel then detach, exit with the task's exit code, and print the session to continue after a prompt |
 | `src/tui/mod.rs` | `tui`: picks the node, runs the terminal and the event loop (keys, task events, a spinner tick), sends prompts and cancels, refreshes the node's details, and fetches its agent options |
-| `src/tui/app.rs` | The chat state (node, settings, agent options, thread, input, activity, open picker) and how keys, slash commands and task events change it: Tab cycles agents, Ctrl-T efforts, `/model`, `/effort` and `/agent` open pickers; unit-tested without a terminal |
-| `src/tui/ui.rs` | Draws it with ratatui: agent details, the thread (following the bottom unless scrolled), the prompt line titled with the agent, model and effort, and the floating picker |
-| `src/tui/picker.rs` | `Picker`: the floating list for an agent, model or effort, narrowed by typing (every word must match), moved with the arrows and chosen with Enter |
+| `src/tui/app.rs` | The chat state (node, settings, agent options, thread with streamed replies and thinking, a summary per turn, session cost and context use, input, activity, open picker) and how keys, slash commands and task events change it: Tab cycles agents, Ctrl-T efforts, `/model`, `/effort`, `/agent`, `/skills` and `/mcp` open pickers, `/<command> args` runs one of the agent's commands, Esc cancels (once the task starts, if pressed before); unit-tested without a terminal |
+| `src/tui/ui.rs` | Draws it with ratatui, almost without borders: a header line with the node's details, the thread with a gutter per kind of entry (following the bottom unless scrolled), a status line while the agent works, the prompt on a solid slab, a footer with the agent, model, effort, context use and cost, and the floating picker |
+| `src/tui/text.rs` | Styles the agent's markdown (headings, lists, quotes, fenced and inline code, bold) and wraps lines at words behind their gutter |
+| `src/tui/picker.rs` | `Picker`: the floating list for an agent, model, effort, command or MCP server, narrowed by typing (every word must match), moved with the arrows and chosen with Enter |
 | `src/config.rs` | Client settings: flags and env first, then `~/.config/commandant/config.toml`. `Client::connect()` opens the Control connection |
-| `tests/e2e.rs` | Starts a real orchestrator and worker in-process on a random port and checks: admin auth, join, output and exit codes, process-group cancel, a prompt refused without a harness, task history, reconnect with stored credentials, a spent token being rejected, and a join through the admin link |
+| `tests/e2e.rs` | Starts a real orchestrator and worker in-process on a random port and checks: admin auth, join, output and exit codes, process-group cancel, a prompt refused without a harness, task history, reconnect with stored credentials, a spent token being rejected, a join through the short admin link, a restart that keeps the link and the node ids, and (Unix) `commandant server --reset` in a pseudo-terminal: refused without a terminal, cancelled by any other answer, and on `y` then `reset` a new admin token that the local worker rejoins with |
 
 ---
 
