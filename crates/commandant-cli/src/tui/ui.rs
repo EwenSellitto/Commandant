@@ -188,6 +188,8 @@ fn welcome(app: &App) -> Vec<Line<'static>> {
         ("Tab", "switch agent"),
         ("/model", "choose a model"),
         ("/effort  Ctrl-T", "thinking effort"),
+        ("/skills", "the agent's commands and skills"),
+        ("/mcp", "connect MCP servers"),
         ("/new", "new session"),
         ("Esc", "cancel a turn"),
         ("PgUp PgDn", "scroll"),

@@ -110,6 +110,68 @@ pub async fn remove_node(client: &Client, node: String) -> Result<()> {
     Ok(())
 }
 
+pub async fn list_commands(client: &Client, node: String) -> Result<()> {
+    let commands = client
+        .connect()
+        .await?
+        .get_agent_options(GetAgentOptionsRequest { node })
+        .await?
+        .into_inner()
+        .commands;
+    if commands.is_empty() {
+        eprintln!("The agent has no commands or skills.");
+        return Ok(());
+    }
+    println!("{:<24} {:<8} DESCRIPTION", "NAME", "SOURCE");
+    for command in commands {
+        println!(
+            "{:<24} {:<8} {}",
+            command.name, command.source, command.description
+        );
+    }
+    Ok(())
+}
+
+/// Lists the MCP servers, after connecting or disconnecting one if asked.
+pub async fn mcp(
+    client: &Client,
+    node: String,
+    connect: Option<String>,
+    disconnect: Option<String>,
+) -> Result<()> {
+    let mut control = client.connect().await?;
+    let switch = match (connect, disconnect) {
+        (Some(name), _) => Some((name, true)),
+        (None, Some(name)) => Some((name, false)),
+        (None, None) => None,
+    };
+    let options = match switch {
+        Some((name, connect)) => {
+            let request = SwitchMcpServerRequest {
+                node,
+                name,
+                connect,
+            };
+            control.switch_mcp_server(request).await?
+        }
+        None => {
+            control
+                .get_agent_options(GetAgentOptionsRequest { node })
+                .await?
+        }
+    }
+    .into_inner();
+    if options.mcp_servers.is_empty() {
+        eprintln!("The agent has no MCP servers configured.");
+        return Ok(());
+    }
+    println!("{:<24} {:<12} ERROR", "NAME", "STATUS");
+    for server in options.mcp_servers {
+        println!("{:<24} {:<12} {}", server.name, server.status, server.error);
+    }
+    Ok(())
+}
+
 pub async fn list_tasks(client: &Client, limit: u32) -> Result<()> {
     let tasks = client
         .connect()

@@ -133,9 +133,13 @@ pub struct RunArgs {
 pub struct PromptArgs {
     /// Node name, id or id prefix.
     pub node: String,
-    /// What to ask the agent.
-    #[arg(required = true, num_args = 1..)]
+    /// What to ask the agent; with --command, the command's arguments.
+    #[arg(required_unless_present = "command", num_args = 1..)]
     pub prompt: Vec<String>,
+    /// Run one of the agent's commands or skills (see `commandant node
+    /// commands`), e.g. `--command review`.
+    #[arg(long, short = 'c')]
+    pub command: Option<String>,
     /// Continue this session instead of starting a new one.
     #[arg(long, short)]
     pub session: Option<String>,
@@ -195,6 +199,18 @@ pub enum NodeCommand {
     Ls,
     /// Forget a node; it must rejoin with a new token.
     Rm { node: String },
+    /// List the commands and skills of a node's agent.
+    Commands { node: String },
+    /// List a node's MCP servers, or connect or disconnect one.
+    Mcp {
+        node: String,
+        /// Connect this server.
+        #[arg(long, conflicts_with = "disconnect")]
+        connect: Option<String>,
+        /// Disconnect this server.
+        #[arg(long)]
+        disconnect: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

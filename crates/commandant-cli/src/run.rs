@@ -33,6 +33,7 @@ pub async fn prompt(client: &Client, args: PromptArgs) -> Result<i32> {
     let request = PromptRequest {
         node: args.node,
         prompt: args.prompt.join(" "),
+        command: args.command.unwrap_or_default(),
         session_id: args.session.unwrap_or_default(),
         cwd: args.cwd.unwrap_or_default(),
         model: args.model.unwrap_or_default(),
@@ -75,6 +76,8 @@ async fn stream_task(
             Event::Output(output) if output.stream() == OutputStream::Stderr => {
                 write_now(std::io::stderr(), &output.data)?
             }
+            // The model's thinking isn't part of the reply.
+            Event::Output(output) if output.stream() == OutputStream::Reasoning => {}
             Event::Output(output) => write_now(std::io::stdout(), &output.data)?,
             Event::Finished(finished) => {
                 if !finished.error.is_empty() {

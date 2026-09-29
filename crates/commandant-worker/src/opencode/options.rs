@@ -1,20 +1,42 @@
-//! What the agent offers: its agents, models and their thinking efforts.
+//! What the agent offers: its agents, models and their thinking efforts,
+//! its commands and skills, and its MCP servers.
 
-use anyhow::Result;
-use commandant_proto::{AgentChoice, AgentOptions, ModelChoice};
+use std::collections::HashMap;
+
+use anyhow::{Context, Result};
+use commandant_proto::{
+    AgentChoice, AgentCommand, AgentOptions, McpServer, McpSwitch, ModelChoice,
+};
 
 use super::Opencode;
-use super::api::{Agent, Providers};
+use super::api::{Agent, Command, McpStatus, Providers};
 
 /// OpenCode's own default agent.
 const BUILD: &str = "build";
 
-/// Answers a ListAgentOptions; failures go in the answer's `error`.
-pub async fn list(opencode: &Opencode, request_id: String) -> AgentOptions {
-    let options = gather(opencode).await.unwrap_or_else(|e| AgentOptions {
-        error: format!("{e:#}"),
-        ..Default::default()
-    });
+/// Answers a ListAgentOptions, switching the MCP server first if asked;
+/// failures go in the answer's `error`.
+pub async fn list(opencode: &Opencode, request_id: String, mcp: Option<McpSwitch>) -> AgentOptions {
+    let options = async {
+        if let Some(McpSwitch { name, connect }) = mcp {
+            let api = opencode.api().await?;
+            let action = if connect {
+                "connecting"
+            } else {
+                "disconnecting"
+            };
+            api.switch_mcp_server(&name, connect)
+                .await
+                .with_context(|| format!("{action} MCP server {name}"))?;
+        }
+        gather(opencode).await
+    };
+    let options = options
+        .await
+        .unwrap_or_else(|e: anyhow::Error| AgentOptions {
+            error: format!("{e:#}"),
+            ..Default::default()
+        });
     AgentOptions {
         request_id,
         ..options
@@ -23,8 +45,13 @@ pub async fn list(opencode: &Opencode, request_id: String) -> AgentOptions {
 
 async fn gather(opencode: &Opencode) -> Result<AgentOptions> {
     let api = opencode.api().await?;
-    let (agents, providers, config) =
-        tokio::try_join!(api.agents(), api.providers(), api.config())?;
+    let (agents, providers, config, commands, mcp) = tokio::try_join!(
+        api.agents(),
+        api.providers(),
+        api.config(),
+        api.commands(None),
+        api.mcp_servers(),
+    )?;
     let agents = promptable(agents);
     let default_agent = match config.default_agent {
         Some(name) if !name.is_empty() => name,
@@ -36,8 +63,32 @@ async fn gather(opencode: &Opencode) -> Result<AgentOptions> {
         models: models(providers),
         default_agent,
         default_model: config.model.unwrap_or_default(),
+        commands: commands.into_iter().map(command).collect(),
+        mcp_servers: mcp_servers(mcp),
         ..Default::default()
     })
+}
+
+fn command(command: Command) -> AgentCommand {
+    AgentCommand {
+        name: command.name,
+        description: command.description.unwrap_or_default(),
+        source: command.source.unwrap_or_else(|| "command".into()),
+    }
+}
+
+/// The MCP servers, by name.
+fn mcp_servers(servers: HashMap<String, McpStatus>) -> Vec<McpServer> {
+    let mut servers: Vec<_> = servers
+        .into_iter()
+        .map(|(name, server)| McpServer {
+            name,
+            status: server.status,
+            error: server.error.unwrap_or_default(),
+        })
+        .collect();
+    servers.sort_by(|a, b| a.name.cmp(&b.name));
+    servers
 }
 
 /// The agents a prompt can use: not subagents, not OpenCode's hidden helpers.

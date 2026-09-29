@@ -11,7 +11,7 @@ use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
 
 use super::Opencode;
-use super::api::{Api, Event, Prompt};
+use super::api::{Api, CommandRun, Event, Prompt};
 
 /// Runs `task` until the agent goes idle or `cancel` fires (or its sender is
 /// dropped), then reports a TaskFinished.
@@ -41,18 +41,47 @@ async fn converse(
     let api = opencode.api().await?;
     let prompt = Prompt::new(&task.prompt, &task.model, &task.agent, &task.variant)?;
     let directory = directory(&api, &task).await?;
+    if !task.command.is_empty() {
+        let commands = api.commands(Some(&directory)).await?;
+        if !commands.iter().any(|c| c.name == task.command) {
+            bail!("the agent has no /{} command or skill", task.command);
+        }
+    }
     let session_id = match task.session_id.as_str() {
         "" => api.create_session(&directory).await?,
         id => id.to_string(),
     };
     // Subscribed before prompting, so no event is missed.
     let mut events = api.events(&directory).await?;
-    api.prompt(&session_id, &directory, &prompt).await?;
+    // A command only answers once the agent is done, so it runs aside while
+    // its events come in; it only matters if it fails.
+    let mut command = None;
+    if task.command.is_empty() {
+        api.prompt(&session_id, &directory, &prompt).await?;
+    } else {
+        let (api, session_id, directory) = (api.clone(), session_id.clone(), directory.clone());
+        let task = task.clone();
+        command = Some(tokio::spawn(async move {
+            let run = CommandRun::new(
+                &task.command,
+                &task.prompt,
+                &task.model,
+                &task.agent,
+                &task.variant,
+            );
+            api.command(&session_id, &directory, &run).await
+        }));
+    }
 
     let mut transcript = Transcript::new(&task.task_id, &session_id, out);
     loop {
         let event = tokio::select! {
             event = events.next() => event?,
+            ran = async { command.as_mut().expect("guarded").await }, if command.is_some() => {
+                command = None;
+                ran??;
+                continue;
+            }
             _ = &mut cancel => {
                 transcript.end_line().await;
                 api.abort(&session_id, &directory).await?;

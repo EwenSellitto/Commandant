@@ -73,7 +73,56 @@ impl<'a> Prompt<'a> {
     }
 }
 
+/// A command to run in a session: one of OpenCode's, a skill, or an MCP
+/// prompt, with the prompt as its arguments.
+#[derive(Serialize)]
+pub struct CommandRun<'a> {
+    command: &'a str,
+    arguments: &'a str,
+    /// `provider/model`, as it is here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    variant: Option<&'a str>,
+}
+
+impl<'a> CommandRun<'a> {
+    pub fn new(
+        command: &'a str,
+        arguments: &'a str,
+        model: &'a str,
+        agent: &'a str,
+        variant: &'a str,
+    ) -> Self {
+        let set = |s: &'a str| Some(s).filter(|s| !s.is_empty());
+        Self {
+            command,
+            arguments,
+            model: set(model),
+            agent: set(agent),
+            variant: set(variant),
+        }
+    }
+}
+
 // OpenCode sends `null` for unset fields, hence the options.
+
+#[derive(Deserialize)]
+pub struct Command {
+    pub name: String,
+    pub description: Option<String>,
+    /// `command`, `skill` or `mcp`.
+    pub source: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct McpStatus {
+    /// `connected`, `disabled`, `failed`, `needs_auth`...
+    pub status: String,
+    pub error: Option<String>,
+}
 
 #[derive(Deserialize)]
 pub struct Agent {
@@ -186,6 +235,46 @@ impl Api {
             .await?
             .json()
             .await?)
+    }
+
+    /// The commands a prompt can run in `directory`, skills included.
+    pub async fn commands(&self, directory: Option<&str>) -> Result<Vec<Command>> {
+        Ok(send(self.request(Method::GET, "/command", directory))
+            .await?
+            .json()
+            .await?)
+    }
+
+    /// Every MCP server that is set up, by name.
+    pub async fn mcp_servers(&self) -> Result<HashMap<String, McpStatus>> {
+        Ok(send(self.request(Method::GET, "/mcp", None))
+            .await?
+            .json()
+            .await?)
+    }
+
+    pub async fn switch_mcp_server(&self, name: &str, connect: bool) -> Result<()> {
+        let action = if connect { "connect" } else { "disconnect" };
+        let path = format!("/mcp/{name}/{action}");
+        send(self.request(Method::POST, &path, None)).await?;
+        Ok(())
+    }
+
+    /// Runs a command; it returns once the agent is done, while the reply
+    /// arrives as events.
+    pub async fn command(
+        &self,
+        session_id: &str,
+        directory: &str,
+        command: &CommandRun<'_>,
+    ) -> Result<()> {
+        let path = format!("/session/{session_id}/command");
+        send(
+            self.request(Method::POST, &path, Some(directory))
+                .json(command),
+        )
+        .await?;
+        Ok(())
     }
 
     /// Queues a prompt; the reply arrives as events.

@@ -12,6 +12,10 @@ pub enum Pick {
     Agent,
     Model,
     Effort,
+    /// One of the agent's commands or skills, to fill in.
+    Command,
+    /// An MCP server, to connect or disconnect.
+    Mcp,
 }
 
 impl Pick {
@@ -20,6 +24,8 @@ impl Pick {
             Self::Agent => "Agent",
             Self::Model => "Model",
             Self::Effort => "Thinking effort",
+            Self::Command => "Commands and skills",
+            Self::Mcp => "MCP servers (Enter connects or disconnects)",
         }
     }
 }

@@ -83,10 +83,7 @@ async fn event_loop(
                 Some(event) => app.on_input(event?),
                 None => Some(Action::Quit),
             },
-            Some(message) = rx.recv() => {
-                app.on_message(message);
-                None
-            }
+            Some(message) = rx.recv() => app.on_message(message),
             _ = tick.tick() => None,
         };
         match action {
@@ -97,6 +94,17 @@ async fn event_loop(
                 tokio::spawn(fetch_options(
                     control.clone(),
                     app.node.id.clone(),
+                    tx.clone(),
+                ));
+            }
+            Some(Action::SwitchMcp { name, connect }) => {
+                tokio::spawn(switch_mcp(
+                    control.clone(),
+                    SwitchMcpServerRequest {
+                        node: app.node.id.clone(),
+                        name,
+                        connect,
+                    },
                     tx.clone(),
                 ));
             }
@@ -159,6 +167,20 @@ async fn fetch_options(
 ) {
     let options = control
         .get_agent_options(GetAgentOptionsRequest { node })
+        .await
+        .map(tonic::Response::into_inner)
+        .map_err(|status| status.message().to_string());
+    let _ = tx.send(Message::Options(options));
+}
+
+/// Connects or disconnects an MCP server; the node answers with its options.
+async fn switch_mcp(
+    mut control: ControlClient,
+    request: SwitchMcpServerRequest,
+    tx: mpsc::UnboundedSender<Message>,
+) {
+    let options = control
+        .switch_mcp_server(request)
         .await
         .map(tonic::Response::into_inner)
         .map_err(|status| status.message().to_string());

@@ -73,6 +73,22 @@ message AgentOptions {
   string default_agent = 4;
   string default_model = 5;          // empty when the harness decides per prompt
   string error = 6;                  // set when the harness couldn't answer
+  repeated AgentCommand commands = 7; // what a prompt's `command` can name
+  repeated McpServer mcp_servers = 8;
+}
+
+// A command the agent runs on a prompt: its own, a skill, or an MCP prompt.
+message AgentCommand {
+  string name = 1;
+  string description = 2;
+  string source = 3;                 // command | skill | mcp
+}
+
+// An MCP server the agent's tools come from.
+message McpServer {
+  string name = 1;
+  string status = 2;                 // connected | disabled | failed | needs_auth | ...
+  string error = 3;
 }
 
 message AgentChoice {
@@ -125,11 +141,19 @@ message AgentPrompt {
   string model = 5;                  // "provider/model"; empty = harness default
   string agent = 6;                  // empty = harness default
   string variant = 7;                // thinking effort; empty = the model's default
+  string command = 8;                // run this command, the prompt being its arguments
 }
 
-// Asks the node's agent harness for its AgentOptions.
+// Asks the node's agent harness for its AgentOptions, after connecting or
+// disconnecting an MCP server if `mcp` is set.
 message ListAgentOptions {
   string request_id = 1;
+  McpSwitch mcp = 2;
+}
+
+message McpSwitch {
+  string name = 1;
+  bool connect = 2;
 }
 
 message OrchestratorMsg {
@@ -154,6 +178,8 @@ service Control {
   rpc RunCommand(RunCommandRequest) returns (stream TaskEvent);
   rpc Prompt(PromptRequest) returns (stream TaskEvent);
   rpc GetAgentOptions(GetAgentOptionsRequest) returns (AgentOptions);
+  // Connects or disconnects an MCP server; answers with the new options.
+  rpc SwitchMcpServer(SwitchMcpServerRequest) returns (AgentOptions);
   rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
   rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
 }
@@ -208,10 +234,17 @@ message PromptRequest {
   string model = 5;
   string agent = 6;
   string variant = 7;
+  string command = 8;                // an AgentOptions command; the prompt is its arguments
 }
 
 message GetAgentOptionsRequest {
   string node = 1;                   // id, id prefix or name
+}
+
+message SwitchMcpServerRequest {
+  string node = 1;                   // id, id prefix or name
+  string name = 2;
+  bool connect = 3;                  // false disconnects
 }
 
 message TaskStarted {

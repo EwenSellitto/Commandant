@@ -15,8 +15,8 @@ use anyhow::{Context, anyhow};
 use commandant_proto::hello::Auth;
 use commandant_proto::node_link_client::NodeLinkClient;
 use commandant_proto::{
-    AgentOptions, AgentPrompt, CancelTask, Heartbeat, Hello, ListAgentOptions, NodeCredential,
-    OrchestratorMsg, TaskFinished, Welcome, WorkerMsg, orchestrator_msg,
+    AgentOptions, AgentPrompt, CancelTask, Heartbeat, Hello, ListAgentOptions, McpSwitch,
+    NodeCredential, OrchestratorMsg, TaskFinished, Welcome, WorkerMsg, orchestrator_msg,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -213,8 +213,8 @@ async fn serve(
                             None => refuse_prompt(task, outbound).await,
                         }
                     }
-                    Some(orchestrator_msg::Msg::ListOptions(ListAgentOptions { request_id })) => {
-                        tokio::spawn(answer_options(harness.cloned(), request_id, outbound.clone()));
+                    Some(orchestrator_msg::Msg::ListOptions(ListAgentOptions { request_id, mcp })) => {
+                        tokio::spawn(answer_options(harness.cloned(), request_id, mcp, outbound.clone()));
                     }
                     Some(orchestrator_msg::Msg::Cancel(CancelTask { task_id })) => {
                         if let Some(cancel) = cancels.remove(&task_id) {
@@ -258,10 +258,11 @@ async fn refuse_prompt(task: AgentPrompt, outbound: &mpsc::Sender<WorkerMsg>) {
 async fn answer_options(
     harness: Option<Arc<Opencode>>,
     request_id: String,
+    mcp: Option<McpSwitch>,
     outbound: mpsc::Sender<WorkerMsg>,
 ) {
     let options = match harness {
-        Some(opencode) => opencode::list_options(&opencode, request_id).await,
+        Some(opencode) => opencode::list_options(&opencode, request_id, mcp).await,
         None => AgentOptions {
             request_id,
             error: NO_HARNESS.into(),

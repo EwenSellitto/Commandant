@@ -29,6 +29,11 @@ pub enum Action {
     Cancel(String),
     /// Ask the node what its agent offers.
     FetchOptions,
+    /// Connect (or disconnect) one of the agent's MCP servers.
+    SwitchMcp {
+        name: String,
+        connect: bool,
+    },
     Quit,
 }
 
@@ -93,6 +98,8 @@ pub struct App {
     /// The agents, models and efforts the node offers, once it has said.
     pub options: Option<Arc<AgentOptions>>,
     fetching_options: bool,
+    /// The MCP server being switched, to report on once the node answers.
+    switching_mcp: Option<String>,
     /// The model that last replied, which tells what "default" means.
     pub used_model: String,
     /// The floating window, when open.
@@ -119,6 +126,7 @@ impl App {
             options: None,
             // The event loop asks as soon as it starts.
             fetching_options: true,
+            switching_mcp: None,
             used_model: String::new(),
             picker: None,
             spent: 0.0,
@@ -206,7 +214,7 @@ impl App {
                 Outcome::Chosen(value) => {
                     let pick = picker.pick;
                     self.picker = None;
-                    self.choose(pick, value);
+                    return self.choose(pick, value);
                 }
             }
             return None;
@@ -254,16 +262,30 @@ impl App {
                 "agent" => Pick::Agent,
                 "model" => Pick::Model,
                 "effort" => Pick::Effort,
+                "commands" | "skills" => Pick::Command,
+                "mcp" => Pick::Mcp,
+                // One of the agent's own commands or skills, its arguments after it.
+                name if self.is_agent_command(name) => {
+                    let (name, arguments) = (name.to_string(), filter.trim().to_string());
+                    return self.send(text, name, arguments);
+                }
                 // Not a command: a prompt that starts with a slash.
-                _ => return self.send(text),
+                _ => return self.send(text.clone(), String::new(), text),
             };
             self.input.clear();
             return self.open_picker(pick, filter.trim());
         }
-        self.send(text)
+        self.send(text.clone(), String::new(), text)
     }
 
-    fn send(&mut self, text: String) -> Option<Action> {
+    fn is_agent_command(&self, name: &str) -> bool {
+        self.options
+            .as_ref()
+            .is_some_and(|o| o.commands.iter().any(|c| c.name == name))
+    }
+
+    /// Sends `prompt` (or runs `command` with it), showing `text` in the thread.
+    fn send(&mut self, text: String, command: String, prompt: String) -> Option<Action> {
         if matches!(self.activity, Activity::Working { .. }) {
             // Keep the text; it can be sent once the agent is done.
             return None;
@@ -280,7 +302,8 @@ impl App {
         };
         Some(Action::Send(PromptRequest {
             node: self.node.id.clone(),
-            prompt: text,
+            prompt,
+            command,
             session_id: self.settings.session_id.clone(),
             cwd: self.settings.cwd.clone(),
             model: self.settings.model.clone(),
@@ -334,6 +357,36 @@ impl App {
                     .collect();
                 (choices, self.settings.effort.clone())
             }
+            Pick::Command => {
+                if options.commands.is_empty() {
+                    self.info("the agent has no commands or skills");
+                    return None;
+                }
+                let choices = options
+                    .commands
+                    .iter()
+                    .map(|c| {
+                        let detail = match c.description.as_str() {
+                            "" => c.source.clone(),
+                            text => format!("{} · {text}", c.source),
+                        };
+                        Choice::new(&c.name, format!("/{}", c.name), detail)
+                    })
+                    .collect();
+                (choices, String::new())
+            }
+            Pick::Mcp => {
+                if options.mcp_servers.is_empty() {
+                    self.info("the agent has no MCP servers configured");
+                    return None;
+                }
+                let choices = options
+                    .mcp_servers
+                    .iter()
+                    .map(|m| Choice::new(&m.name, &m.name, mcp_status(m)))
+                    .collect();
+                (choices, String::new())
+            }
         };
         let mut picker = Picker::new(pick, choices, &current);
         for c in filter.chars() {
@@ -361,7 +414,7 @@ impl App {
         }
     }
 
-    fn choose(&mut self, pick: Pick, value: String) {
+    fn choose(&mut self, pick: Pick, value: String) -> Option<Action> {
         match pick {
             Pick::Agent => self.settings.agent = value,
             Pick::Effort => self.settings.effort = value,
@@ -377,7 +430,28 @@ impl App {
                     ));
                 }
             }
+            // Ready for its arguments.
+            Pick::Command => self.input.insert_str(&format!("/{value} ")),
+            Pick::Mcp => {
+                let connect = self.options.as_ref().is_some_and(|o| {
+                    o.mcp_servers
+                        .iter()
+                        .any(|m| m.name == value && m.status != "connected")
+                });
+                let doing = if connect {
+                    "connecting"
+                } else {
+                    "disconnecting"
+                };
+                self.info(&format!("{doing} {value}…"));
+                self.switching_mcp = Some(value.clone());
+                return Some(Action::SwitchMcp {
+                    name: value,
+                    connect,
+                });
+            }
         }
+        None
     }
 
     /// Switches to the next (or previous) agent.
@@ -407,9 +481,10 @@ impl App {
         None
     }
 
+    /// Cancels the task; one not started yet is cancelled as soon as it is.
     fn cancel(&mut self) -> Option<Action> {
         let Activity::Working {
-            task_id: Some(task_id),
+            task_id,
             cancelling,
             ..
         } = &mut self.activity
@@ -420,20 +495,33 @@ impl App {
             return None;
         }
         *cancelling = true;
-        Some(Action::Cancel(task_id.clone()))
+        task_id.clone().map(Action::Cancel)
     }
 
-    pub fn on_message(&mut self, message: Message) {
+    /// Takes in what a background task reports, which may call for an action.
+    pub fn on_message(&mut self, message: Message) -> Option<Action> {
         match message {
             Message::Node(node) => self.node = node,
             Message::Options(options) => {
                 self.fetching_options = false;
+                let switched = self.switching_mcp.take();
                 match options {
-                    Ok(options) => self.options = Some(Arc::new(options)),
-                    Err(e) => self.push(
-                        Role::Error,
-                        &format!("couldn't list the agent's options: {e}"),
-                    ),
+                    Ok(options) => {
+                        let server = switched
+                            .and_then(|name| options.mcp_servers.iter().find(|m| m.name == name));
+                        if let Some(server) = server {
+                            let status = mcp_status(server);
+                            self.info(&format!("{}: {status}", server.name));
+                        }
+                        self.options = Some(Arc::new(options));
+                    }
+                    Err(e) => {
+                        let what = match switched {
+                            Some(name) => format!("couldn't switch {name}"),
+                            None => "couldn't list the agent's options".to_string(),
+                        };
+                        self.push(Role::Error, &format!("{what}: {e}"));
+                    }
                 }
             }
             Message::Failed(error) => {
@@ -442,8 +530,17 @@ impl App {
                 self.activity = Activity::Idle;
             }
             Message::Task(TaskEvent::Started(started)) => {
-                if let Activity::Working { task_id, .. } = &mut self.activity {
-                    *task_id = Some(started.task_id);
+                if let Activity::Working {
+                    task_id,
+                    cancelling,
+                    ..
+                } = &mut self.activity
+                {
+                    *task_id = Some(started.task_id.clone());
+                    // Esc was pressed before the task had an id.
+                    if *cancelling {
+                        return Some(Action::Cancel(started.task_id));
+                    }
                 }
             }
             Message::Task(TaskEvent::Output(output)) => match output.stream() {
@@ -462,6 +559,7 @@ impl App {
             },
             Message::Task(TaskEvent::Finished(finished)) => self.finish(finished),
         }
+        None
     }
 
     fn finish(&mut self, finished: TaskFinished) {
@@ -606,6 +704,14 @@ pub fn elapsed(took: Duration) -> String {
 
 /// The item `step` places after `current`, wrapping round; the first item if
 /// `current` isn't there.
+/// `connected`, or `failed: why`.
+fn mcp_status(server: &McpServer) -> String {
+    match server.error.as_str() {
+        "" => server.status.clone(),
+        error => format!("{}: {error}", server.status),
+    }
+}
+
 fn cycle<'a>(items: &[&'a str], current: &str, step: isize) -> Option<&'a str> {
     let len = items.len() as isize;
     if len == 0 {
@@ -804,21 +910,43 @@ pub(crate) mod tests {
         assert_eq!(request.session_id, "ses_1");
     }
 
+    fn started(task_id: &str) -> Message {
+        Message::Task(TaskEvent::Started(TaskStarted {
+            task_id: task_id.into(),
+            ..Default::default()
+        }))
+    }
+
     #[test]
-    fn esc_cancels_once_the_task_is_known() {
+    fn esc_cancels_the_task_once() {
         let mut app = app();
         type_text(&mut app, "hi");
         app.on_key(KeyEvent::from(KeyCode::Enter));
-        assert!(app.on_key(KeyEvent::from(KeyCode::Esc)).is_none());
-        app.on_message(Message::Task(TaskEvent::Started(TaskStarted {
-            task_id: "t1".into(),
-            ..Default::default()
-        })));
+        assert!(app.on_message(started("t1")).is_none());
         assert!(matches!(
             app.on_key(KeyEvent::from(KeyCode::Esc)),
             Some(Action::Cancel(id)) if id == "t1"
         ));
         assert!(app.on_key(KeyEvent::from(KeyCode::Esc)).is_none());
+    }
+
+    #[test]
+    fn esc_before_the_task_starts_cancels_it_when_it_does() {
+        let mut app = app();
+        type_text(&mut app, "hi");
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        assert!(app.on_key(KeyEvent::from(KeyCode::Esc)).is_none());
+        assert!(matches!(
+            app.activity,
+            Activity::Working {
+                cancelling: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            app.on_message(started("t1")),
+            Some(Action::Cancel(id)) if id == "t1"
+        ));
     }
 
     fn with_options() -> App {
@@ -837,9 +965,71 @@ pub(crate) mod tests {
             agents: vec![agent("build"), agent("plan"), agent("review")],
             models: vec![model("a/fast", &[]), model("a/smart", &["low", "high"])],
             default_agent: "build".into(),
+            commands: vec![AgentCommand {
+                name: "review".into(),
+                description: "Review the changes".into(),
+                source: "skill".into(),
+            }],
+            mcp_servers: vec![McpServer {
+                name: "docs".into(),
+                status: "disabled".into(),
+                ..Default::default()
+            }],
             ..Default::default()
         })));
         app
+    }
+
+    #[test]
+    fn the_agents_commands_run_with_their_arguments() {
+        let mut app = with_options();
+        let Some(Action::Send(request)) = command(&mut app, "/review  the parser ") else {
+            panic!("a known command is sent");
+        };
+        assert_eq!(
+            (request.command.as_str(), request.prompt.as_str()),
+            ("review", "the parser")
+        );
+        assert_eq!(app.thread.last().unwrap().text, "/review  the parser");
+        app.on_message(Message::Failed("stop".into()));
+
+        // Any other slash is just text.
+        let Some(Action::Send(request)) = command(&mut app, "/etc/hosts?") else {
+            panic!("an unknown command is a prompt");
+        };
+        assert_eq!(
+            (request.command.as_str(), request.prompt.as_str()),
+            ("", "/etc/hosts?")
+        );
+        app.on_message(Message::Failed("stop".into()));
+
+        // Picking one readies it for its arguments.
+        command(&mut app, "/skills");
+        assert_eq!(app.picker.as_ref().unwrap().shown_len(), 1);
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.input.text, "/review ");
+    }
+
+    #[test]
+    fn mcp_servers_are_switched_from_the_floating_window() {
+        let mut app = with_options();
+        command(&mut app, "/mcp");
+        let Some(Action::SwitchMcp { name, connect }) = app.on_key(KeyEvent::from(KeyCode::Enter))
+        else {
+            panic!("choosing a server switches it");
+        };
+        assert_eq!((name.as_str(), connect), ("docs", true));
+
+        let mut options = (**app.options.as_ref().unwrap()).clone();
+        options.mcp_servers[0].status = "connected".into();
+        app.on_message(Message::Options(Ok(options)));
+        assert_eq!(app.thread.last().unwrap().text, "docs: connected");
+
+        command(&mut app, "/mcp");
+        assert!(matches!(
+            app.on_key(KeyEvent::from(KeyCode::Enter)),
+            Some(Action::SwitchMcp { connect: false, .. })
+        ));
     }
 
     fn command(app: &mut App, text: &str) -> Option<Action> {

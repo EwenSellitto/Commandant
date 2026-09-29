@@ -101,6 +101,37 @@ impl ControlService {
             .ok_or_else(|| offline(&node))?;
         Ok((node, conn))
     }
+
+    /// Asks a node's harness what it offers, after switching an MCP server
+    /// if `mcp` is set.
+    async fn ask_options(
+        &self,
+        needle: &str,
+        mcp: Option<McpSwitch>,
+    ) -> Result<Response<AgentOptions>, Status> {
+        let (node, conn) = self.connected_node(needle).await?;
+        harness(&node, &conn)?;
+        let queries = &self.shared.queries;
+        let (request_id, answer) = queries.open();
+        let question = ListAgentOptions {
+            request_id: request_id.clone(),
+            mcp,
+        };
+        if conn.tx.send(Ok(question.into())).await.is_err() {
+            queries.close(&request_id);
+            return Err(offline(&node));
+        }
+        let answer = tokio::time::timeout(QUERY_TIMEOUT, answer).await;
+        queries.close(&request_id);
+        match answer {
+            Ok(Ok(options)) if options.error.is_empty() => Ok(Response::new(options)),
+            Ok(Ok(options)) => Err(Status::unavailable(options.error)),
+            Ok(Err(_)) | Err(_) => Err(Status::deadline_exceeded(format!(
+                "node {} didn't say what its agent offers",
+                node.name
+            ))),
+        }
+    }
 }
 
 /// The node's agent harness; a prompt needs one.
@@ -204,12 +235,16 @@ impl Control for ControlService {
         request: Request<PromptRequest>,
     ) -> Result<Response<TaskStream>, Status> {
         let req = request.into_inner();
-        if req.prompt.trim().is_empty() {
+        if req.prompt.trim().is_empty() && req.command.is_empty() {
             return Err(Status::invalid_argument("a prompt is required"));
         }
         let (node, conn) = self.connected_node(&req.node).await?;
         let harness = harness(&node, &conn)?;
-        let record = [harness, req.prompt.clone()];
+        let prompt = match req.command.as_str() {
+            "" => req.prompt.clone(),
+            command => format!("/{command} {}", req.prompt).trim_end().to_string(),
+        };
+        let record = [harness, prompt];
         self.dispatch(node, conn, &record, |task_id| {
             AgentPrompt {
                 task_id,
@@ -219,6 +254,7 @@ impl Control for ControlService {
                 model: req.model,
                 agent: req.agent,
                 variant: req.variant,
+                command: req.command,
             }
             .into()
         })
@@ -229,27 +265,22 @@ impl Control for ControlService {
         &self,
         request: Request<GetAgentOptionsRequest>,
     ) -> Result<Response<AgentOptions>, Status> {
-        let (node, conn) = self.connected_node(&request.into_inner().node).await?;
-        harness(&node, &conn)?;
-        let queries = &self.shared.queries;
-        let (request_id, answer) = queries.open();
-        let question = ListAgentOptions {
-            request_id: request_id.clone(),
+        self.ask_options(&request.into_inner().node, None).await
+    }
+
+    async fn switch_mcp_server(
+        &self,
+        request: Request<SwitchMcpServerRequest>,
+    ) -> Result<Response<AgentOptions>, Status> {
+        let req = request.into_inner();
+        if req.name.is_empty() {
+            return Err(Status::invalid_argument("an MCP server name is required"));
+        }
+        let switch = McpSwitch {
+            name: req.name,
+            connect: req.connect,
         };
-        if conn.tx.send(Ok(question.into())).await.is_err() {
-            queries.close(&request_id);
-            return Err(offline(&node));
-        }
-        let answer = tokio::time::timeout(QUERY_TIMEOUT, answer).await;
-        queries.close(&request_id);
-        match answer {
-            Ok(Ok(options)) if options.error.is_empty() => Ok(Response::new(options)),
-            Ok(Ok(options)) => Err(Status::unavailable(options.error)),
-            Ok(Err(_)) | Err(_) => Err(Status::deadline_exceeded(format!(
-                "node {} didn't say what its agent offers",
-                node.name
-            ))),
-        }
+        self.ask_options(&req.node, Some(switch)).await
     }
 
     async fn list_tasks(
