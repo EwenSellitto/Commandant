@@ -1,9 +1,11 @@
 //! Connection links: `commandant://<opaque>`, one string that carries both
 //! where the orchestrator is and the secret to present to it.
 //!
-//! The opaque part is `<token>@<host>:<port>`, XOR-scrambled and base64url
-//! encoded, so the token and address aren't readable at a glance. This is
-//! obfuscation, not encryption: anyone with the link can decode it.
+//! The opaque part packs the address and the token as bytes (an IP as 4 or 16
+//! bytes, the port only when it isn't the default, the token's hex as raw
+//! bytes), XOR-scrambled and base64url encoded. That keeps the link short, and
+//! the token and address aren't readable at a glance. This is obfuscation, not
+//! encryption: anyone with the link can decode it.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 
@@ -15,9 +17,22 @@ use crate::DEFAULT_PORT;
 
 pub const SCHEME: &str = "commandant://";
 
-/// First byte of an encoded link, so the format can evolve.
-const FORMAT: u8 = 1;
+/// First byte of an encoded link, so the format can evolve. Links in the
+/// older, textual format still parse.
+const FORMAT: u8 = 2;
+const TEXT_FORMAT: u8 = 1;
 const KEY: &[u8] = b"commandant-link";
+
+/// How the address is packed; `CUSTOM_PORT` is added when a port follows.
+const ADDR_V4: u8 = 0;
+const ADDR_V6: u8 = 1;
+const ADDR_NAME: u8 = 2;
+const CUSTOM_PORT: u8 = 0x80;
+
+/// Token prefixes packed as one byte, their hex as raw bytes. Anything else
+/// is kept as text (`TOKEN_TEXT`).
+const TOKEN_TEXT: u8 = 0;
+const TOKEN_PREFIXES: [&str; 3] = ["cmda", "cmdj", "cmdn"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
@@ -48,11 +63,10 @@ impl Link {
 
 impl std::fmt::Display for Link {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{SCHEME}{}",
-            encode(&format!("{}@{}", self.token, self.host))
-        )
+        let mut payload = Vec::new();
+        pack_host(&self.host, &mut payload);
+        pack_token(&self.token, &mut payload);
+        write!(f, "{SCHEME}{}", encode(FORMAT, payload))
     }
 }
 
@@ -62,34 +76,144 @@ fn scramble(bytes: &mut [u8]) {
     }
 }
 
-fn checksum(bytes: &[u8]) -> u8 {
+fn checksum(format: u8, bytes: &[u8]) -> u8 {
     bytes
         .iter()
-        .fold(FORMAT, |acc, b| acc.rotate_left(3) ^ b.wrapping_add(0x5b))
+        .fold(format, |acc, b| acc.rotate_left(3) ^ b.wrapping_add(0x5b))
 }
 
-fn encode(plain: &str) -> String {
-    let mut payload = plain.as_bytes().to_vec();
-    let sum = checksum(&payload);
+fn encode(format: u8, mut payload: Vec<u8>) -> String {
+    let sum = checksum(format, &payload);
     scramble(&mut payload);
     let mut bytes = Vec::with_capacity(payload.len() + 2);
-    bytes.push(FORMAT);
+    bytes.push(format);
     bytes.extend(payload);
     bytes.push(sum);
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn decode(opaque: &str) -> Option<String> {
+/// The token and `host:port` in an encoded link.
+fn decode(opaque: &str) -> Option<(String, String)> {
     let bytes = URL_SAFE_NO_PAD.decode(opaque).ok()?;
-    let [FORMAT, payload @ .., sum] = bytes.as_slice() else {
+    let [format, payload @ .., sum] = bytes.as_slice() else {
         return None;
     };
     let mut payload = payload.to_vec();
     scramble(&mut payload);
-    if checksum(&payload) != *sum {
+    if checksum(*format, &payload) != *sum {
         return None;
     }
-    String::from_utf8(payload).ok()
+    match *format {
+        FORMAT => {
+            let mut rest = payload.as_slice();
+            let host = unpack_host(&mut rest)?;
+            Some((unpack_token(rest)?, host))
+        }
+        TEXT_FORMAT => {
+            let text = String::from_utf8(payload).ok()?;
+            let (token, host) = text.rsplit_once('@')?;
+            Some((token.to_string(), host.to_string()))
+        }
+        _ => None,
+    }
+}
+
+fn pack_host(host: &str, out: &mut Vec<u8>) {
+    let (name, port) = match host.parse::<SocketAddr>() {
+        Ok(addr) => (addr.ip().to_string(), addr.port()),
+        Err(_) => match host.rsplit_once(':') {
+            Some((name, port)) if port.parse::<u16>().is_ok() => {
+                (name.to_string(), port.parse().expect("checked"))
+            }
+            _ => (host.to_string(), DEFAULT_PORT),
+        },
+    };
+    let port_flag = if port == DEFAULT_PORT { 0 } else { CUSTOM_PORT };
+    match name.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => {
+            out.push(ADDR_V4 | port_flag);
+            out.extend(ip.octets());
+        }
+        Ok(IpAddr::V6(ip)) => {
+            out.push(ADDR_V6 | port_flag);
+            out.extend(ip.octets());
+        }
+        Err(_) => {
+            // Longer names are cut; no DNS name is anywhere near that long.
+            let name = &name.as_bytes()[..name.len().min(255)];
+            out.push(ADDR_NAME | port_flag);
+            out.push(name.len() as u8);
+            out.extend(name);
+        }
+    }
+    if port_flag != 0 {
+        out.extend(port.to_be_bytes());
+    }
+}
+
+fn unpack_host(rest: &mut &[u8]) -> Option<String> {
+    let (&tag, tail) = rest.split_first()?;
+    *rest = tail;
+    let name = match tag & !CUSTOM_PORT {
+        ADDR_V4 => IpAddr::from(<[u8; 4]>::try_from(take(rest, 4)?).ok()?).to_string(),
+        ADDR_V6 => format!(
+            "[{}]",
+            IpAddr::from(<[u8; 16]>::try_from(take(rest, 16)?).ok()?)
+        ),
+        ADDR_NAME => {
+            let len = *take(rest, 1)?.first()?;
+            String::from_utf8(take(rest, len.into())?.to_vec()).ok()?
+        }
+        _ => return None,
+    };
+    let port = if tag & CUSTOM_PORT != 0 {
+        u16::from_be_bytes(take(rest, 2)?.try_into().ok()?)
+    } else {
+        DEFAULT_PORT
+    };
+    Some(format!("{name}:{port}"))
+}
+
+/// The token goes last, so its length is whatever remains.
+fn pack_token(token: &str, out: &mut Vec<u8>) {
+    let packed = token.split_once('_').and_then(|(prefix, secret)| {
+        let kind = TOKEN_PREFIXES.iter().position(|p| *p == prefix)?;
+        // Only lowercase hex survives the round trip unchanged.
+        let lowercase = !secret.bytes().any(|b| b.is_ascii_uppercase());
+        let bytes = hex::decode(secret).ok().filter(|_| lowercase)?;
+        Some((kind as u8 + 1, bytes))
+    });
+    match packed {
+        Some((kind, bytes)) => {
+            out.push(kind);
+            out.extend(bytes);
+        }
+        None => {
+            out.push(TOKEN_TEXT);
+            out.extend(token.as_bytes());
+        }
+    }
+}
+
+fn unpack_token(rest: &[u8]) -> Option<String> {
+    let (&kind, bytes) = rest.split_first()?;
+    match kind {
+        TOKEN_TEXT => String::from_utf8(bytes.to_vec()).ok(),
+        _ => {
+            let prefix = TOKEN_PREFIXES.get(usize::from(kind) - 1)?;
+            Some(format!("{prefix}_{}", hex::encode(bytes)))
+        }
+    }
+    .filter(|token| !token.is_empty())
+}
+
+fn take<'a>(rest: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
+    if rest.len() < n {
+        return None;
+    }
+    let (taken, tail) = rest.split_at(n);
+    *rest = tail;
+    Some(taken)
 }
 
 impl std::str::FromStr for Link {
@@ -101,16 +225,16 @@ impl std::str::FromStr for Link {
             .strip_prefix(SCHEME)
             .with_context(|| format!("a link starts with {SCHEME}"))?
             .trim_end_matches('/');
-        let token_at_host = if is_hand_written(payload) {
-            payload.to_string()
+        let (token, host) = if is_hand_written(payload) {
+            let (token, host) = payload.rsplit_once('@').expect("has an @");
+            (token.to_string(), host.to_string())
         } else {
             decode(payload).context("invalid link (truncated or mistyped?)")?
         };
-        let (token, host) = token_at_host
-            .rsplit_once('@')
-            .filter(|(token, host)| !token.is_empty() && !host.is_empty())
-            .context("invalid link")?;
-        Ok(Self::new(token, host))
+        if token.is_empty() || host.is_empty() {
+            anyhow::bail!("invalid link");
+        }
+        Ok(Self::new(&token, &host))
     }
 }
 
@@ -215,6 +339,40 @@ mod tests {
 
         assert!("http://10.0.0.1:7400".parse::<Link>().is_err());
         assert!("commandant://10.0.0.1:7400".parse::<Link>().is_err());
+    }
+
+    #[test]
+    fn packs_addresses_and_tokens_short() {
+        let admin = format!("cmda_{}", "ab".repeat(32));
+        for (token, host) in [
+            (admin.as_str(), "192.168.1.15:7400"),
+            (admin.as_str(), "[fd00::1]:9000"),
+            ("cmdj_00ff", "box.lan:7400"),
+            ("cmdn_00ff", "box.lan:81"),
+            // Not a token Commandant makes: kept as text.
+            ("cmda_ABCD", "10.0.0.1:7400"),
+            ("secret", "10.0.0.1:7400"),
+        ] {
+            let link = Link::new(token, host);
+            assert_eq!(
+                link.to_string().parse::<Link>().unwrap(),
+                link,
+                "{token}@{host}"
+            );
+        }
+        // 1 format + 5 address + 33 token + 1 checksum bytes.
+        let text = Link::new(&admin, "192.168.1.15:7400").to_string();
+        assert_eq!(text.len(), SCHEME.len() + 54, "{text}");
+    }
+
+    #[test]
+    fn parses_links_in_the_older_format() {
+        let payload = b"cmda_abc@10.0.0.1:7400".to_vec();
+        let text = format!("{SCHEME}{}", encode(TEXT_FORMAT, payload));
+        assert_eq!(
+            text.parse::<Link>().unwrap(),
+            Link::new("cmda_abc", "10.0.0.1:7400")
+        );
     }
 
     #[tokio::test]

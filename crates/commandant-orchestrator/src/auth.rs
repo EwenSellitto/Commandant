@@ -8,8 +8,12 @@ pub const ADMIN_PREFIX: &str = "cmda";
 pub const JOIN_PREFIX: &str = "cmdj";
 pub const NODE_PREFIX: &str = "cmdn";
 
+/// Random bytes in a new token: 128 bits can't be guessed, and fewer bytes
+/// keep links short. Tokens made longer before still work.
+const TOKEN_BYTES: usize = 16;
+
 pub fn generate_token(prefix: &str) -> String {
-    let mut bytes = [0u8; 32];
+    let mut bytes = [0u8; TOKEN_BYTES];
     getrandom::fill(&mut bytes).expect("OS random number generator unavailable");
     format!("{prefix}_{}", hex::encode(bytes))
 }
