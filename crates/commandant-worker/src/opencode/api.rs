@@ -103,6 +103,13 @@ pub struct Model {
     pub status: Option<String>,
     /// Keyed by effort name; the values are provider settings.
     pub variants: Option<HashMap<String, serde_json::Value>>,
+    pub limit: Option<Limit>,
+}
+
+#[derive(Deserialize)]
+pub struct Limit {
+    /// The context window, in tokens.
+    pub context: Option<u64>,
 }
 
 /// The parts of OpenCode's configuration that pick defaults.

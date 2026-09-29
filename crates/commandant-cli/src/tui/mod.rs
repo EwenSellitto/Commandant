@@ -5,6 +5,7 @@
 
 mod app;
 mod picker;
+mod text;
 mod ui;
 
 use std::io::stdout;

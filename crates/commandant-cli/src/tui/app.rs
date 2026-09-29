@@ -1,7 +1,7 @@
 //! The chat's state, and how keys and task events change it.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use commandant_proto::task_event::Event as TaskEvent;
 use commandant_proto::*;
@@ -44,17 +44,23 @@ pub enum Message {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     User,
+    /// The model's thinking, before or between its replies.
+    Thinking,
     Agent,
     /// A tool the agent used.
     Tool,
     Error,
     /// A remark from commandant itself.
     Info,
+    /// What a finished turn used: agent, model, time, tokens, cost.
+    Summary,
 }
 
 pub struct Entry {
     pub role: Role,
     pub text: String,
+    /// The agent that was chosen when it was written.
+    pub agent: String,
 }
 
 pub enum Activity {
@@ -64,6 +70,9 @@ pub enum Activity {
         task_id: Option<String>,
         since: Instant,
         cancelling: bool,
+        /// What the prompt was sent with, for the turn's summary.
+        agent: String,
+        effort: String,
     },
 }
 
@@ -78,6 +87,7 @@ pub struct App {
     /// Bytes of a UTF-8 character split across output chunks, per stream.
     partial_stdout: Vec<u8>,
     partial_stderr: Vec<u8>,
+    partial_reasoning: Vec<u8>,
     /// A note line still waiting for its newline.
     partial_note: String,
     /// The agents, models and efforts the node offers, once it has said.
@@ -87,6 +97,10 @@ pub struct App {
     pub used_model: String,
     /// The floating window, when open.
     pub picker: Option<Picker>,
+    /// What the session has cost so far, in US dollars.
+    pub spent: f64,
+    /// Tokens in the session's context after the last turn.
+    pub context: u64,
 }
 
 impl App {
@@ -100,12 +114,15 @@ impl App {
             scroll: 0,
             partial_stdout: Vec::new(),
             partial_stderr: Vec::new(),
+            partial_reasoning: Vec::new(),
             partial_note: String::new(),
             options: None,
             // The event loop asks as soon as it starts.
             fetching_options: true,
             used_model: String::new(),
             picker: None,
+            spent: 0.0,
+            context: 0,
         }
     }
 
@@ -128,12 +145,30 @@ impl App {
             .map_or(default, String::as_str)
     }
 
+    /// What the node said about a model, if anything.
+    pub fn model_choice(&self, id: &str) -> Option<&ModelChoice> {
+        self.options.as_ref()?.models.iter().find(|m| m.id == id)
+    }
+
+    /// A model's name, else its id.
+    pub fn model_name<'a>(&'a self, id: &'a str) -> &'a str {
+        self.model_choice(id).map_or(id, |m| &m.name)
+    }
+
     /// The thinking efforts of the current model; `None` if it's unknown.
     fn efforts(&self) -> Option<&[String]> {
-        let model = self.model();
-        let options = self.options.as_ref()?;
-        let model = options.models.iter().find(|m| m.id == model)?;
-        Some(&model.variants)
+        self.model_choice(self.model())
+            .map(|m| m.variants.as_slice())
+    }
+
+    /// What the agent is up to, judging by the latest output.
+    pub fn doing(&self) -> &'static str {
+        match self.thread.last().map(|e| e.role) {
+            Some(Role::Thinking) => "thinking",
+            Some(Role::Agent) => "writing",
+            Some(Role::Tool) => "using tools",
+            _ => "waiting",
+        }
     }
 
     pub fn harness(&self) -> Option<&str> {
@@ -211,6 +246,8 @@ impl App {
                     self.input.clear();
                     self.thread.clear();
                     self.settings.session_id.clear();
+                    self.spent = 0.0;
+                    self.context = 0;
                     self.info("started a new session");
                     return None;
                 }
@@ -238,6 +275,8 @@ impl App {
             task_id: None,
             since: Instant::now(),
             cancelling: false,
+            agent: self.agent().to_string(),
+            effort: self.settings.effort.clone(),
         };
         Some(Action::Send(PromptRequest {
             node: self.node.id.clone(),
@@ -407,15 +446,20 @@ impl App {
                     *task_id = Some(started.task_id);
                 }
             }
-            Message::Task(TaskEvent::Output(output)) => {
-                if output.stream() == OutputStream::Stderr {
+            Message::Task(TaskEvent::Output(output)) => match output.stream() {
+                OutputStream::Stderr => {
                     let text = decode(&mut self.partial_stderr, &output.data);
                     self.note(&text);
-                } else {
+                }
+                OutputStream::Reasoning => {
+                    let text = decode(&mut self.partial_reasoning, &output.data);
+                    self.append(Role::Thinking, &text);
+                }
+                _ => {
                     let text = decode(&mut self.partial_stdout, &output.data);
                     self.append(Role::Agent, &text);
                 }
-            }
+            },
             Message::Task(TaskEvent::Finished(finished)) => self.finish(finished),
         }
     }
@@ -423,17 +467,35 @@ impl App {
     fn finish(&mut self, finished: TaskFinished) {
         self.flush_output();
         if !finished.session_id.is_empty() {
-            self.settings.session_id = finished.session_id;
+            self.settings.session_id = finished.session_id.clone();
         }
         if !finished.model.is_empty() {
-            self.used_model = finished.model;
+            self.used_model = finished.model.clone();
         }
+        if let Some(usage) = &finished.usage {
+            self.spent += usage.cost;
+            if usage.context > 0 {
+                self.context = usage.context;
+            }
+        }
+        let summary = match &self.activity {
+            Activity::Working {
+                since,
+                agent,
+                effort,
+                ..
+            } => Some(self.summary(&finished, agent, effort, since.elapsed())),
+            Activity::Idle => None,
+        };
         if finished.cancelled {
             self.info("cancelled");
         } else if !finished.error.is_empty() {
             self.push(Role::Error, &finished.error);
         } else if finished.exit_code != Some(0) {
             self.push(Role::Error, "the agent failed");
+        }
+        if let Some(summary) = summary {
+            self.push(Role::Summary, &summary);
         }
         self.activity = Activity::Idle;
     }
@@ -452,9 +514,40 @@ impl App {
         }
     }
 
+    /// `build · Claude Sonnet 5 · high · 12.3s · 12.6k in · 184 out · $0.0123`
+    fn summary(
+        &self,
+        finished: &TaskFinished,
+        agent: &str,
+        effort: &str,
+        took: Duration,
+    ) -> String {
+        // A cancelled turn doesn't say which model it had.
+        let model = match finished.model.as_str() {
+            "" => self.model(),
+            model => model,
+        };
+        let mut parts = vec![agent.to_string(), self.model_name(model).to_string()];
+        if !effort.is_empty() {
+            parts.push(effort.to_string());
+        }
+        parts.push(elapsed(took));
+        if let Some(usage) = finished.usage.as_ref().filter(|u| u.input + u.output > 0) {
+            let input = usage.input + usage.cache_read + usage.cache_write;
+            parts.push(format!("{} in", count(input)));
+            parts.push(format!("{} out", count(usage.output + usage.reasoning)));
+            if usage.cost > 0.0 {
+                parts.push(dollars(usage.cost));
+            }
+        }
+        parts.retain(|p| !p.is_empty());
+        parts.join(" · ")
+    }
+
     fn flush_output(&mut self) {
         self.partial_stdout.clear();
         self.partial_stderr.clear();
+        self.partial_reasoning.clear();
         let rest = std::mem::take(&mut self.partial_note);
         self.note(&format!("{rest}\n"));
     }
@@ -467,6 +560,7 @@ impl App {
         self.thread.push(Entry {
             role,
             text: text.to_string(),
+            agent: self.agent().to_string(),
         });
     }
 
@@ -477,6 +571,36 @@ impl App {
             Some(last) if last.role == role => last.text.push_str(text),
             _ => self.push(role, text),
         }
+    }
+}
+
+/// `184`, `12.6k`, `1.2M`.
+pub fn count(n: u64) -> String {
+    let (value, unit) = match n {
+        0..1_000 => return n.to_string(),
+        1_000..1_000_000 => (n as f64 / 1e3, "k"),
+        _ => (n as f64 / 1e6, "M"),
+    };
+    let value = format!("{value:.1}");
+    format!("{}{unit}", value.trim_end_matches(".0"))
+}
+
+/// `$0.0042`, `$1.23`: more digits for small amounts.
+pub fn dollars(cost: f64) -> String {
+    if cost < 0.01 {
+        format!("${cost:.4}")
+    } else {
+        format!("${cost:.2}")
+    }
+}
+
+/// `4.2s`, `2m 03s`.
+pub fn elapsed(took: Duration) -> String {
+    let secs = took.as_secs();
+    if secs < 60 {
+        format!("{:.1}s", took.as_secs_f64())
+    } else {
+        format!("{}m {:02}s", secs / 60, secs % 60)
     }
 }
 
@@ -573,10 +697,10 @@ impl Input {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn app() -> App {
+    pub(crate) fn app() -> App {
         let node = NodeInfo {
             id: "n1".into(),
             name: "w1".into(),
@@ -593,7 +717,7 @@ mod tests {
         App::new(node, settings)
     }
 
-    fn output(stream: OutputStream, data: &[u8]) -> Message {
+    pub(crate) fn output(stream: OutputStream, data: &[u8]) -> Message {
         Message::Task(TaskEvent::Output(TaskOutput {
             stream: stream as i32,
             data: data.to_vec(),
@@ -630,6 +754,7 @@ mod tests {
             ..Default::default()
         })));
         // "é" split across two chunks.
+        app.on_message(output(OutputStream::Reasoning, b"let me think"));
         app.on_message(output(OutputStream::Stdout, b"Hello caf\xc3"));
         app.on_message(output(OutputStream::Stderr, b"[opencode] write a.txt\n"));
         app.on_message(output(OutputStream::Stdout, b"\xa9 done"));
@@ -637,9 +762,22 @@ mod tests {
             task_id: "t1".into(),
             exit_code: Some(0),
             session_id: "ses_1".into(),
+            model: "a/smart".into(),
+            usage: Some(AgentUsage {
+                input: 1200,
+                output: 34,
+                cost: 0.5,
+                context: 1234,
+                ..Default::default()
+            }),
             ..Default::default()
         })));
 
+        let summary = app.thread.last().unwrap().text.clone();
+        assert!(
+            summary.starts_with("a/smart · ") && summary.ends_with(" · 1.2k in · 34 out · $0.50"),
+            "{summary}"
+        );
         let thread: Vec<_> = app
             .thread
             .iter()
@@ -649,11 +787,14 @@ mod tests {
             thread,
             [
                 (Role::User, "hi"),
+                (Role::Thinking, "let me think"),
                 (Role::Agent, "Hello caf"),
                 (Role::Tool, "write a.txt"),
                 (Role::Agent, "é done"),
+                (Role::Summary, summary.as_str()),
             ]
         );
+        assert_eq!((app.spent, app.context), (0.5, 1234));
         assert!(matches!(app.activity, Activity::Idle));
 
         // The next prompt continues the session.

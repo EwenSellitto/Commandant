@@ -328,6 +328,7 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-subscriber",
+ "unicode-width",
 ]
 
 [[package]]

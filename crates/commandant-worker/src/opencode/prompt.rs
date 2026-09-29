@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use commandant_proto::{AgentPrompt, OutputStream, TaskFinished, TaskOutput, WorkerMsg};
+use commandant_proto::{
+    AgentPrompt, AgentUsage, OutputStream, TaskFinished, TaskOutput, WorkerMsg,
+};
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
 
@@ -101,6 +103,34 @@ struct MessageInfo {
     provider_id: String,
     #[serde(rename = "modelID", default)]
     model_id: String,
+    tokens: Option<Tokens>,
+    cost: Option<f64>,
+}
+
+#[derive(Clone, Default, Deserialize)]
+struct Tokens {
+    #[serde(default)]
+    input: u64,
+    #[serde(default)]
+    output: u64,
+    #[serde(default)]
+    reasoning: u64,
+    #[serde(default)]
+    cache: CacheTokens,
+}
+
+#[derive(Clone, Default, Deserialize)]
+struct CacheTokens {
+    #[serde(default)]
+    read: u64,
+    #[serde(default)]
+    write: u64,
+}
+
+impl Tokens {
+    fn total(&self) -> u64 {
+        self.input + self.output + self.reasoning + self.cache.read + self.cache.write
+    }
 }
 
 #[derive(Deserialize)]
@@ -184,19 +214,23 @@ struct PermissionAsked {
     patterns: Vec<String>,
 }
 
-/// Follows one session's events: the agent's text goes to stdout, its tool
-/// activity to stderr.
+/// Follows one session's events: the agent's text goes to stdout, its
+/// thinking to the reasoning stream, its tool activity to stderr.
 struct Transcript<'a> {
     task_id: &'a str,
     session_id: &'a str,
     out: &'a mpsc::Sender<WorkerMsg>,
     /// The agent's messages. The prompt itself comes back as a user message.
     replies: HashSet<String>,
+    /// Tokens and cost of each of the agent's messages, in order.
+    usage: Vec<(String, Tokens, f64)>,
+    /// Parts holding the model's thinking rather than its reply.
+    reasoning: HashSet<String>,
     /// How many bytes of each text part were sent.
     sent: HashMap<String, usize>,
-    /// The text part being written, and whether its last line is unfinished.
+    /// The part being written, and the stream whose last line is unfinished.
     current_part: Option<String>,
-    mid_line: bool,
+    mid_line: Option<OutputStream>,
     /// Tool calls already reported.
     reported_tools: HashSet<String>,
     /// Set once the agent starts on the prompt, so going idle means it's done.
@@ -214,9 +248,11 @@ impl<'a> Transcript<'a> {
             session_id,
             out,
             replies: HashSet::new(),
+            usage: Vec::new(),
+            reasoning: HashSet::new(),
             sent: HashMap::new(),
             current_part: None,
-            mid_line: false,
+            mid_line: None,
             reported_tools: HashSet::new(),
             busy: false,
             idle: false,
@@ -234,6 +270,9 @@ impl<'a> Transcript<'a> {
                 if info.session_id == self.session_id && info.role == "assistant" {
                     if !info.provider_id.is_empty() {
                         self.model = format!("{}/{}", info.provider_id, info.model_id);
+                    }
+                    if let Some(tokens) = info.tokens {
+                        self.count(&info.id, tokens, info.cost.unwrap_or_default());
                     }
                     self.replies.insert(info.id);
                 }
@@ -292,7 +331,10 @@ impl<'a> Transcript<'a> {
 
     async fn follow_part(&mut self, part: Part) {
         match part.kind.as_str() {
-            "text" => {
+            "text" | "reasoning" => {
+                if part.kind == "reasoning" {
+                    self.reasoning.insert(part.id.clone());
+                }
                 // Catches up on text that came without deltas.
                 let sent = self.sent.get(&part.id).copied().unwrap_or_default();
                 if let Some(unsent) = part.text.get(sent..).filter(|t| !t.is_empty()) {
@@ -322,24 +364,59 @@ impl<'a> Transcript<'a> {
             cancelled: false,
             session_id: self.session_id.to_string(),
             model: self.model.clone(),
+            usage: Some(self.usage()),
         })
     }
 
-    /// Writes the agent's text, starting each new part on a new line.
+    /// Keeps a message's latest counts; OpenCode resends them as they grow.
+    fn count(&mut self, message_id: &str, tokens: Tokens, cost: f64) {
+        match self.usage.iter_mut().find(|(id, ..)| id == message_id) {
+            Some(usage) => *usage = (message_id.to_string(), tokens, cost),
+            None => self.usage.push((message_id.to_string(), tokens, cost)),
+        }
+    }
+
+    fn usage(&self) -> AgentUsage {
+        let mut usage = AgentUsage::default();
+        for (_, tokens, cost) in &self.usage {
+            usage.input += tokens.input;
+            usage.output += tokens.output;
+            usage.reasoning += tokens.reasoning;
+            usage.cache_read += tokens.cache.read;
+            usage.cache_write += tokens.cache.write;
+            usage.cost += cost;
+        }
+        // The last call saw the whole conversation so far.
+        usage.context = self
+            .usage
+            .iter()
+            .rev()
+            .map(|(_, tokens, _)| tokens.total())
+            .find(|&total| total > 0)
+            .unwrap_or_default();
+        usage
+    }
+
+    /// Writes the agent's text or thinking, starting each new part on a new
+    /// line.
     async fn say(&mut self, part_id: String, text: String) {
         *self.sent.entry(part_id.clone()).or_default() += text.len();
+        let stream = match self.reasoning.contains(&part_id) {
+            true => OutputStream::Reasoning,
+            false => OutputStream::Stdout,
+        };
         if self.current_part.as_ref() != Some(&part_id) {
             self.end_line().await;
             self.current_part = Some(part_id);
         }
-        self.mid_line = !text.ends_with('\n');
-        self.write(OutputStream::Stdout, text).await;
+        self.mid_line = (!text.ends_with('\n')).then_some(stream);
+        self.write(stream, text).await;
     }
 
     /// Finishes the agent's unfinished line, if any.
     async fn end_line(&mut self) {
-        if std::mem::take(&mut self.mid_line) {
-            self.write(OutputStream::Stdout, "\n".into()).await;
+        if let Some(stream) = self.mid_line.take() {
+            self.write(stream, "\n".into()).await;
         }
     }
 
@@ -408,6 +485,14 @@ mod tests {
         )
     }
 
+    fn usage(id: &str, input: u64, output: u64, cost: f64) -> Event {
+        event(
+            "message.updated",
+            json!({ "info": { "id": id, "sessionID": "s", "role": "assistant", "cost": cost,
+                "tokens": { "input": input, "output": output, "reasoning": 0, "cache": { "read": 0, "write": 0 } } } }),
+        )
+    }
+
     #[tokio::test]
     async fn streams_the_reply_and_ends_when_idle() {
         let (out, mut rx) = mpsc::channel(64);
@@ -423,6 +508,8 @@ mod tests {
             message("reply", "assistant"),
             status("s", "busy"),
             status("other", "idle"),
+            part("reply", "r1", json!({ "type": "reasoning", "text": "" })),
+            delta("r1", "hmm"),
             delta("p1", "po"),
             delta("p1", "ng"),
             part("reply", "p1", json!({ "type": "text", "text": "pong" })),
@@ -442,6 +529,9 @@ mod tests {
                 json!({ "type": "tool", "tool": "bash", "state": { "status": "completed", "title": "ls" } }),
             ),
             part("reply", "p3", json!({ "type": "text", "text": "bye" })),
+            usage("reply", 10, 3, 0.5),
+            usage("reply2", 0, 0, 0.0),
+            usage("reply2", 20, 4, 0.25),
         ];
         for event in events {
             assert_eq!(transcript.follow(event).await, None);
@@ -453,10 +543,13 @@ mod tests {
         assert_eq!(finished.exit_code, Some(0));
         assert_eq!(finished.session_id, "s");
         assert_eq!(finished.model, "p/m");
+        let usage = finished.usage.unwrap();
+        assert_eq!((usage.input, usage.output, usage.cost), (30, 7, 0.75));
+        assert_eq!(usage.context, 24);
 
         drop(transcript);
         drop(out);
-        let (mut stdout, mut stderr) = (String::new(), String::new());
+        let (mut stdout, mut stderr, mut thinking) = (String::new(), String::new(), String::new());
         while let Some(WorkerMsg {
             msg: Some(Msg::Output(output)),
         }) = rx.recv().await
@@ -465,9 +558,11 @@ mod tests {
             let text = String::from_utf8(output.data).unwrap();
             match stream {
                 OutputStream::Stderr => stderr += &text,
+                OutputStream::Reasoning => thinking += &text,
                 _ => stdout += &text,
             }
         }
+        assert_eq!(thinking, "hmm\n");
         assert_eq!(stdout, "pong\nbye\n");
         assert_eq!(stderr, "[opencode] bash ls\n");
     }

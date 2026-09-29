@@ -17,9 +17,9 @@ pub enum Pick {
 impl Pick {
     pub fn title(self) -> &'static str {
         match self {
-            Self::Agent => " Agent ",
-            Self::Model => " Model ",
-            Self::Effort => " Thinking effort ",
+            Self::Agent => "Agent",
+            Self::Model => "Model",
+            Self::Effort => "Thinking effort",
         }
     }
 }
@@ -89,6 +89,10 @@ impl Picker {
 
     pub fn shown_len(&self) -> usize {
         self.shown.len()
+    }
+
+    pub fn total(&self) -> usize {
+        self.choices.len()
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Outcome {

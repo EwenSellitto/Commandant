@@ -35,6 +35,7 @@ enum OutputStream {
   OUTPUT_STREAM_UNSPECIFIED = 0;
   OUTPUT_STREAM_STDOUT = 1;
   OUTPUT_STREAM_STDERR = 2;
+  OUTPUT_STREAM_REASONING = 3;       // agent tasks: the model's thinking
 }
 
 message TaskOutput {
@@ -50,6 +51,18 @@ message TaskFinished {
   bool cancelled = 4;
   string session_id = 5;             // agent tasks: the session to continue
   string model = 6;                  // agent tasks: the "provider/model" that replied
+  AgentUsage usage = 7;              // agent tasks: what the turn cost
+}
+
+// Tokens and cost of one agent turn, summed over its model calls.
+message AgentUsage {
+  uint64 input = 1;
+  uint64 output = 2;
+  uint64 reasoning = 3;
+  uint64 cache_read = 4;
+  uint64 cache_write = 5;
+  double cost = 6;                   // in US dollars, as the harness reckons it
+  uint64 context = 7;                // tokens in the context after the turn
 }
 
 // What a node's agent harness offers, in answer to ListAgentOptions.
@@ -72,6 +85,7 @@ message ModelChoice {
   string name = 2;
   string provider = 3;               // display name
   repeated string variants = 4;      // thinking efforts, e.g. "low", "high"
+  uint64 context = 5;                // context window in tokens; 0 = unknown
 }
 
 message WorkerMsg {

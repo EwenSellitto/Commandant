@@ -70,6 +70,7 @@ fn models(providers: Providers) -> Vec<ModelChoice> {
                 name: model.name,
                 provider: provider.name.clone(),
                 variants,
+                context: model.limit.and_then(|l| l.context).unwrap_or_default(),
             }
         }));
     }
