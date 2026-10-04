@@ -1187,7 +1187,7 @@ mod agents {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_node_starts_the_agent_it_is_asked_for_and_keeps_it() {
+    async fn a_node_starts_the_agent_it_is_asked_for() {
         let tmp = tempfile::tempdir().unwrap();
         let (addr, token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
         let fake = FakeOpencode::start().await;
@@ -1244,12 +1244,54 @@ mod agents {
             ["opencode"]
         );
 
-        // Restarted with no --harness, it hosts it again.
+        // Restarted with no --harness, it hosts none until asked again.
         first.abort();
         wait_for_node(&mut client, false).await;
         let _second = worker(None);
         let back = wait_for_node(&mut client, true).await;
-        assert_eq!(back.harnesses, ["opencode"]);
+        assert!(back.harnesses.is_empty());
+        assert_eq!(
+            start("opencode").await.unwrap().into_inner().harnesses,
+            ["opencode"]
+        );
         ok(&prompt(&mut client, ask("again")).await);
+    }
+
+    /// OpenCode lists its commands only once its MCP servers have connected;
+    /// the models and agents don't wait for that.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn options_dont_wait_for_slow_commands() {
+        let Cluster {
+            mut client,
+            fake,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        fake.delay_commands(Duration::from_secs(10));
+        let asked = std::time::Instant::now();
+        let options = client
+            .get_agent_options(GetAgentOptionsRequest { node: "w1".into() })
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            asked.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            asked.elapsed()
+        );
+        assert!(options.commands_loading);
+        assert!(options.commands.is_empty());
+        assert_eq!(options.models.len(), 1);
+        assert_eq!(options.default_agent, "build");
+
+        fake.delay_commands(Duration::ZERO);
+        let options = client
+            .get_agent_options(GetAgentOptionsRequest { node: "w1".into() })
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!options.commands_loading);
+        assert_eq!(options.commands.len(), 2);
     }
 }

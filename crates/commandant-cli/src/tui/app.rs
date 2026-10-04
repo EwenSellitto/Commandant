@@ -23,6 +23,8 @@ pub enum Action {
     Cancel(String),
     /// Ask a node what its agent offers.
     FetchOptions(String),
+    /// Ask again in a moment: its commands were still loading.
+    FetchOptionsLater(String),
     /// Ask a node which sessions its agent has saved.
     FetchSessions(String),
     /// Connect (or disconnect) one of a node's MCP servers.
@@ -499,8 +501,14 @@ impl App {
                 if let Ok(options) = &options {
                     self.options.insert(node.clone(), Arc::new(options.clone()));
                 }
+                let loading = options.as_ref().is_ok_and(|o| o.commands_loading);
                 for chat in self.chats.iter_mut().filter(|c| c.node.id == node) {
                     chat.on_message(Message::Options(options.clone()));
+                }
+                // The rest is in; the commands follow once they've loaded.
+                if loading {
+                    self.fetching.insert(node.clone());
+                    return vec![Action::FetchOptionsLater(node)];
                 }
                 Vec::new()
             }
@@ -1080,5 +1088,54 @@ pub(crate) mod tests {
         assert_eq!(app.screen, Screen::Nodes);
         assert_eq!(app.notice, "box-n1 now hosts opencode");
         assert_eq!(app.nodes[0].harnesses, ["opencode"]);
+    }
+
+    #[test]
+    fn commands_that_are_still_loading_are_asked_for_again() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Enter));
+        let loading = AgentOptions {
+            default_agent: "build".into(),
+            commands_loading: true,
+            ..Default::default()
+        };
+        let actions = app.on_update(Update::Options("n1".into(), Ok(loading)));
+        assert!(matches!(&actions[..], [Action::FetchOptionsLater(n)] if n == "n1"));
+        // The rest is usable already.
+        assert_eq!(app.chat().unwrap().agent(), "build");
+
+        // Meanwhile a command waits, rather than going out as text.
+        type_text(&mut app, "/review the parser");
+        assert!(app.on_key(key(KeyCode::Enter)).is_empty());
+        assert_eq!(app.chat().unwrap().input.text, "/review the parser");
+        let said = &app.chat().unwrap().thread.last().unwrap().text;
+        assert!(said.contains("still loading"), "{said}");
+        // Asking again in the meantime doesn't add a request.
+        assert!(
+            app.on_key(key(KeyCode::Tab))
+                .iter()
+                .all(|a| !matches!(a, Action::FetchOptions(_)))
+        );
+
+        let loaded = AgentOptions {
+            default_agent: "build".into(),
+            commands: vec![AgentCommand {
+                name: "review".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(
+            app.on_update(Update::Options("n1".into(), Ok(loaded)))
+                .is_empty()
+        );
+        let (_, request) = match app.on_key(key(KeyCode::Enter)).pop() {
+            Some(Action::Send(id, request)) => (id, request),
+            _ => panic!("sent once the commands are known"),
+        };
+        assert_eq!(
+            (request.command.as_str(), request.prompt.as_str()),
+            ("review", "the parser")
+        );
     }
 }

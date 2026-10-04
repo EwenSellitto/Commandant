@@ -115,17 +115,8 @@ pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
                 .await
                 .with_context(|| format!("setting up {kind}"))?,
         ),
-        // One started from a client before, which the worker keeps hosting.
-        None => match state::load_harness(&config.state_dir)? {
-            Some(kind) => match harness::start(kind, config.opencode_bin.clone()).await {
-                Ok(harness) => Some(harness),
-                Err(e) => {
-                    warn!("couldn't start {kind} again: {e:#}");
-                    None
-                }
-            },
-            None => None,
-        },
+        // Started when a client asks for one.
+        None => None,
     };
     let host = Arc::new(Host::new(harness));
     let mut backoff = MIN_BACKOFF;
@@ -309,11 +300,11 @@ async fn serve(
                         tokio::spawn(answer_sessions(host.current(), request_id, outbound.clone()));
                     }
                     Some(orchestrator_msg::Msg::StartHarness(StartHarness { request_id, harness })) => {
-                        let (host, state_dir) = (host.clone(), config.state_dir.clone());
+                        let host = host.clone();
                         let opencode_bin = config.opencode_bin.clone();
                         let outbound = outbound.clone();
                         tokio::spawn(async move {
-                            let started = start_harness(&host, &harness, opencode_bin, &state_dir).await;
+                            let started = start_harness(&host, &harness, opencode_bin).await;
                             let _ = outbound.send(HarnessStarted { request_id, ..started }.into()).await;
                         });
                     }
@@ -425,18 +416,12 @@ async fn answer_sessions(
     let _ = outbound.send(answer.into()).await;
 }
 
-/// Starts the harness a client asked for, and remembers it for restarts.
-async fn start_harness(
-    host: &Host,
-    name: &str,
-    opencode_bin: Option<PathBuf>,
-    state_dir: &std::path::Path,
-) -> HarnessStarted {
+/// Starts the harness a client asked for, until the worker stops.
+async fn start_harness(host: &Host, name: &str, opencode_bin: Option<PathBuf>) -> HarnessStarted {
     let started = async {
         let kind: HarnessKind = name.parse().map_err(|e: String| anyhow!(e))?;
         info!(harness = %kind, "starting a harness");
         host.start(kind, opencode_bin).await?;
-        state::save_harness(state_dir, kind)?;
         anyhow::Ok(kind)
     };
     match started.await {

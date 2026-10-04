@@ -158,8 +158,14 @@ pub async fn list_commands(client: &Client, node: String) -> Result<()> {
         .await?
         .get_agent_options(GetAgentOptionsRequest { node })
         .await?
-        .into_inner()
-        .commands;
+        .into_inner();
+    if commands.commands_loading {
+        eprintln!(
+            "The agent's commands are still loading (its MCP servers are connecting); try again in a moment."
+        );
+        return Ok(());
+    }
+    let commands = commands.commands;
     if commands.is_empty() {
         eprintln!("The agent has no commands or skills.");
         return Ok(());

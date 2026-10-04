@@ -32,6 +32,8 @@ use crate::config::Client;
 const TICK: Duration = Duration::from_millis(100);
 /// How often the nodes' details are refreshed.
 const NODE_REFRESH: Duration = Duration::from_secs(5);
+/// How long to wait before asking again for commands that were loading.
+const OPTIONS_RETRY: Duration = Duration::from_secs(3);
 
 pub async fn run(client: &Client, args: TuiArgs) -> Result<()> {
     let mut control = client.connect().await?;
@@ -125,12 +127,18 @@ async fn perform(
 ) {
     let control_ = control.clone();
     let tx_ = tx.clone();
+    let later = matches!(action, Action::FetchOptionsLater(_));
     match action {
         Action::Send(chat, request) => {
             tokio::spawn(stream_prompt(control_, chat, request, tx_));
         }
-        Action::FetchOptions(node) => {
+        Action::FetchOptions(node) | Action::FetchOptionsLater(node) => {
+            let wait = match later {
+                true => OPTIONS_RETRY,
+                false => Duration::ZERO,
+            };
             tokio::spawn(async move {
+                tokio::time::sleep(wait).await;
                 let options = ask(control_
                     .clone()
                     .get_agent_options(GetAgentOptionsRequest { node: node.clone() }))

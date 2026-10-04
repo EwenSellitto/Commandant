@@ -2,6 +2,7 @@
 //! its commands and skills, and its MCP servers.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use commandant_proto::{
@@ -13,6 +14,8 @@ use super::api::{Agent, Command, McpStatus, Providers};
 
 /// OpenCode's own default agent.
 const BUILD: &str = "build";
+/// How long the options wait for the commands before answering without them.
+const COMMANDS_WAIT: Duration = Duration::from_secs(2);
 
 /// What a prompt can choose from, switching an MCP server first if asked.
 pub async fn options(opencode: &Opencode, mcp: Option<McpSwitch>) -> Result<AgentOptions> {
@@ -32,13 +35,25 @@ pub async fn options(opencode: &Opencode, mcp: Option<McpSwitch>) -> Result<Agen
 
 async fn gather(opencode: &Opencode) -> Result<AgentOptions> {
     let api = opencode.api().await?;
-    let (agents, providers, config, commands, mcp) = tokio::try_join!(
-        api.agents(),
-        api.providers(),
-        api.config(),
-        api.commands(None),
-        api.mcp_servers(),
-    )?;
+    // The commands include MCP prompts, so OpenCode lists them once its MCP
+    // servers have connected, which can take a while after it starts. The
+    // rest doesn't wait for them.
+    let (rest, commands) = tokio::join!(
+        async {
+            tokio::try_join!(
+                api.agents(),
+                api.providers(),
+                api.config(),
+                api.mcp_servers()
+            )
+        },
+        tokio::time::timeout(COMMANDS_WAIT, api.commands(None)),
+    );
+    let (agents, providers, config, mcp) = rest?;
+    let (commands, commands_loading) = match commands {
+        Ok(commands) => (commands?, false),
+        Err(_) => (Vec::new(), true),
+    };
     let agents = promptable(agents);
     let default_agent = match config.default_agent {
         Some(name) if !name.is_empty() => name,
@@ -52,6 +67,7 @@ async fn gather(opencode: &Opencode) -> Result<AgentOptions> {
         default_model: config.model.unwrap_or_default(),
         commands: commands.into_iter().map(command).collect(),
         mcp_servers: mcp_servers(mcp),
+        commands_loading,
         ..Default::default()
     })
 }

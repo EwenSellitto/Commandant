@@ -75,6 +75,7 @@ message AgentOptions {
   string error = 6;                  // set when the harness couldn't answer
   repeated AgentCommand commands = 7; // what a prompt's `command` can name
   repeated McpServer mcp_servers = 8;
+  bool commands_loading = 9;         // commands not known yet (MCP servers connecting); ask again
 }
 
 // A command the agent runs on a prompt: its own, a skill, or an MCP prompt.

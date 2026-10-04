@@ -69,7 +69,12 @@ impl Opencode {
             server: Mutex::new(None),
             busy: Default::default(),
         };
-        opencode.api().await?;
+        let api = opencode.api().await?;
+        // Gets OpenCode connecting its MCP servers now, which listing the
+        // commands waits for, rather than when a client first asks.
+        tokio::spawn(async move {
+            let _ = api.commands(None).await;
+        });
         Ok(opencode)
     }
 

@@ -45,6 +45,8 @@ struct State {
     events: Option<broadcast::Sender<String>>,
     /// Like OpenCode before `/experimental/session`: `/session` lists them.
     legacy: bool,
+    /// How long listing the commands takes, as while MCP servers connect.
+    commands_delay: Mutex<std::time::Duration>,
 }
 
 pub struct FakeOpencode {
@@ -98,6 +100,12 @@ impl FakeOpencode {
             binary,
             _dir: dir,
         }
+    }
+
+    /// Makes listing the commands take `delay`, like OpenCode waiting for its
+    /// MCP servers.
+    pub fn delay_commands(&self, delay: std::time::Duration) {
+        *self.state.commands_delay.lock().unwrap() = delay;
     }
 
     /// Every request so far, and the prompts' and commands' bodies.
@@ -240,7 +248,11 @@ async fn route(
             }}]}),
         ),
         ("GET", ["config"]) => (200, json!({ "model": "fake/echo" })),
-        ("GET", ["command"]) => (200, commands()),
+        ("GET", ["command"]) => {
+            let delay = *state.commands_delay.lock().unwrap();
+            tokio::time::sleep(delay).await;
+            (200, commands())
+        }
         ("GET", ["mcp"]) => {
             let mcp = state.mcp.lock().unwrap();
             let servers: serde_json::Map<String, Value> = mcp

@@ -279,6 +279,11 @@ impl Chat {
                     let (name, arguments) = (name.to_string(), filter.trim().to_string());
                     return self.send(text, name, arguments);
                 }
+                // It may be one of those, once they've loaded.
+                _ if self.commands_loading() => {
+                    self.info("the agent's commands are still loading; send it again in a moment");
+                    return None;
+                }
                 // Not a command: a prompt that starts with a slash.
                 _ => return self.send(text.clone(), String::new(), text),
             };
@@ -286,6 +291,10 @@ impl Chat {
             return self.open_picker(pick, filter.trim());
         }
         self.send(text.clone(), String::new(), text)
+    }
+
+    fn commands_loading(&self) -> bool {
+        self.options.as_ref().is_some_and(|o| o.commands_loading)
     }
 
     fn is_agent_command(&self, name: &str) -> bool {
@@ -374,6 +383,10 @@ impl Chat {
                 (choices, self.settings.effort.clone())
             }
             Pick::Command => {
+                if options.commands_loading {
+                    self.info("the agent's commands are still loading (its MCP servers are connecting); try again in a moment");
+                    return None;
+                }
                 if options.commands.is_empty() {
                     self.info("the agent has no commands or skills");
                     return None;
