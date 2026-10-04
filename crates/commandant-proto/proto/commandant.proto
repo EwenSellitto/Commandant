@@ -117,8 +117,9 @@ message WorkerMsg {
     SessionHistory history = 13;
     AgentProviders providers = 14;
     ProviderAuthResult auth_result = 15;
+    ProjectReady project_ready = 16;
   }
-  reserved 16 to 19; // agent events
+  reserved 17 to 19; // agent events
 }
 
 message Welcome {
@@ -273,6 +274,19 @@ message ProviderAuthResult {
   bool needs_code = 5;               // finish with the code the page shows
 }
 
+// Clones a repository on the node, if it isn't there yet, to work in.
+message PrepareProject {
+  string request_id = 1;
+  string repository = 2;             // a URL git can clone, or a project the node has
+  bool separate = 3;                 // a copy of its own, rather than the shared one
+}
+
+message ProjectReady {
+  string request_id = 1;
+  string path = 2;                   // where to work: a prompt's cwd
+  string error = 3;
+}
+
 message OrchestratorMsg {
   oneof msg {
     Welcome welcome = 1;
@@ -285,8 +299,9 @@ message OrchestratorMsg {
     GetSessionHistory get_history = 14;
     ListProviders list_providers = 15;
     ProviderAuth provider_auth = 16;
+    PrepareProject prepare_project = 17;
   }
-  reserved 17 to 19; // agent control
+  reserved 18 to 19; // agent control
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +323,9 @@ service Control {
   // Signs a node's agent in to or out of a model provider. Finishing an
   // OAuth sign-in without a code answers once the user is done (10 minutes at most).
   rpc AuthenticateProvider(AuthenticateProviderRequest) returns (ProviderAuthResult);
+  // Clones a repository on a node (or reuses its clone) and answers with
+  // where to work; cloning can take minutes.
+  rpc PrepareProject(PrepareProjectRequest) returns (ProjectReady);
   // Starts a harness on a node that hosts none; answers once it is ready,
   // which can take minutes if it has to be installed.
   rpc StartHarness(StartHarnessRequest) returns (NodeInfo);
@@ -385,6 +403,12 @@ message ListAgentSessionsRequest {
 message GetSessionHistoryRequest {
   string node = 1;                   // id, id prefix or name
   string session_id = 2;
+}
+
+message PrepareProjectRequest {
+  string node = 1;                   // id, id prefix or name
+  string repository = 2;
+  bool separate = 3;
 }
 
 message ListProvidersRequest {

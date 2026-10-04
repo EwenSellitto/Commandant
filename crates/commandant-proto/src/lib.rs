@@ -39,6 +39,7 @@ envelope!(WorkerMsg.msg, worker_msg::Msg {
     History(SessionHistory),
     Providers(AgentProviders),
     AuthResult(ProviderAuthResult),
+    ProjectReady(ProjectReady),
 });
 
 envelope!(OrchestratorMsg.msg, orchestrator_msg::Msg {
@@ -52,6 +53,7 @@ envelope!(OrchestratorMsg.msg, orchestrator_msg::Msg {
     GetHistory(GetSessionHistory),
     ListProviders(ListProviders),
     ProviderAuth(ProviderAuth),
+    PrepareProject(PrepareProject),
 });
 
 /// The capability a worker lists for the harness it hosts: `harness:opencode`.
@@ -113,6 +115,7 @@ reply!(
     SessionHistory => History,
     AgentProviders => Providers,
     ProviderAuthResult => AuthResult,
+    ProjectReady => ProjectReady,
 );
 
 envelope!(TaskEvent.event, task_event::Event {

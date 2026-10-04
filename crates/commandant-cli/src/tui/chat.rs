@@ -14,7 +14,7 @@ use super::picker::{Choice, Picker};
 /// Lines moved by PageUp / PageDown.
 const PAGE: u16 = 10;
 /// The chat's own commands, for completing and `/help`.
-pub const COMMANDS: [(&str, &str); 17] = [
+pub const COMMANDS: [(&str, &str); 18] = [
     ("help", "what every command and key does"),
     ("agent", "choose an agent"),
     ("model", "choose a model"),
@@ -22,6 +22,7 @@ pub const COMMANDS: [(&str, &str); 17] = [
     ("skills", "the agent's commands and skills"),
     ("mcp", "connect or disconnect MCP servers"),
     ("providers", "sign in to or out of a model provider"),
+    ("project", "clone a repository on the node and work in it"),
     ("new", "another session, working alongside"),
     ("sessions", "switch, or resume a saved one"),
     ("close", "close this session"),
@@ -99,6 +100,11 @@ pub enum Choose {
         oauth: Option<u32>,
     },
     SignOut(String),
+    /// Work on a repository: in its shared clone, or a copy of its own.
+    Project {
+        repository: String,
+        separate: bool,
+    },
 }
 
 /// Where signing in to a provider has got to.
@@ -127,6 +133,8 @@ pub enum Message {
     Providers(Result<Vec<ModelProvider>, String>),
     /// How a step of signing in went.
     Auth(Result<ProviderAuthResult, String>),
+    /// Where the project asked for is ready to work in.
+    Project(Result<ProjectReady, String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +208,8 @@ pub struct Chat {
     providers: Vec<ModelProvider>,
     pub listing_providers: Option<String>,
     pub auth: Option<Auth>,
+    /// The repository the node is cloning for this chat.
+    pub preparing: Option<String>,
     /// A picker asked for before the options came, to open once they do.
     pending_pick: Option<(Pick, String)>,
     /// The model that last replied, which tells what "default" means.
@@ -247,6 +257,7 @@ impl Chat {
             providers: Vec::new(),
             listing_providers: None,
             auth: None,
+            preparing: None,
             pending_pick: None,
             options,
             used_model: String::new(),
@@ -417,6 +428,11 @@ impl Chat {
                 "providers" | "login" | "logout" => {
                     self.input.clear();
                     return self.list_providers(filter.trim());
+                }
+                "project" => {
+                    self.input.clear();
+                    self.choose_project(filter.trim());
+                    return None;
                 }
                 // One of the agent's own commands or skills, its arguments after it.
                 name if self.is_agent_command(name) => {
@@ -748,6 +764,18 @@ impl Chat {
                 let action = auth_action::Action::SignOut(true);
                 return Some(self.authenticate(provider, None, doing, action));
             }
+            Choose::Project {
+                repository,
+                separate,
+            } => {
+                self.preparing = Some(repository.clone());
+                return Some(Action::PrepareProject {
+                    chat: self.id,
+                    node: self.node.id.clone(),
+                    repository,
+                    separate,
+                });
+            }
             Choose::Mcp(name) => {
                 let connect = self.options.as_ref().is_some_and(|o| {
                     o.mcp_servers
@@ -819,6 +847,43 @@ impl Chat {
     fn provider_name(&self, id: &str) -> String {
         let provider = self.providers.iter().find(|p| p.id == id);
         provider.map_or_else(|| id.to_string(), |p| p.name.clone())
+    }
+
+    /// Offers to work on `repository` in its shared clone or a copy of its
+    /// own. A session stays in its directory, so only a new one can move.
+    fn choose_project(&mut self, repository: &str) {
+        if repository.is_empty() {
+            self.info("/project <repository URL>, or the name of a project the node has cloned");
+            return;
+        }
+        if !self.settings.session_id.is_empty() || matches!(self.activity, Activity::Working { .. })
+        {
+            self.info(
+                "this session already works somewhere: start a new one (Ctrl-N) for the project",
+            );
+            return;
+        }
+        let choice = |separate| Choose::Project {
+            repository: repository.to_string(),
+            separate,
+        };
+        let choices = vec![
+            Choice::new(
+                choice(false),
+                "Shared folder",
+                "with the node's other sessions on it",
+            ),
+            Choice::new(
+                choice(true),
+                "A copy of its own",
+                "a separate clone, untouched by the others",
+            ),
+        ];
+        self.picker = Some(Picker::new(
+            "Where should this session work?",
+            choices,
+            None,
+        ));
     }
 
     /// Asks the node for its providers, to pick one when they come.
@@ -1017,6 +1082,16 @@ impl Chat {
                 }
             }
             Message::Auth(result) => return self.signed_in(result),
+            Message::Project(ready) => {
+                let repository = self.preparing.take().unwrap_or_default();
+                match ready {
+                    Ok(ready) => {
+                        self.info(&format!("working in {}", ready.path));
+                        self.settings.cwd = ready.path;
+                    }
+                    Err(e) => self.push(Role::Error, &format!("couldn't get {repository}: {e}")),
+                }
+            }
             Message::History(history) => {
                 self.loading_history = false;
                 match history {
@@ -1914,6 +1989,50 @@ pub(crate) mod tests {
         assert_eq!(app.suggestions()[0].0, "mcp");
         app.on_key(KeyEvent::from(KeyCode::Up));
         assert_eq!(app.input.text, "/mc");
+    }
+
+    #[test]
+    fn a_project_is_cloned_then_worked_in() {
+        let mut app = with_options();
+        assert!(command(&mut app, "/project").is_none());
+        assert!(app.picker.is_none(), "it needs a repository");
+
+        command(&mut app, "/project https://example.com/me/app.git");
+        app.on_key(KeyEvent::from(KeyCode::Down));
+        let Some(Action::PrepareProject {
+            repository,
+            separate,
+            ..
+        }) = app.on_key(KeyEvent::from(KeyCode::Enter))
+        else {
+            panic!("choosing where clones it");
+        };
+        assert_eq!(
+            (repository.as_str(), separate),
+            ("https://example.com/me/app.git", true)
+        );
+        assert!(app.preparing.is_some());
+
+        let ready = ProjectReady {
+            path: "/state/copies/app/2".into(),
+            ..Default::default()
+        };
+        app.on_message(Message::Project(Ok(ready)));
+        assert!(app.preparing.is_none());
+        let Some(Action::Send(_, request)) = command(&mut app, "hi") else {
+            panic!("a prompt is sent");
+        };
+        assert_eq!(request.cwd, "/state/copies/app/2");
+
+        // Once the session has started, a new one is needed to move.
+        app.on_message(Message::Task(TaskEvent::Finished(TaskFinished {
+            exit_code: Some(0),
+            session_id: "ses_1".into(),
+            ..Default::default()
+        })));
+        command(&mut app, "/project other");
+        assert!(app.picker.is_none());
+        assert!(app.thread.last().unwrap().text.contains("Ctrl-N"));
     }
 
     #[test]

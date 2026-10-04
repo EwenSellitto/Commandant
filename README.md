@@ -196,6 +196,22 @@ Task statuses: `running`, `succeeded` (exit 0), `failed`, `cancelled`, and
 
 ## Coding agents
 
+### Working on a project
+
+In a TUI chat, `/project <repository>` has the node clone a repository and
+makes it the session's working directory. Choose where the session works:
+
+- **Shared folder**: `<state-dir>/projects/<name>`, cloned once and used by
+  every session given it.
+- **A copy of its own**: `<state-dir>/copies/<name>/<n>`, a separate clone
+  (made quickly from the shared one, with the same `origin`) that the other
+  sessions don't touch.
+
+Once cloned, `/project <name>` is enough. The node clones with its own git
+credentials (SSH keys, credential helper) and never waits for a password,
+so a private repository needs them set up on the node. A new session
+(Ctrl-N) keeps the folder; branches and worktrees are left to the agent.
+
 ### Claude Code, on your subscription
 
 `--harness claude-code` (or `node start-agent my-box claude-code`, or the TUI)

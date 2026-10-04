@@ -4,6 +4,7 @@ mod claude;
 mod exec;
 mod harness;
 mod opencode;
+mod project;
 pub mod state;
 
 use std::collections::HashMap;
@@ -18,8 +19,8 @@ use commandant_proto::node_link_client::NodeLinkClient;
 use commandant_proto::{
     AgentPrompt, AgentProviders, AgentSessions, CancelTask, GetSessionHistory, HarnessStarted,
     Heartbeat, Hello, ListAgentOptions, ListAgentSessions, ListProviders, NodeCredential,
-    OrchestratorMsg, ProviderAuth, Reply, SessionHistory, StartHarness, TaskFinished, Welcome,
-    WorkerMsg, orchestrator_msg,
+    OrchestratorMsg, PrepareProject, ProjectReady, ProviderAuth, Reply, SessionHistory,
+    StartHarness, TaskFinished, Welcome, WorkerMsg, orchestrator_msg,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -198,7 +199,7 @@ async fn session(node: &Node, host: &Arc<Host>, first: bool) -> Result<Infallibl
     }
     info!(node_id = %welcome.node_id, server = %node.server, "connected to orchestrator");
 
-    serve(&mut inbound, &outbound, host).await
+    serve(&mut inbound, &outbound, host, &node.state_dir).await
 }
 
 fn hello(
@@ -265,6 +266,7 @@ async fn serve(
     inbound: &mut Streaming<OrchestratorMsg>,
     outbound: &mpsc::Sender<WorkerMsg>,
     host: &Arc<Host>,
+    state_dir: &std::path::Path,
 ) -> Result<Infallible, Stop> {
     // Dropping a cancel sender kills its task, so ending the session kills them all.
     let mut cancels: HashMap<String, oneshot::Sender<()>> = HashMap::new();
@@ -314,6 +316,15 @@ async fn serve(
                         info!(%provider, "signing the agent in or out of a provider");
                         ask_harness(host, outbound, request_id, |h| async move {
                             h.authenticate(&provider, action).await
+                        });
+                    }
+                    Some(orchestrator_msg::Msg::PrepareProject(PrepareProject { request_id, repository, separate })) => {
+                        info!(%repository, separate, "preparing a project");
+                        let state_dir = state_dir.to_path_buf();
+                        answer(outbound, request_id, async move {
+                            let path = project::prepare(&state_dir, &repository, separate).await?;
+                            let path = path.to_string_lossy().into_owned();
+                            Ok(ProjectReady { path, ..Default::default() })
                         });
                     }
                     Some(orchestrator_msg::Msg::StartHarness(StartHarness { request_id, harness })) => {

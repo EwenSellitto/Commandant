@@ -204,6 +204,22 @@ async fn perform(
                 Update::Chat(chat, Message::History(history.map(|h| h.entries)))
             });
         }
+        Action::PrepareProject {
+            chat,
+            node,
+            repository,
+            separate,
+        } => {
+            let request = PrepareProjectRequest {
+                node,
+                repository,
+                separate,
+            };
+            let call = async move { control_.prepare_project(request).await };
+            spawn_ask(tx, call, move |ready| {
+                Update::Chat(chat, Message::Project(ready))
+            });
+        }
         Action::FetchProviders { chat, node } => {
             let request = ListProvidersRequest { node };
             let call = async move { control_.list_providers(request).await };

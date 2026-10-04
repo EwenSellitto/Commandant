@@ -318,6 +318,15 @@ same kind of question: the worker reads `GET /session/:id/message` and answers
 with the session's prompts, replies, thinking and tool calls (the latest 300),
 which the chat puts before anything said since.
 
+**Projects.** `PrepareProject` is a question any worker answers, harness or
+not, with up to 10 minutes for a clone. The worker clones the repository
+(`git clone -- <url>`, never prompting) into `<state>/projects/<name>`
+through a temporary directory, so a failed clone leaves nothing, and reuses
+it after that, by URL or by name. A separate copy is a local clone of that
+one into `<state>/copies/<name>/<n>`, its `origin` set to the real one. It
+answers with the path, which the TUI then sends as each prompt's `cwd`; a
+session already started keeps its directory, so moving takes a new one.
+
 **Signing in to model providers.** `ListProviders` and `ProviderAuth` are
 questions too. In the TUI, `/providers` lists every provider the node's
 OpenCode knows (signed-in ones first); choosing one offers its sign-in

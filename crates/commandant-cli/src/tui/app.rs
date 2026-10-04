@@ -33,6 +33,13 @@ pub enum Action {
     },
     /// Ask a node which sessions its agent has saved.
     FetchSessions(String),
+    /// Have a node clone a repository (or reuse its clone) for a chat.
+    PrepareProject {
+        chat: ChatId,
+        node: String,
+        repository: String,
+        separate: bool,
+    },
     /// Ask a node's agent which model providers it knows, for a chat.
     FetchProviders {
         chat: ChatId,
@@ -216,6 +223,7 @@ impl App {
                     || c.loading_history
                     || c.loading()
                     || c.listing_providers.is_some()
+                    || c.preparing.is_some()
                     || matches!(c.auth, Some(chat::Auth::Waiting { .. }))
             })
     }
