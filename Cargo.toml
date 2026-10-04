@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Tools keep caches here (fallow); they aren't crates.
+exclude = ["crates/.fallow"]
 
 [workspace.package]
 version = "0.1.0"
