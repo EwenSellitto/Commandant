@@ -9,6 +9,7 @@ anyhow.workspace = true
 commandant-common.workspace = true
 commandant-proto.workspace = true
 getrandom.workspace = true
+git2.workspace = true
 hex.workspace = true
 reqwest.workspace = true
 serde.workspace = true

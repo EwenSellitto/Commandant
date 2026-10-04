@@ -117,8 +117,10 @@ message WorkerMsg {
     SessionHistory history = 13;
     AgentProviders providers = 14;
     ProviderAuthResult auth_result = 15;
+    ProjectReady project_ready = 16;
+    Projects projects = 17;
   }
-  reserved 16 to 19; // agent events
+  reserved 18 to 19; // agent events
 }
 
 message Welcome {
@@ -273,6 +275,43 @@ message ProviderAuthResult {
   bool needs_code = 5;               // finish with the code the page shows
 }
 
+// Clones a repository on the node, as a new copy of the project to work in.
+message PrepareProject {
+  string request_id = 1;
+  string repository = 2;             // a URL git can clone, or a project the node has
+}
+
+message ProjectReady {
+  string request_id = 1;
+  string path = 2;                   // where to work: a prompt's cwd
+  string error = 3;
+  string id = 4;                     // the copy's
+}
+
+// Asks the node which projects it has cloned, and their copies.
+message ListProjects {
+  string request_id = 1;
+}
+
+message Projects {
+  string request_id = 1;
+  repeated Project projects = 2;
+  string error = 3;
+}
+
+message Project {
+  string name = 1;
+  string repository = 2;             // where it was cloned from
+  repeated ProjectCopy copies = 3;   // latest first
+}
+
+message ProjectCopy {
+  string id = 1;
+  string path = 2;
+  string branch = 3;                 // checked out; empty when detached
+  repeated string sessions = 4;      // titles of the agent's sessions in it, latest first
+}
+
 message OrchestratorMsg {
   oneof msg {
     Welcome welcome = 1;
@@ -285,8 +324,10 @@ message OrchestratorMsg {
     GetSessionHistory get_history = 14;
     ListProviders list_providers = 15;
     ProviderAuth provider_auth = 16;
+    PrepareProject prepare_project = 17;
+    ListProjects list_projects = 18;
   }
-  reserved 17 to 19; // agent control
+  reserved 19; // agent control
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +349,10 @@ service Control {
   // Signs a node's agent in to or out of a model provider. Finishing an
   // OAuth sign-in without a code answers once the user is done (10 minutes at most).
   rpc AuthenticateProvider(AuthenticateProviderRequest) returns (ProviderAuthResult);
+  // Clones a repository on a node as a new copy and answers with where to
+  // work; cloning can take minutes.
+  rpc PrepareProject(PrepareProjectRequest) returns (ProjectReady);
+  rpc ListProjects(ListProjectsRequest) returns (Projects);
   // Starts a harness on a node that hosts none; answers once it is ready,
   // which can take minutes if it has to be installed.
   rpc StartHarness(StartHarnessRequest) returns (NodeInfo);
@@ -385,6 +430,15 @@ message ListAgentSessionsRequest {
 message GetSessionHistoryRequest {
   string node = 1;                   // id, id prefix or name
   string session_id = 2;
+}
+
+message PrepareProjectRequest {
+  string node = 1;                   // id, id prefix or name
+  string repository = 2;
+}
+
+message ListProjectsRequest {
+  string node = 1;                   // id, id prefix or name
 }
 
 message ListProvidersRequest {

@@ -4,6 +4,7 @@ mod claude;
 mod exec;
 mod harness;
 mod opencode;
+mod project;
 pub mod state;
 
 use std::collections::HashMap;
@@ -17,9 +18,9 @@ use commandant_proto::hello::Auth;
 use commandant_proto::node_link_client::NodeLinkClient;
 use commandant_proto::{
     AgentPrompt, AgentProviders, AgentSessions, CancelTask, GetSessionHistory, HarnessStarted,
-    Heartbeat, Hello, ListAgentOptions, ListAgentSessions, ListProviders, NodeCredential,
-    OrchestratorMsg, ProviderAuth, Reply, SessionHistory, StartHarness, TaskFinished, Welcome,
-    WorkerMsg, orchestrator_msg,
+    Heartbeat, Hello, ListAgentOptions, ListAgentSessions, ListProjects, ListProviders,
+    NodeCredential, OrchestratorMsg, PrepareProject, ProjectReady, Projects, ProviderAuth, Reply,
+    SessionHistory, StartHarness, TaskFinished, Welcome, WorkerMsg, orchestrator_msg,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -198,7 +199,7 @@ async fn session(node: &Node, host: &Arc<Host>, first: bool) -> Result<Infallibl
     }
     info!(node_id = %welcome.node_id, server = %node.server, "connected to orchestrator");
 
-    serve(&mut inbound, &outbound, host).await
+    serve(&mut inbound, &outbound, host, &node.state_dir).await
 }
 
 fn hello(
@@ -265,6 +266,7 @@ async fn serve(
     inbound: &mut Streaming<OrchestratorMsg>,
     outbound: &mpsc::Sender<WorkerMsg>,
     host: &Arc<Host>,
+    state_dir: &std::path::Path,
 ) -> Result<Infallible, Stop> {
     // Dropping a cancel sender kills its task, so ending the session kills them all.
     let mut cancels: HashMap<String, oneshot::Sender<()>> = HashMap::new();
@@ -314,6 +316,27 @@ async fn serve(
                         info!(%provider, "signing the agent in or out of a provider");
                         ask_harness(host, outbound, request_id, |h| async move {
                             h.authenticate(&provider, action).await
+                        });
+                    }
+                    Some(orchestrator_msg::Msg::PrepareProject(PrepareProject { request_id, repository })) => {
+                        info!(%repository, "making a copy of a project");
+                        let state_dir = state_dir.to_path_buf();
+                        answer(outbound, request_id, async move {
+                            let (id, path) = project::prepare(&state_dir, &repository).await?;
+                            let path = path.to_string_lossy().into_owned();
+                            Ok(ProjectReady { id, path, ..Default::default() })
+                        });
+                    }
+                    Some(orchestrator_msg::Msg::ListProjects(ListProjects { request_id })) => {
+                        let (host, state_dir) = (host.clone(), state_dir.to_path_buf());
+                        answer(outbound, request_id, async move {
+                            // Without an agent, or if it can't say, copies just list no sessions.
+                            let sessions = match host.current() {
+                                Some(harness) => harness.sessions().await.unwrap_or_default(),
+                                None => Vec::new(),
+                            };
+                            let listed = tokio::task::spawn_blocking(move || project::list(&state_dir, &sessions));
+                            Ok(Projects { projects: listed.await?, ..Default::default() })
                         });
                     }
                     Some(orchestrator_msg::Msg::StartHarness(StartHarness { request_id, harness })) => {

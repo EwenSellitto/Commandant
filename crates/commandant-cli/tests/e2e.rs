@@ -1223,6 +1223,110 @@ echo '{"type":"result","is_error":false,"total_cost_usd":1.5,"usage":{"input_tok
         worker.abort();
     }
 
+    /// A repository with one commit, to clone.
+    fn origin_repository(dir: &Path) -> String {
+        let repo = git2::Repository::init(dir).unwrap();
+        std::fs::write(dir.join("README"), "hello\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("README")).unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let me = git2::Signature::now("t", "t@t").unwrap();
+        repo.commit(Some("HEAD"), &me, &me, "first", &tree, &[])
+            .unwrap();
+        dir.to_string_lossy().into_owned()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn projects_are_cloned_as_copies_and_listed_with_their_sessions() {
+        let Cluster {
+            client,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        let url = origin_repository(&_tmp.path().join("origin").join("app"));
+        let state_dir = _tmp.path().join("worker");
+        let prepare = |repository: &str| {
+            let mut client = client.clone();
+            let request = PrepareProjectRequest {
+                node: "w1".into(),
+                repository: repository.into(),
+            };
+            async move {
+                client
+                    .prepare_project(request)
+                    .await
+                    .map(|r| r.into_inner())
+            }
+        };
+        let list = || {
+            let mut client = client.clone();
+            async move {
+                let request = ListProjectsRequest { node: "w1".into() };
+                client
+                    .list_projects(request)
+                    .await
+                    .unwrap()
+                    .into_inner()
+                    .projects
+            }
+        };
+        assert!(list().await.is_empty());
+
+        // Each copy is a clone of its own, under an id of its own.
+        let first = prepare(&url).await.unwrap();
+        assert_eq!(first.id.len(), 8);
+        assert_eq!(
+            std::path::PathBuf::from(&first.path),
+            state_dir.join("projects").join("app").join(&first.id)
+        );
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&first.path).join("README")).unwrap(),
+            "hello\n"
+        );
+        // By name, once the node has it.
+        let second = prepare("app").await.unwrap();
+        assert_ne!(first.id, second.id);
+        let origin = git2::Repository::open(&second.path).unwrap();
+        assert_eq!(origin.find_remote("origin").unwrap().url().unwrap(), url);
+
+        // A session in a copy says what the copy is used for.
+        let mut client_ = client.clone();
+        let done = prompt(
+            &mut client_,
+            PromptRequest {
+                cwd: first.path.clone(),
+                ..ask("one")
+            },
+        )
+        .await;
+        ok(&done);
+        let projects = list().await;
+        assert_eq!(projects.len(), 1);
+        let project = &projects[0];
+        assert_eq!(
+            (project.name.as_str(), project.repository.as_str()),
+            ("app", url.as_str())
+        );
+        let copy = |id: &str| project.copies.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(copy(&first.id).sessions.len(), 1);
+        assert!(copy(&second.id).sessions.is_empty());
+        assert!(!copy(&first.id).branch.is_empty());
+
+        let unknown = prepare("nothing-here").await.unwrap_err();
+        assert!(
+            unknown.message().contains("no project nothing-here"),
+            "{unknown:?}"
+        );
+        let missing = _tmp.path().join("missing").join("repo.git");
+        let failed = prepare(&missing.to_string_lossy()).await.unwrap_err();
+        assert!(failed.message().contains("cloning"), "{failed:?}");
+        assert!(
+            list().await.iter().all(|p| p.name != "repo"),
+            "nothing half cloned"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn older_opencode_lists_its_sessions_too() {
         let Cluster {

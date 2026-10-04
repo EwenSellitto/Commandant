@@ -400,6 +400,41 @@ impl Control for ControlService {
             .await
     }
 
+    async fn prepare_project(
+        &self,
+        request: Request<PrepareProjectRequest>,
+    ) -> Result<Response<ProjectReady>, Status> {
+        let PrepareProjectRequest { node, repository } = request.into_inner();
+        if repository.trim().is_empty() {
+            return Err(Status::invalid_argument("a repository is required"));
+        }
+        // Any worker can clone; it needs no harness.
+        let (node, conn) = self.connected_node(&node).await?;
+        let ask = |request_id| {
+            PrepareProject {
+                request_id,
+                repository,
+            }
+            .into()
+        };
+        let ready = self
+            .ask(&node, &conn, ask, "prepare the project", START_TIMEOUT)
+            .await?;
+        Ok(Response::new(ready))
+    }
+
+    async fn list_projects(
+        &self,
+        request: Request<ListProjectsRequest>,
+    ) -> Result<Response<Projects>, Status> {
+        let (node, conn) = self.connected_node(&request.into_inner().node).await?;
+        let ask = |request_id| ListProjects { request_id }.into();
+        let projects = self
+            .ask(&node, &conn, ask, "list its projects", QUERY_TIMEOUT)
+            .await?;
+        Ok(Response::new(projects))
+    }
+
     async fn start_harness(
         &self,
         request: Request<StartHarnessRequest>,

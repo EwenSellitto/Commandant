@@ -349,7 +349,7 @@ fn welcome(chat: &Chat) -> Vec<Line<'static>> {
         Line::default(),
     ];
     let keys = chat::KEYS.iter().map(|&(k, d)| (k.to_string(), d));
-    let commands = chat::COMMANDS[1..7]
+    let commands = chat::COMMANDS[1..8]
         .iter()
         .map(|&(n, d)| (format!("/{n}"), d));
     for (key, does) in keys.take(4).chain(commands) {
@@ -393,6 +393,12 @@ fn draw_status(frame: &mut Frame, chat: &Chat, area: Rect) {
             Span::raw(format!("{} ", spinner())).yellow(),
             Span::raw(doing.clone()).yellow(),
         ]),
+        Activity::Idle if let Some(repository) = &chat.preparing => {
+            loading(format!("getting {repository} ready on {}…", chat.node.name))
+        }
+        Activity::Idle if chat.listing_projects => {
+            loading(format!("listing {}'s projects…", chat.node.name))
+        }
         Activity::Idle if chat.listing_providers.is_some() => {
             loading(format!("listing {}'s model providers…", chat.node.name))
         }
@@ -903,7 +909,7 @@ mod tests {
     fn completions_float_over_the_prompt() {
         let mut app = app();
         app.on_key(KeyEvent::from(KeyCode::Enter));
-        for c in "/pro".chars() {
+        for c in "/prov".chars() {
             app.on_key(KeyEvent::from(KeyCode::Char(c)));
         }
         let buf = render(&mut app);
