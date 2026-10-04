@@ -26,7 +26,8 @@ Documentation: [architecture and diagrams](docs/architecture.md) ·
 
 ## Install
 
-Requires Rust 1.88+ (or just Docker, see below).
+Requires Rust 1.88+, `pkg-config` and OpenSSL's headers (`libssl-dev` on
+Debian, `openssl-devel` on Fedora) for git; or just Docker, see below.
 
 ```sh
 cargo install --path crates/commandant-cli     # installs `commandant` into ~/.cargo/bin
@@ -198,19 +199,24 @@ Task statuses: `running`, `succeeded` (exit 0), `failed`, `cancelled`, and
 
 ### Working on a project
 
-In a TUI chat, `/project <repository>` has the node clone a repository and
-makes it the session's working directory. Choose where the session works:
+A node clones repositories to work in, each clone a **copy** of the project
+with an id of its own: `<state-dir>/projects/<name>/<id>`. Sessions can share
+a copy or each have their own.
 
-- **Shared folder**: `<state-dir>/projects/<name>`, cloned once and used by
-  every session given it.
-- **A copy of its own**: `<state-dir>/copies/<name>/<n>`, a separate clone
-  (made quickly from the shared one, with the same `origin`) that the other
-  sessions don't touch.
+In a TUI chat:
 
-Once cloned, `/project <name>` is enough. The node clones with its own git
-credentials (SSH keys, credential helper) and never waits for a password,
-so a private repository needs them set up on the node. A new session
-(Ctrl-N) keeps the folder; branches and worktrees are left to the agent.
+- `/project` browses the node's projects: for each, **+ new copy**, then its
+  copies with their branch and what the sessions in them are about. Choosing
+  a copy joins it; the session works there alongside the others.
+- `/project <repository>` clones a new copy (a URL, or the name of a project
+  the node already has).
+
+Only a session that hasn't started yet can move into a project; Ctrl-N starts
+a new one in the same folder. The node clones with git built in (libgit2),
+signing in like git would: the SSH agent, `~/.ssh/id_ed25519`, `id_ecdsa` or
+`id_rsa`, or the credential helper for HTTPS. It never asks for a password,
+so a private repository needs one of those set up on the node. Branches and
+worktrees are left to the agent.
 
 ### Claude Code, on your subscription
 

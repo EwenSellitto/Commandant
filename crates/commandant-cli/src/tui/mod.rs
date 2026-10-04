@@ -208,16 +208,18 @@ async fn perform(
             chat,
             node,
             repository,
-            separate,
         } => {
-            let request = PrepareProjectRequest {
-                node,
-                repository,
-                separate,
-            };
+            let request = PrepareProjectRequest { node, repository };
             let call = async move { control_.prepare_project(request).await };
             spawn_ask(tx, call, move |ready| {
                 Update::Chat(chat, Message::Project(ready))
+            });
+        }
+        Action::FetchProjects { chat, node } => {
+            let request = ListProjectsRequest { node };
+            let call = async move { control_.list_projects(request).await };
+            spawn_ask(tx, call, move |projects| {
+                Update::Chat(chat, Message::Projects(projects.map(|p| p.projects)))
             });
         }
         Action::FetchProviders { chat, node } => {

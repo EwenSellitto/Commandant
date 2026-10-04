@@ -1,109 +1,193 @@
-//! Projects: repositories a node clones to work in. Each has a shared clone,
-//! `<state>/projects/<name>`, which every session given it works in, and any
-//! number of copies of its own, `<state>/copies/<name>/<n>`, for sessions
-//! that shouldn't step on the others. Worktrees are left to the harnesses.
+//! Projects: repositories a node clones to work in. Each clone is a copy of
+//! the project with an id of its own, `<state>/projects/<name>/<id>`, which
+//! any number of sessions can join. Worktrees and branches are left to the
+//! harnesses.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::time::SystemTime;
 
-use anyhow::{Context, Result, bail, ensure};
-use tokio::process::Command;
-use tokio::sync::Mutex;
+use anyhow::{Context, Result, ensure};
+use commandant_proto::{AgentSession, Project, ProjectCopy};
+use git2::build::RepoBuilder;
+use git2::{Cred, CredentialType, FetchOptions, RemoteCallbacks, Repository};
 use tracing::info;
 
-// ponytail: one clone at a time per worker; per-project locks if nodes clone
-// many projects at once.
-static PREPARING: Mutex<()> = Mutex::const_new(());
+const NO_CREDENTIALS: &str =
+    "none of this node's credentials work for it: set up its SSH key or git credential helper";
 
-/// Where to work on `repository` (a URL, or the name of a project already
-/// cloned here): its shared clone, made if need be, or a new copy of it.
-pub async fn prepare(state_dir: &Path, repository: &str, separate: bool) -> Result<PathBuf> {
+/// Clones `repository` (a URL, or the name of a project already cloned here)
+/// as a new copy of the project, and returns its id and where it is.
+pub async fn prepare(state_dir: &Path, repository: &str) -> Result<(String, PathBuf)> {
     let repository = repository.trim();
     let name = name(repository)?;
-    let _one_at_a_time = PREPARING.lock().await;
-    let shared = state_dir.join("projects").join(&name);
-    if !shared.exists() {
-        ensure!(
-            !is_name(repository),
-            "this node has no project {name}; give its repository's URL"
-        );
-        clone(repository, &shared).await?;
-    }
-    if !separate {
-        return Ok(shared);
-    }
-    let copies = state_dir.join("copies").join(&name);
-    std::fs::create_dir_all(&copies).with_context(|| format!("creating {}", copies.display()))?;
-    let copy = (2..)
-        .map(|n| copies.join(n.to_string()))
-        .find(|dir| std::fs::create_dir(dir).is_ok())
-        .expect("a free number");
-    // From the shared clone, which is quick, then pointed at the real origin.
-    let local = shared.to_string_lossy();
-    if let Err(e) = git(
-        &["clone", "--quiet", "--", &local, &copy.to_string_lossy()],
-        None,
-    )
-    .await
-    {
-        let _ = std::fs::remove_dir_all(&copy);
-        return Err(e);
-    }
-    let origin = git(&["remote", "get-url", "origin"], Some(&shared)).await?;
-    git(&["remote", "set-url", "origin", origin.trim()], Some(&copy)).await?;
-    info!(copy = %copy.display(), "made another copy of {name}");
-    Ok(copy)
+    let project = state_dir.join("projects").join(&name);
+    let url = if is_name(repository) {
+        copies(&project)
+            .iter()
+            .find_map(|copy| origin(copy))
+            .with_context(|| {
+                format!("this node has no project {name}; give its repository's URL")
+            })?
+    } else {
+        repository.to_string()
+    };
+    std::fs::create_dir_all(&project).with_context(|| format!("creating {}", project.display()))?;
+    let (id, copy) = std::iter::repeat_with(new_id)
+        .map(|id| (id.clone(), project.join(id)))
+        .find(|(_, dir)| !dir.exists())
+        .expect("a free id");
+    info!(%url, copy = %copy.display(), "cloning");
+    let target = copy.clone();
+    tokio::task::spawn_blocking(move || clone(&url, &target)).await??;
+    Ok((id, copy))
 }
 
-/// Clones `url` into `dir`, through a temporary directory so a failed clone
-/// leaves nothing that looks like a project.
-async fn clone(url: &str, dir: &Path) -> Result<()> {
-    let parent = dir.parent().expect("under projects/");
-    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    let partial = parent.join(format!(
-        ".cloning-{}",
-        dir.file_name().unwrap_or_default().to_string_lossy()
-    ));
-    let _ = std::fs::remove_dir_all(&partial);
-    info!(%url, "cloning");
-    // `--` keeps a URL like `--upload-pack=…` from being taken as an option.
-    if let Err(e) = git(
-        &["clone", "--quiet", "--", url, &partial.to_string_lossy()],
-        None,
-    )
-    .await
-    {
+/// Clones `url` into `dir`, through a hidden directory so a failed clone
+/// leaves nothing that looks like a copy.
+fn clone(url: &str, dir: &Path) -> Result<()> {
+    let name = dir.file_name().unwrap_or_default().to_string_lossy();
+    let partial = dir.with_file_name(format!(".cloning-{name}"));
+    let cloned = RepoBuilder::new()
+        .fetch_options(fetch_options())
+        .clone(url, &partial);
+    if let Err(e) = cloned {
         let _ = std::fs::remove_dir_all(&partial);
-        return Err(e);
+        let why = match e.code() {
+            git2::ErrorCode::Auth => NO_CREDENTIALS,
+            _ => e.message(),
+        };
+        anyhow::bail!("cloning {url} failed: {why}");
     }
     std::fs::rename(&partial, dir).with_context(|| format!("moving the clone to {}", dir.display()))
 }
 
-/// Runs git, without ever waiting for a password nobody can type, and
-/// returns what it printed.
-async fn git(args: &[&str], dir: Option<&Path>) -> Result<String> {
-    let mut command = Command::new("git");
-    command
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null());
-    if let Some(dir) = dir {
-        command.current_dir(dir);
+/// Signs in the way git on this node would: the SSH agent, then the usual
+/// key files, or the credential helper for HTTPS. Never asks anyone.
+fn fetch_options() -> FetchOptions<'static> {
+    let config = git2::Config::open_default().ok();
+    let keys: Vec<PathBuf> = std::env::home_dir()
+        .map(|home| home.join(".ssh"))
+        .into_iter()
+        .flat_map(|ssh| ["id_ed25519", "id_ecdsa", "id_rsa"].map(|key| ssh.join(key)))
+        .filter(|key| key.is_file())
+        .collect();
+    // libgit2 asks again after each refusal: each way is tried once.
+    let (mut ssh_tries, mut helper_tried, mut default_tried) = (0, false, false);
+    let mut callbacks = RemoteCallbacks::new();
+    callbacks.credentials(move |url, username, allowed| {
+        let user = username.unwrap_or("git");
+        if allowed.contains(CredentialType::USERNAME) {
+            return Cred::username(user);
+        }
+        if allowed.contains(CredentialType::SSH_KEY) {
+            ssh_tries += 1;
+            if ssh_tries == 1 {
+                return Cred::ssh_key_from_agent(user);
+            }
+            if let Some(key) = keys.get(ssh_tries - 2) {
+                return Cred::ssh_key(user, None, key, None);
+            }
+        }
+        if allowed.contains(CredentialType::USER_PASS_PLAINTEXT)
+            && !std::mem::replace(&mut helper_tried, true)
+            && let Some(config) = &config
+        {
+            return Cred::credential_helper(config, url, username);
+        }
+        if allowed.contains(CredentialType::DEFAULT) && !std::mem::replace(&mut default_tried, true)
+        {
+            return Cred::default();
+        }
+        Err(git2::Error::from_str(NO_CREDENTIALS))
+    });
+    let mut options = FetchOptions::new();
+    options.remote_callbacks(callbacks);
+    options
+}
+
+/// The projects cloned here, with their copies, latest first. `sessions`
+/// (the harness's, latest first) say what each copy is being used for.
+pub fn list(state_dir: &Path, sessions: &[AgentSession]) -> Vec<Project> {
+    let mut projects: Vec<Project> = subdirs(&state_dir.join("projects"))
+        .into_iter()
+        .filter_map(|dir| {
+            let copies = copies(&dir);
+            let repository = copies.iter().find_map(|copy| origin(copy))?;
+            Some(Project {
+                name: dir.file_name()?.to_string_lossy().into_owned(),
+                repository,
+                copies: copies.iter().map(|copy| describe(copy, sessions)).collect(),
+            })
+        })
+        .collect();
+    projects.sort_by_key(|p| p.name.to_lowercase());
+    projects
+}
+
+fn describe(path: &Path, sessions: &[AgentSession]) -> ProjectCopy {
+    let branch = Repository::open(path)
+        .ok()
+        .and_then(|repo| repo.head().ok()?.shorthand().ok().map(str::to_string))
+        .filter(|b| b != "HEAD")
+        .unwrap_or_default();
+    let here = canonical(path);
+    ProjectCopy {
+        id: path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        path: path.to_string_lossy().into_owned(),
+        branch,
+        sessions: sessions
+            .iter()
+            .filter(|s| canonical(Path::new(&s.directory)) == here)
+            .map(|s| commandant_common::or(&s.title, &s.id).to_string())
+            .collect(),
     }
-    let output = command
-        .output()
-        .await
-        .context("running git (is it installed?)")?;
-    if !output.status.success() {
-        let said = String::from_utf8_lossy(&output.stderr);
-        let why = said
-            .lines()
-            .rev()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("");
-        bail!("git {} failed: {why}", args[0]);
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// A project's copies, latest first.
+fn copies(project: &Path) -> Vec<PathBuf> {
+    let mut copies = subdirs(project);
+    copies.sort_by_key(|dir| {
+        let modified = dir.metadata().and_then(|m| m.modified()).ok();
+        std::cmp::Reverse(modified.unwrap_or(SystemTime::UNIX_EPOCH))
+    });
+    copies
+}
+
+/// Visible subdirectories: a clone under way is hidden.
+fn subdirs(dir: &Path) -> Vec<PathBuf> {
+    let hidden = |p: &Path| {
+        p.file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+    };
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && !hidden(p))
+        .collect()
+}
+
+/// Where a copy was cloned from.
+fn origin(copy: &Path) -> Option<String> {
+    let repo = Repository::open(copy).ok()?;
+    let remote = repo.find_remote("origin").ok()?;
+    remote.url().ok().map(str::to_string)
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// A short random id for a copy, e.g. `3fa9c1d2`.
+fn new_id() -> String {
+    let mut bytes = [0u8; 4];
+    getrandom::fill(&mut bytes).expect("OS random number generator unavailable");
+    hex::encode(bytes)
 }
 
 /// Whether `repository` names a project rather than where to clone it from.
@@ -150,5 +234,6 @@ mod tests {
             assert!(name(bad).is_err(), "{bad:?}");
         }
         assert!(is_name("Commandant") && !is_name("git@host:x"));
+        assert_eq!(new_id().len(), 8);
     }
 }

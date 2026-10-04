@@ -300,94 +300,6 @@ async fn a_link_with_several_addresses_uses_the_one_that_answers() {
     worker.abort();
 }
 
-/// Runs git in `dir`, which must succeed.
-fn git(dir: &Path, args: &[&str]) -> String {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "git {args:?}: {output:?}");
-    String::from_utf8(output.stdout).unwrap()
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_node_clones_a_project_shared_or_in_a_copy_of_its_own() {
-    let tmp = tempfile::tempdir().unwrap();
-    // A repository to clone, with one commit.
-    let origin = tmp.path().join("origin").join("app");
-    std::fs::create_dir_all(&origin).unwrap();
-    git(&origin, &["init", "-q"]);
-    std::fs::write(origin.join("README"), "hello\n").unwrap();
-    git(&origin, &["add", "README"]);
-    git(
-        &origin,
-        &[
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "commit",
-            "-qm",
-            "first",
-        ],
-    );
-    let url = origin.to_string_lossy().into_owned();
-
-    let (addr, admin_token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
-    let mut client = connect_control(&addr, &admin_token).await.unwrap();
-    let state_dir = tmp.path().join("worker");
-    let worker = spawn_worker(&addr, Some(admin_token.clone()), &state_dir);
-    wait_for_node(&mut client, true).await;
-    let prepare = |repository: &str, separate: bool| {
-        let mut client = client.clone();
-        let request = PrepareProjectRequest {
-            node: "w1".into(),
-            repository: repository.into(),
-            separate,
-        };
-        async move {
-            client
-                .prepare_project(request)
-                .await
-                .map(|r| std::path::PathBuf::from(r.into_inner().path))
-        }
-    };
-
-    let shared = prepare(&url, false).await.unwrap();
-    assert_eq!(shared, state_dir.join("projects").join("app"));
-    assert_eq!(
-        std::fs::read_to_string(shared.join("README")).unwrap(),
-        "hello\n"
-    );
-    // Asked again, by URL or by name, it is the same clone.
-    assert_eq!(prepare(&url, false).await.unwrap(), shared);
-    assert_eq!(prepare("app", false).await.unwrap(), shared);
-
-    // Copies of their own, each separate, and still pointing at the origin.
-    let first = prepare("app", true).await.unwrap();
-    let second = prepare(&url, true).await.unwrap();
-    assert_ne!(first, second);
-    assert!(first.join("README").is_file() && second.join("README").is_file());
-    assert_eq!(git(&first, &["remote", "get-url", "origin"]).trim(), url);
-
-    let unknown = prepare("nothing-here", false).await.unwrap_err();
-    assert!(
-        unknown.message().contains("no project nothing-here"),
-        "{unknown:?}"
-    );
-    let missing = tmp.path().join("missing").join("repo.git");
-    let failed = prepare(&missing.to_string_lossy(), false)
-        .await
-        .unwrap_err();
-    assert!(failed.message().contains("git clone failed"), "{failed:?}");
-    assert!(
-        !state_dir.join("projects").join("repo").exists(),
-        "nothing half cloned"
-    );
-    worker.abort();
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn admin_link_enrols_workers() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1309,6 +1221,110 @@ echo '{"type":"result","is_error":false,"total_cost_usd":1.5,"usage":{"input_tok
         assert!(log.contains("token: sk-ant-oat-x"), "{log}");
         assert!(log.contains("prompt: /review the parser"), "{log}");
         worker.abort();
+    }
+
+    /// A repository with one commit, to clone.
+    fn origin_repository(dir: &Path) -> String {
+        let repo = git2::Repository::init(dir).unwrap();
+        std::fs::write(dir.join("README"), "hello\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("README")).unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let me = git2::Signature::now("t", "t@t").unwrap();
+        repo.commit(Some("HEAD"), &me, &me, "first", &tree, &[])
+            .unwrap();
+        dir.to_string_lossy().into_owned()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn projects_are_cloned_as_copies_and_listed_with_their_sessions() {
+        let Cluster {
+            client,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        let url = origin_repository(&_tmp.path().join("origin").join("app"));
+        let state_dir = _tmp.path().join("worker");
+        let prepare = |repository: &str| {
+            let mut client = client.clone();
+            let request = PrepareProjectRequest {
+                node: "w1".into(),
+                repository: repository.into(),
+            };
+            async move {
+                client
+                    .prepare_project(request)
+                    .await
+                    .map(|r| r.into_inner())
+            }
+        };
+        let list = || {
+            let mut client = client.clone();
+            async move {
+                let request = ListProjectsRequest { node: "w1".into() };
+                client
+                    .list_projects(request)
+                    .await
+                    .unwrap()
+                    .into_inner()
+                    .projects
+            }
+        };
+        assert!(list().await.is_empty());
+
+        // Each copy is a clone of its own, under an id of its own.
+        let first = prepare(&url).await.unwrap();
+        assert_eq!(first.id.len(), 8);
+        assert_eq!(
+            std::path::PathBuf::from(&first.path),
+            state_dir.join("projects").join("app").join(&first.id)
+        );
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&first.path).join("README")).unwrap(),
+            "hello\n"
+        );
+        // By name, once the node has it.
+        let second = prepare("app").await.unwrap();
+        assert_ne!(first.id, second.id);
+        let origin = git2::Repository::open(&second.path).unwrap();
+        assert_eq!(origin.find_remote("origin").unwrap().url().unwrap(), url);
+
+        // A session in a copy says what the copy is used for.
+        let mut client_ = client.clone();
+        let done = prompt(
+            &mut client_,
+            PromptRequest {
+                cwd: first.path.clone(),
+                ..ask("one")
+            },
+        )
+        .await;
+        ok(&done);
+        let projects = list().await;
+        assert_eq!(projects.len(), 1);
+        let project = &projects[0];
+        assert_eq!(
+            (project.name.as_str(), project.repository.as_str()),
+            ("app", url.as_str())
+        );
+        let copy = |id: &str| project.copies.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(copy(&first.id).sessions.len(), 1);
+        assert!(copy(&second.id).sessions.is_empty());
+        assert!(!copy(&first.id).branch.is_empty());
+
+        let unknown = prepare("nothing-here").await.unwrap_err();
+        assert!(
+            unknown.message().contains("no project nothing-here"),
+            "{unknown:?}"
+        );
+        let missing = _tmp.path().join("missing").join("repo.git");
+        let failed = prepare(&missing.to_string_lossy()).await.unwrap_err();
+        assert!(failed.message().contains("cloning"), "{failed:?}");
+        assert!(
+            list().await.iter().all(|p| p.name != "repo"),
+            "nothing half cloned"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

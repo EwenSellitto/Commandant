@@ -40,6 +40,7 @@ envelope!(WorkerMsg.msg, worker_msg::Msg {
     Providers(AgentProviders),
     AuthResult(ProviderAuthResult),
     ProjectReady(ProjectReady),
+    Projects(Projects),
 });
 
 envelope!(OrchestratorMsg.msg, orchestrator_msg::Msg {
@@ -54,6 +55,7 @@ envelope!(OrchestratorMsg.msg, orchestrator_msg::Msg {
     ListProviders(ListProviders),
     ProviderAuth(ProviderAuth),
     PrepareProject(PrepareProject),
+    ListProjects(ListProjects),
 });
 
 /// The capability a worker lists for the harness it hosts: `harness:opencode`.
@@ -116,6 +118,7 @@ reply!(
     AgentProviders => Providers,
     ProviderAuthResult => AuthResult,
     ProjectReady => ProjectReady,
+    Projects => Projects,
 );
 
 envelope!(TaskEvent.event, task_event::Event {

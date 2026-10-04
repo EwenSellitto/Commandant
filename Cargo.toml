@@ -21,6 +21,8 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 directories = "6.0.0"
 getrandom = "0.4.3"
+# libgit2 built from source; OpenSSL and libssh2 from the system (pkg-config).
+git2 = { version = "0.21", default-features = false, features = ["https", "ssh", "vendored-libgit2"] }
 hex = "0.4.3"
 libc = "0.2.189"
 prost = "0.14.4"

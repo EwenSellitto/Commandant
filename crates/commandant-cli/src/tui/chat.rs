@@ -22,7 +22,10 @@ pub const COMMANDS: [(&str, &str); 18] = [
     ("skills", "the agent's commands and skills"),
     ("mcp", "connect or disconnect MCP servers"),
     ("providers", "sign in to or out of a model provider"),
-    ("project", "clone a repository on the node and work in it"),
+    (
+        "project",
+        "browse the node's projects, or clone one: /project <repository>",
+    ),
     ("new", "another session, working alongside"),
     ("sessions", "switch, or resume a saved one"),
     ("close", "close this session"),
@@ -100,11 +103,10 @@ pub enum Choose {
         oauth: Option<u32>,
     },
     SignOut(String),
-    /// Work on a repository: in its shared clone, or a copy of its own.
-    Project {
-        repository: String,
-        separate: bool,
-    },
+    /// Clone a new copy of a project (a repository, or its name) to work in.
+    NewCopy(String),
+    /// Work in an existing copy of a project, alongside its other sessions.
+    Join(ProjectCopy),
 }
 
 /// Where signing in to a provider has got to.
@@ -135,6 +137,7 @@ pub enum Message {
     Auth(Result<ProviderAuthResult, String>),
     /// Where the project asked for is ready to work in.
     Project(Result<ProjectReady, String>),
+    Projects(Result<Vec<commandant_proto::Project>, String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +213,8 @@ pub struct Chat {
     pub auth: Option<Auth>,
     /// The repository the node is cloning for this chat.
     pub preparing: Option<String>,
+    /// Waiting for the node's projects, to browse them.
+    pub listing_projects: bool,
     /// A picker asked for before the options came, to open once they do.
     pending_pick: Option<(Pick, String)>,
     /// The model that last replied, which tells what "default" means.
@@ -258,6 +263,7 @@ impl Chat {
             listing_providers: None,
             auth: None,
             preparing: None,
+            listing_projects: false,
             pending_pick: None,
             options,
             used_model: String::new(),
@@ -431,8 +437,7 @@ impl Chat {
                 }
                 "project" => {
                     self.input.clear();
-                    self.choose_project(filter.trim());
-                    return None;
+                    return self.project(filter.trim());
                 }
                 // One of the agent's own commands or skills, its arguments after it.
                 name if self.is_agent_command(name) => {
@@ -764,18 +769,8 @@ impl Chat {
                 let action = auth_action::Action::SignOut(true);
                 return Some(self.authenticate(provider, None, doing, action));
             }
-            Choose::Project {
-                repository,
-                separate,
-            } => {
-                self.preparing = Some(repository.clone());
-                return Some(Action::PrepareProject {
-                    chat: self.id,
-                    node: self.node.id.clone(),
-                    repository,
-                    separate,
-                });
-            }
+            Choose::NewCopy(repository) => return self.new_copy(repository),
+            Choose::Join(copy) => self.work_in(&copy.path, &copy.id),
             Choose::Mcp(name) => {
                 let connect = self.options.as_ref().is_some_and(|o| {
                     o.mcp_servers
@@ -849,38 +844,64 @@ impl Chat {
         provider.map_or_else(|| id.to_string(), |p| p.name.clone())
     }
 
-    /// Offers to work on `repository` in its shared clone or a copy of its
-    /// own. A session stays in its directory, so only a new one can move.
-    fn choose_project(&mut self, repository: &str) {
-        if repository.is_empty() {
-            self.info("/project <repository URL>, or the name of a project the node has cloned");
-            return;
-        }
+    /// `/project`: browse the node's projects, or with a repository (or a
+    /// project's name), clone a new copy of it to work in. A session stays in
+    /// its directory, so only one that hasn't started can move.
+    fn project(&mut self, repository: &str) -> Option<Action> {
         if !self.settings.session_id.is_empty() || matches!(self.activity, Activity::Working { .. })
         {
             self.info(
-                "this session already works somewhere: start a new one (Ctrl-N) for the project",
+                "this session already works somewhere: start a new one (Ctrl-N) for a project",
             );
+            return None;
+        }
+        if !repository.is_empty() {
+            return self.new_copy(repository.to_string());
+        }
+        if self.listing_projects {
+            return None;
+        }
+        self.listing_projects = true;
+        Some(Action::FetchProjects {
+            chat: self.id,
+            node: self.node.id.clone(),
+        })
+    }
+
+    fn new_copy(&mut self, repository: String) -> Option<Action> {
+        self.preparing = Some(repository.clone());
+        Some(Action::PrepareProject {
+            chat: self.id,
+            node: self.node.id.clone(),
+            repository,
+        })
+    }
+
+    fn work_in(&mut self, path: &str, id: &str) {
+        self.info(&format!("working in copy {id}: {path}"));
+        self.settings.cwd = path.to_string();
+    }
+
+    /// The node's projects to browse: a new copy of each, then its copies
+    /// with what their sessions are about.
+    fn open_projects(&mut self, projects: Vec<commandant_proto::Project>) {
+        if projects.is_empty() {
+            self.info("the node has no projects yet: /project <repository URL> clones one");
             return;
         }
-        let choice = |separate| Choose::Project {
-            repository: repository.to_string(),
-            separate,
-        };
-        let choices = vec![
-            Choice::new(
-                choice(false),
-                "Shared folder",
-                "with the node's other sessions on it",
-            ),
-            Choice::new(
-                choice(true),
-                "A copy of its own",
-                "a separate clone, untouched by the others",
-            ),
-        ];
+        let mut choices = Vec::new();
+        for project in projects {
+            let label = format!("+ new copy of {}", project.name);
+            let new = Choose::NewCopy(project.name.clone());
+            choices.push(Choice::new(new, label, &project.repository));
+            for copy in project.copies {
+                let label = format!("{} · {}", project.name, copy.id);
+                let detail = copy_summary(&copy);
+                choices.push(Choice::new(Choose::Join(copy), label, detail));
+            }
+        }
         self.picker = Some(Picker::new(
-            "Where should this session work?",
+            "Projects (join a copy, or make a new one)",
             choices,
             None,
         ));
@@ -1085,11 +1106,15 @@ impl Chat {
             Message::Project(ready) => {
                 let repository = self.preparing.take().unwrap_or_default();
                 match ready {
-                    Ok(ready) => {
-                        self.info(&format!("working in {}", ready.path));
-                        self.settings.cwd = ready.path;
-                    }
+                    Ok(ready) => self.work_in(&ready.path, &ready.id),
                     Err(e) => self.push(Role::Error, &format!("couldn't get {repository}: {e}")),
+                }
+            }
+            Message::Projects(projects) => {
+                self.listing_projects = false;
+                match projects {
+                    Ok(projects) => self.open_projects(projects),
+                    Err(e) => self.push(Role::Error, &format!("couldn't list the projects: {e}")),
                 }
             }
             Message::History(history) => {
@@ -1301,6 +1326,21 @@ pub fn elapsed(took: Duration) -> String {
         format!("{:.1}s", took.as_secs_f64())
     } else {
         format!("{}m {:02}s", secs / 60, secs % 60)
+    }
+}
+
+/// `main · fix the parser; add tests +1`: a copy's branch and what its
+/// sessions are about.
+fn copy_summary(copy: &ProjectCopy) -> String {
+    let sessions = match copy.sessions.as_slice() {
+        [] => "no sessions yet".to_string(),
+        [one] => one.clone(),
+        [one, two] => format!("{one}; {two}"),
+        [one, two, rest @ ..] => format!("{one}; {two} +{}", rest.len()),
+    };
+    match copy.branch.as_str() {
+        "" => sessions,
+        branch => format!("{branch} · {sessions}"),
     }
 }
 
@@ -1992,29 +2032,61 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_project_is_cloned_then_worked_in() {
+    fn projects_are_browsed_joined_or_copied() {
         let mut app = with_options();
-        assert!(command(&mut app, "/project").is_none());
-        assert!(app.picker.is_none(), "it needs a repository");
-
-        command(&mut app, "/project https://example.com/me/app.git");
-        app.on_key(KeyEvent::from(KeyCode::Down));
-        let Some(Action::PrepareProject {
-            repository,
-            separate,
-            ..
-        }) = app.on_key(KeyEvent::from(KeyCode::Enter))
-        else {
-            panic!("choosing where clones it");
-        };
-        assert_eq!(
-            (repository.as_str(), separate),
-            ("https://example.com/me/app.git", true)
+        assert!(matches!(
+            command(&mut app, "/project"),
+            Some(Action::FetchProjects { .. })
+        ));
+        assert!(
+            command(&mut app, "/project").is_none(),
+            "one listing at a time"
         );
-        assert!(app.preparing.is_some());
+        let copy = |id: &str, sessions: &[&str]| ProjectCopy {
+            id: id.into(),
+            path: format!("/state/projects/app/{id}"),
+            branch: "main".into(),
+            sessions: sessions.iter().map(|s| s.to_string()).collect(),
+        };
+        let projects = vec![commandant_proto::Project {
+            name: "app".into(),
+            repository: "https://example.com/me/app.git".into(),
+            copies: vec![
+                copy("3fa9c1d2", &["fix the parser", "add tests", "docs"]),
+                copy("77aa00bb", &[]),
+            ],
+        }];
+        app.on_message(Message::Projects(Ok(projects)));
+        let picker = app.picker.as_ref().expect("the projects to browse");
+        let shown: Vec<_> = picker
+            .shown()
+            .map(|c| (c.label.clone(), c.detail.clone()))
+            .collect();
+        assert_eq!(shown[0].0, "+ new copy of app");
+        assert_eq!(
+            shown[1],
+            (
+                "app · 3fa9c1d2".into(),
+                "main · fix the parser; add tests +1".into()
+            )
+        );
+        assert_eq!(shown[2].1, "main · no sessions yet");
 
+        // Joining a copy works in it at once.
+        app.on_key(KeyEvent::from(KeyCode::Down));
+        assert!(app.on_key(KeyEvent::from(KeyCode::Enter)).is_none());
+        assert_eq!(app.settings.cwd, "/state/projects/app/3fa9c1d2");
+
+        // A new copy is cloned first, by name or by URL.
+        let Some(Action::PrepareProject { repository, .. }) = command(&mut app, "/project app")
+        else {
+            panic!("a new copy is asked for");
+        };
+        assert_eq!(repository, "app");
+        assert!(app.preparing.is_some());
         let ready = ProjectReady {
-            path: "/state/copies/app/2".into(),
+            id: "c0ffee00".into(),
+            path: "/state/projects/app/c0ffee00".into(),
             ..Default::default()
         };
         app.on_message(Message::Project(Ok(ready)));
@@ -2022,7 +2094,7 @@ pub(crate) mod tests {
         let Some(Action::Send(_, request)) = command(&mut app, "hi") else {
             panic!("a prompt is sent");
         };
-        assert_eq!(request.cwd, "/state/copies/app/2");
+        assert_eq!(request.cwd, "/state/projects/app/c0ffee00");
 
         // Once the session has started, a new one is needed to move.
         app.on_message(Message::Task(TaskEvent::Finished(TaskFinished {
@@ -2030,9 +2102,20 @@ pub(crate) mod tests {
             session_id: "ses_1".into(),
             ..Default::default()
         })));
-        command(&mut app, "/project other");
-        assert!(app.picker.is_none());
+        assert!(command(&mut app, "/project").is_none());
         assert!(app.thread.last().unwrap().text.contains("Ctrl-N"));
+        let mut empty = with_options();
+        command(&mut empty, "/project");
+        empty.on_message(Message::Projects(Ok(Vec::new())));
+        assert!(empty.picker.is_none());
+        assert!(
+            empty
+                .thread
+                .last()
+                .unwrap()
+                .text
+                .contains("no projects yet")
+        );
     }
 
     #[test]

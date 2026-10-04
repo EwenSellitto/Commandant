@@ -2,6 +2,10 @@
 
 FROM rust:1-slim-trixie AS builder
 WORKDIR /src
+# git2 links OpenSSL and builds libgit2 and libssh2 from source.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \

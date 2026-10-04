@@ -396,6 +396,9 @@ fn draw_status(frame: &mut Frame, chat: &Chat, area: Rect) {
         Activity::Idle if let Some(repository) = &chat.preparing => {
             loading(format!("getting {repository} ready on {}…", chat.node.name))
         }
+        Activity::Idle if chat.listing_projects => {
+            loading(format!("listing {}'s projects…", chat.node.name))
+        }
         Activity::Idle if chat.listing_providers.is_some() => {
             loading(format!("listing {}'s model providers…", chat.node.name))
         }

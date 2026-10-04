@@ -224,7 +224,8 @@ async fn handle_messages(
             | worker_msg::Msg::History(_)
             | worker_msg::Msg::Providers(_)
             | worker_msg::Msg::AuthResult(_)
-            | worker_msg::Msg::ProjectReady(_)) => shared.queries.answer(answer),
+            | worker_msg::Msg::ProjectReady(_)
+            | worker_msg::Msg::Projects(_)) => shared.queries.answer(answer),
             worker_msg::Msg::Hello(_) => warn!(%node_id, "ignoring duplicate hello"),
         }
     }

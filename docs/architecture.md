@@ -318,14 +318,24 @@ same kind of question: the worker reads `GET /session/:id/message` and answers
 with the session's prompts, replies, thinking and tool calls (the latest 300),
 which the chat puts before anything said since.
 
-**Projects.** `PrepareProject` is a question any worker answers, harness or
-not, with up to 10 minutes for a clone. The worker clones the repository
-(`git clone -- <url>`, never prompting) into `<state>/projects/<name>`
-through a temporary directory, so a failed clone leaves nothing, and reuses
-it after that, by URL or by name. A separate copy is a local clone of that
-one into `<state>/copies/<name>/<n>`, its `origin` set to the real one. It
-answers with the path, which the TUI then sends as each prompt's `cwd`; a
-session already started keeps its directory, so moving takes a new one.
+**Projects.** `PrepareProject` and `ListProjects` are questions any worker
+answers, harness or not, with up to 10 minutes for a clone. A project is a
+repository the node cloned; each clone is a copy with a random 8-character
+id, `<state>/projects/<name>/<id>`. `PrepareProject` always makes a new copy,
+cloning with libgit2 (`git2`) through a hidden `.cloning-<id>` directory so a
+failed clone leaves nothing; given a project's name, it clones the origin of
+one of its copies. Credentials are tried as git would, once each: the SSH
+agent, the usual key files, the credential helper, never a prompt.
+`ListProjects` lists the copies, latest first, with their branch and the
+titles of the harness's sessions whose directory is the copy. Joining a copy
+is the TUI's alone: the copy's path becomes the session's `cwd`. A started
+session keeps its directory, so moving takes a new one.
+
+**One harness, many sessions.** A worker runs at most one harness, whatever
+the number of sessions, projects and copies. OpenCode is one `opencode serve`
+for all of them, every call naming its directory. Claude Code has no
+long-running process: `claude` runs for one prompt and exits, and one
+process can only hold one session.
 
 **Signing in to model providers.** `ListProviders` and `ProviderAuth` are
 questions too. In the TUI, `/providers` lists every provider the node's

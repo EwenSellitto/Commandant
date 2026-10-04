@@ -38,7 +38,11 @@ pub enum Action {
         chat: ChatId,
         node: String,
         repository: String,
-        separate: bool,
+    },
+    /// Ask a node which projects it has cloned, for a chat to browse.
+    FetchProjects {
+        chat: ChatId,
+        node: String,
     },
     /// Ask a node's agent which model providers it knows, for a chat.
     FetchProviders {
@@ -224,6 +228,7 @@ impl App {
                     || c.loading()
                     || c.listing_providers.is_some()
                     || c.preparing.is_some()
+                    || c.listing_projects
                     || matches!(c.auth, Some(chat::Auth::Waiting { .. }))
             })
     }

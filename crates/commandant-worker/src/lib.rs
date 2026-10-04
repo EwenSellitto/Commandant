@@ -18,9 +18,9 @@ use commandant_proto::hello::Auth;
 use commandant_proto::node_link_client::NodeLinkClient;
 use commandant_proto::{
     AgentPrompt, AgentProviders, AgentSessions, CancelTask, GetSessionHistory, HarnessStarted,
-    Heartbeat, Hello, ListAgentOptions, ListAgentSessions, ListProviders, NodeCredential,
-    OrchestratorMsg, PrepareProject, ProjectReady, ProviderAuth, Reply, SessionHistory,
-    StartHarness, TaskFinished, Welcome, WorkerMsg, orchestrator_msg,
+    Heartbeat, Hello, ListAgentOptions, ListAgentSessions, ListProjects, ListProviders,
+    NodeCredential, OrchestratorMsg, PrepareProject, ProjectReady, Projects, ProviderAuth, Reply,
+    SessionHistory, StartHarness, TaskFinished, Welcome, WorkerMsg, orchestrator_msg,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -318,13 +318,25 @@ async fn serve(
                             h.authenticate(&provider, action).await
                         });
                     }
-                    Some(orchestrator_msg::Msg::PrepareProject(PrepareProject { request_id, repository, separate })) => {
-                        info!(%repository, separate, "preparing a project");
+                    Some(orchestrator_msg::Msg::PrepareProject(PrepareProject { request_id, repository })) => {
+                        info!(%repository, "making a copy of a project");
                         let state_dir = state_dir.to_path_buf();
                         answer(outbound, request_id, async move {
-                            let path = project::prepare(&state_dir, &repository, separate).await?;
+                            let (id, path) = project::prepare(&state_dir, &repository).await?;
                             let path = path.to_string_lossy().into_owned();
-                            Ok(ProjectReady { path, ..Default::default() })
+                            Ok(ProjectReady { id, path, ..Default::default() })
+                        });
+                    }
+                    Some(orchestrator_msg::Msg::ListProjects(ListProjects { request_id })) => {
+                        let (host, state_dir) = (host.clone(), state_dir.to_path_buf());
+                        answer(outbound, request_id, async move {
+                            // Without an agent, or if it can't say, copies just list no sessions.
+                            let sessions = match host.current() {
+                                Some(harness) => harness.sessions().await.unwrap_or_default(),
+                                None => Vec::new(),
+                            };
+                            let listed = tokio::task::spawn_blocking(move || project::list(&state_dir, &sessions));
+                            Ok(Projects { projects: listed.await?, ..Default::default() })
                         });
                     }
                     Some(orchestrator_msg::Msg::StartHarness(StartHarness { request_id, harness })) => {
