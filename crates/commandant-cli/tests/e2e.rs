@@ -83,10 +83,11 @@ fn spawn_worker(
     state_dir: &Path,
 ) -> JoinHandle<anyhow::Result<()>> {
     tokio::spawn(commandant_worker::run(WorkerConfig {
-        server: addr.to_string(),
+        server: Some(addr.to_string()),
         join_token,
         name: Some("w1".into()),
         state_dir: state_dir.to_path_buf(),
+        pick_free_state_dir: false,
         harness: None,
         opencode_bin: None,
     }))
@@ -261,10 +262,11 @@ async fn worker_joins_runs_commands_and_reconnects() {
     let res = tokio::time::timeout(
         WAIT,
         commandant_worker::run(WorkerConfig {
-            server: addr.clone(),
+            server: Some(addr.clone()),
             join_token: Some(join),
             name: Some("w2".into()),
             state_dir: other.path().to_path_buf(),
+            pick_free_state_dir: false,
             harness: None,
             opencode_bin: None,
         }),
@@ -566,6 +568,152 @@ async fn stale_credentials_give_way_to_a_fresh_token() {
     assert!(nodes.is_empty(), "it didn't come back");
 }
 
+/// Workers started together on one machine, from the default state
+/// directory, become separate nodes and stay connected side by side.
+#[tokio::test(flavor = "multi_thread")]
+async fn workers_on_one_machine_are_separate_nodes() {
+    const WORKERS: usize = 4;
+    let tmp = tempfile::tempdir().unwrap();
+    let (addr, token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
+    let mut client = connect_control(&addr, &token).await.unwrap();
+    let state_dir = tmp.path().join("worker");
+    let workers: Vec<_> = (0..WORKERS)
+        .map(|_| {
+            tokio::spawn(commandant_worker::run(WorkerConfig {
+                server: Some(addr.clone()),
+                join_token: Some(token.clone()),
+                name: None,
+                state_dir: state_dir.clone(),
+                pick_free_state_dir: true,
+                harness: None,
+                opencode_bin: None,
+            }))
+        })
+        .collect();
+
+    let online = |client: &mut ControlClient| {
+        let mut client = client.clone();
+        async move {
+            let nodes = client.list_nodes(ListNodesRequest {}).await.unwrap();
+            let mut online: Vec<_> = nodes
+                .into_inner()
+                .nodes
+                .into_iter()
+                .filter(|n| n.online)
+                .collect();
+            online.sort_by(|a, b| a.name.cmp(&b.name));
+            online
+        }
+    };
+    let nodes = tokio::time::timeout(WAIT, async {
+        loop {
+            let nodes = online(&mut client).await;
+            if nodes.len() == WORKERS {
+                return nodes;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("every worker should come online");
+    // Each its own node, name and state directory.
+    let mut ids: Vec<_> = nodes.iter().map(|n| n.id.clone()).collect();
+    ids.dedup();
+    assert_eq!(ids.len(), WORKERS);
+    let host = &nodes[0].name;
+    let names: Vec<_> = nodes.iter().map(|n| n.name.as_str()).collect();
+    let expected: Vec<String> = std::iter::once(host.clone())
+        .chain((2..=WORKERS).map(|n| format!("{host}-{n}")))
+        .collect();
+    assert_eq!(names, expected);
+    for n in 2..=WORKERS {
+        saved_credentials(&tmp.path().join(format!("worker-{n}"))).await;
+    }
+
+    // They stay connected rather than taking turns.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let still: Vec<_> = online(&mut client)
+        .await
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(still.len(), WORKERS);
+    assert!(workers.iter().all(|w| !w.is_finished()));
+
+    // A worker told to use a directory another one holds is refused.
+    let err = tokio::time::timeout(
+        WAIT,
+        commandant_worker::run(WorkerConfig {
+            server: Some(addr.clone()),
+            join_token: Some(token.clone()),
+            name: Some("intruder".into()),
+            state_dir: state_dir.clone(),
+            pick_free_state_dir: false,
+            harness: None,
+            opencode_bin: None,
+        }),
+    )
+    .await
+    .expect("a held directory should fail fast")
+    .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("its own --state-dir"),
+        "{err:#}"
+    );
+
+    // Once they stop, the next worker takes the first free directory back,
+    // and is the same node again.
+    for worker in workers {
+        worker.abort();
+        let _ = worker.await;
+    }
+    for name in &names {
+        wait_for_named(&mut client, name, false).await;
+    }
+    let _back = tokio::spawn(commandant_worker::run(WorkerConfig {
+        server: None,
+        join_token: None,
+        name: None,
+        state_dir,
+        pick_free_state_dir: true,
+        harness: None,
+        opencode_bin: None,
+    }));
+    wait_for_named(&mut client, host, true).await;
+}
+
+/// Credentials copied to a second worker don't make two workers take turns
+/// as one node: the one that connected first is told why and stops.
+#[tokio::test(flavor = "multi_thread")]
+async fn copied_credentials_stop_the_older_worker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (addr, token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
+    let mut client = connect_control(&addr, &token).await.unwrap();
+    let original = tmp.path().join("original");
+    let first = spawn_worker(&addr, Some(token), &original);
+    let node = wait_for_node(&mut client, true).await;
+    saved_credentials(&original).await;
+
+    let copy = tmp.path().join("copy");
+    std::fs::create_dir_all(&copy).unwrap();
+    std::fs::copy(original.join("node.json"), copy.join("node.json")).unwrap();
+    let _second = spawn_worker(&addr, None, &copy);
+
+    let stopped = tokio::time::timeout(WAIT, first)
+        .await
+        .expect("the older worker should stop")
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        format!("{stopped:#}").contains("same credentials"),
+        "{stopped:#}"
+    );
+    let still = wait_for_node(&mut client, true).await;
+    assert_eq!(still.id, node.id);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(wait_for_node(&mut client, true).await.online);
+}
+
 #[cfg(unix)]
 mod fake_opencode;
 
@@ -594,10 +742,11 @@ mod agents {
         let tmp = tempfile::tempdir().unwrap();
         let (addr, admin_token, stop) = start_orchestrator(&tmp.path().join("server")).await;
         let worker = tokio::spawn(commandant_worker::run(WorkerConfig {
-            server: addr.clone(),
+            server: Some(addr.clone()),
             join_token: Some(admin_token.clone()),
             name: Some("w1".into()),
             state_dir: tmp.path().join("worker"),
+            pick_free_state_dir: false,
             harness: Some(HarnessKind::Opencode),
             opencode_bin: Some(fake.binary.clone()),
         }));
@@ -1044,10 +1193,11 @@ mod agents {
         let fake = FakeOpencode::start().await;
         let worker = |token: Option<String>| {
             tokio::spawn(commandant_worker::run(WorkerConfig {
-                server: addr.clone(),
+                server: Some(addr.clone()),
                 join_token: token,
                 name: Some("w1".into()),
                 state_dir: tmp.path().join("worker"),
+                pick_free_state_dir: false,
                 harness: None,
                 opencode_bin: Some(fake.binary.clone()),
             }))

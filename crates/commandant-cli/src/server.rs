@@ -39,10 +39,11 @@ pub async fn run(args: ServerArgs) -> Result<()> {
 
     let local_worker = args.local_worker.then(|| {
         spawn_local_worker(WorkerConfig {
-            server: format!("http://{}", reachable_locally(args.listen)),
+            server: Some(format!("http://{}", reachable_locally(args.listen))),
             join_token: Some(orchestrator.admin_token().to_string()),
             name: None,
             state_dir: data_dir.join(LOCAL_WORKER_DIR),
+            pick_free_state_dir: false,
             harness: args.harness,
             opencode_bin: args.opencode_bin.clone(),
         })

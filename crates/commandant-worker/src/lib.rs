@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, bail};
 use commandant_proto::hello::Auth;
 use commandant_proto::node_link_client::NodeLinkClient;
 use commandant_proto::{
@@ -36,17 +36,28 @@ const NO_HARNESS: &str = "this node runs no agent harness";
 
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
-    /// Orchestrator URL, e.g. `http://10.0.0.1:7400`.
-    pub server: String,
+    /// Orchestrator URL, e.g. `http://10.0.0.1:7400`; when unset, the one the
+    /// saved credentials remember.
+    pub server: Option<String>,
     /// Only needed until the node has credentials in `state_dir`.
     pub join_token: Option<String>,
     /// Defaults to the hostname.
     pub name: Option<String>,
     pub state_dir: PathBuf,
+    /// When another worker runs from `state_dir`, use the first free
+    /// `<state_dir>-2`, `-3`… (each its own node) instead of failing.
+    pub pick_free_state_dir: bool,
     /// The coding agent to host, if any.
     pub harness: Option<HarnessKind>,
     /// The `opencode` to run; when unset it is looked for, or installed.
     pub opencode_bin: Option<PathBuf>,
+}
+
+impl WorkerConfig {
+    /// The orchestrator, once `run` has settled which.
+    fn server(&self) -> &str {
+        self.server.as_deref().unwrap_or_default()
+    }
 }
 
 /// Why a session ended.
@@ -72,6 +83,32 @@ impl From<tonic::Status> for Stop {
 /// Sets up the harness, then stays connected to the orchestrator,
 /// reconnecting with backoff, until a fatal error occurs.
 pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
+    // Held until the worker stops: no other worker can be this node.
+    let claim = state::claim(&config.state_dir, config.pick_free_state_dir)?;
+    if claim.instance > 1 {
+        info!(
+            "another worker runs from {}, so this one uses {}",
+            config.state_dir.display(),
+            claim.dir.display()
+        );
+    }
+    let remembered = state::load(&claim.dir)?.and_then(|c| c.server);
+    let Some(server) = config.server.clone().or(remembered) else {
+        bail!(
+            "pass the connection link printed by `commandant server`: commandant worker commandant://..."
+        );
+    };
+    // Side by side on one machine, each takes its own name.
+    let name = config
+        .name
+        .clone()
+        .or_else(|| (claim.instance > 1).then(|| format!("{}-{}", hostname(), claim.instance)));
+    let config = WorkerConfig {
+        server: Some(server),
+        name,
+        state_dir: claim.dir.clone(),
+        ..config
+    };
     let harness = match config.harness {
         Some(kind) => Some(
             harness::start(kind, config.opencode_bin.clone())
@@ -110,7 +147,7 @@ pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
                 use_saved = false;
                 continue;
             }
-            Stop::Retry(e) => warn!("connection to {} lost: {e:#}", config.server),
+            Stop::Retry(e) => warn!("connection to {} lost: {e:#}", config.server()),
         }
         first = false;
         let was_healthy = started.elapsed() > MAX_BACKOFF;
@@ -135,7 +172,7 @@ async fn session(
         .filter(|_| use_saved);
     let hosted = host.current().map(|h| h.kind());
     let hello = hello(config, saved.as_ref(), hosted)?;
-    let channel = connect(&config.server).await?;
+    let channel = connect(config.server()).await?;
     let can_rejoin = first && saved.is_some() && config.join_token.is_some();
     let rejected = |status: tonic::Status| match status.code() {
         Code::Unauthenticated if can_rejoin => {
@@ -164,7 +201,7 @@ async fn session(
     if let Some(updated) = credentials_to_save(config, saved, &welcome) {
         state::save(&config.state_dir, &updated).map_err(Stop::Fatal)?;
     }
-    info!(node_id = %welcome.node_id, server = %config.server, "connected to orchestrator");
+    info!(node_id = %welcome.node_id, server = %config.server(), "connected to orchestrator");
 
     serve(&mut inbound, &outbound, config, host).await
 }
@@ -222,7 +259,7 @@ fn credentials_to_save(
     saved: Option<Credentials>,
     welcome: &Welcome,
 ) -> Option<Credentials> {
-    let server = Some(config.server.clone());
+    let server = config.server.clone();
     if !welcome.node_secret.is_empty() {
         return Some(Credentials {
             node_id: welcome.node_id.clone(),

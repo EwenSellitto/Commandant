@@ -46,10 +46,19 @@ impl Registry {
             harnesses,
             can_host,
         };
-        self.nodes
+        let replaced = self
+            .nodes
             .lock()
             .unwrap()
             .insert(node_id.to_string(), connection);
+        // A worker reconnecting has already let go of its old stream; one
+        // still listening is another worker with the same credentials. Telling
+        // it why stops it, where reconnecting would knock this one off in turn.
+        if let Some(old) = replaced {
+            let why = "another worker connected as this node, with the same credentials; \
+                       give each worker its own state directory";
+            let _ = old.tx.try_send(Err(Status::already_exists(why)));
+        }
         id
     }
 
