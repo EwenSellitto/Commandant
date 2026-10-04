@@ -219,9 +219,11 @@ async fn handle_messages(
                     .queries
                     .answer(worker_msg::Msg::HarnessStarted(started))
             }
-            answer @ (worker_msg::Msg::Options(_) | worker_msg::Msg::Sessions(_)) => {
-                shared.queries.answer(answer)
-            }
+            answer @ (worker_msg::Msg::Options(_)
+            | worker_msg::Msg::Sessions(_)
+            | worker_msg::Msg::History(_)
+            | worker_msg::Msg::Providers(_)
+            | worker_msg::Msg::AuthResult(_)) => shared.queries.answer(answer),
             worker_msg::Msg::Hello(_) => warn!(%node_id, "ignoring duplicate hello"),
         }
     }

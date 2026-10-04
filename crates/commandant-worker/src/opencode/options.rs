@@ -20,6 +20,8 @@ const MCP_WAIT: Duration = Duration::from_secs(2);
 
 /// What a prompt can choose from, switching an MCP server first if asked.
 pub async fn options(opencode: &Opencode, mcp: Option<McpSwitch>) -> Result<AgentOptions> {
+    // A provider just signed in to lists its models once OpenCode reloads.
+    opencode.reload_if_stale().await?;
     if let Some(McpSwitch { name, connect }) = mcp {
         let api = opencode.api().await?;
         let action = if connect {

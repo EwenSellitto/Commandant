@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use reqwest::{Method, RequestBuilder, Response, StatusCode};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 /// The HTTP basic auth user OpenCode expects.
 const USER: &str = "opencode";
@@ -165,6 +167,52 @@ pub struct Limit {
     pub context: Option<u64>,
 }
 
+#[derive(Deserialize)]
+pub struct AllProviders {
+    pub all: Vec<ProviderName>,
+    pub connected: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ProviderName {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Deserialize)]
+pub struct AuthMethod {
+    /// `oauth` or `api`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub label: String,
+    /// What it asks before starting.
+    #[serde(default)]
+    pub prompts: Vec<AuthPrompt>,
+}
+
+#[derive(Deserialize)]
+pub struct AuthPrompt {
+    pub key: String,
+    /// A select's choices; a text prompt has none.
+    #[serde(default)]
+    pub options: Vec<AuthOption>,
+}
+
+#[derive(Deserialize)]
+pub struct AuthOption {
+    pub value: String,
+}
+
+/// Where to sign in, and whether the page then shows a code to paste back
+/// (`code`) or OpenCode notices by itself (`auto`).
+#[derive(Deserialize)]
+pub struct Authorization {
+    pub url: String,
+    pub method: String,
+    #[serde(default)]
+    pub instructions: String,
+}
+
 /// The parts of OpenCode's configuration that pick defaults.
 #[derive(Deserialize)]
 pub struct Config {
@@ -209,6 +257,43 @@ pub struct SessionTime {
     pub updated: i64,
 }
 
+/// A message as saved: who wrote it, and what it is made of.
+#[derive(Deserialize)]
+pub struct SavedMessage {
+    pub info: MessageRole,
+    #[serde(default)]
+    pub parts: Vec<SavedPart>,
+}
+
+#[derive(Deserialize)]
+pub struct MessageRole {
+    /// `user` or `assistant`.
+    pub role: String,
+}
+
+#[derive(Deserialize)]
+pub struct SavedPart {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub text: String,
+    /// Text OpenCode added itself, like a file's contents.
+    #[serde(default)]
+    pub synthetic: Option<bool>,
+    #[serde(default)]
+    pub tool: String,
+    pub state: Option<SavedToolState>,
+}
+
+#[derive(Deserialize)]
+pub struct SavedToolState {
+    pub status: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
 impl Api {
     pub fn new(base: String, password: String) -> Self {
         Self {
@@ -230,26 +315,29 @@ impl Api {
         }
     }
 
+    /// GETs `path`, outside any directory, and reads the JSON answer.
+    async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        json(self.request(Method::GET, path, None)).await
+    }
+
     pub async fn health(&self) -> Result<()> {
-        let request = self.request(Method::GET, "/global/health", None);
-        send(request.timeout(HEALTH_TIMEOUT)).await?;
-        Ok(())
+        call(
+            self.request(Method::GET, "/global/health", None)
+                .timeout(HEALTH_TIMEOUT),
+        )
+        .await
     }
 
     /// Starts a session in `directory` and returns its id.
     pub async fn create_session(&self, directory: &str) -> Result<String> {
         let request = self.request(Method::POST, "/session", Some(directory));
-        let session: Session = send(request.json(&serde_json::json!({})))
-            .await?
-            .json()
-            .await?;
+        let session: Session = json(request.json(&json!({}))).await?;
         Ok(session.id)
     }
 
     /// The directory an existing session works in.
     pub async fn session_directory(&self, session_id: &str) -> Result<String> {
-        let request = self.request(Method::GET, &format!("/session/{session_id}"), None);
-        let session: Session = send(request).await?.json().await?;
+        let session: Session = self.get(&format!("/session/{session_id}")).await?;
         Ok(session.directory)
     }
 
@@ -269,50 +357,93 @@ impl Api {
             }
             self.legacy_sessions.store(true, Ordering::Relaxed);
         }
-        Ok(send(list("/session")).await?.json().await?)
+        json(list("/session")).await
+    }
+
+    /// A session's messages with their parts, oldest first.
+    pub async fn messages(&self, session_id: &str) -> Result<Vec<SavedMessage>> {
+        self.get(&format!("/session/{session_id}/message")).await
+    }
+
+    /// Every provider OpenCode knows, and the ids of those with credentials.
+    pub async fn all_providers(&self) -> Result<AllProviders> {
+        self.get("/provider").await
+    }
+
+    /// How each provider that has its own sign-in can be signed in to; any
+    /// other takes an API key.
+    pub async fn auth_methods(&self) -> Result<HashMap<String, Vec<AuthMethod>>> {
+        self.get("/provider/auth").await
+    }
+
+    /// Starts the provider's OAuth method `method`.
+    pub async fn oauth_authorize(
+        &self,
+        provider: &str,
+        method: u32,
+        inputs: &HashMap<String, String>,
+    ) -> Result<Authorization> {
+        let path = format!("/provider/{provider}/oauth/authorize");
+        let body = json!({ "method": method, "inputs": inputs });
+        json(self.request(Method::POST, &path, None).json(&body)).await
+    }
+
+    /// Finishes it, with the code the provider showed, if it asked for one;
+    /// without, this waits for the user to be done.
+    pub async fn oauth_callback(&self, provider: &str, method: u32, code: &str) -> Result<()> {
+        let path = format!("/provider/{provider}/oauth/callback");
+        let mut body = json!({ "method": method });
+        if !code.is_empty() {
+            body["code"] = code.into();
+        }
+        call(self.request(Method::POST, &path, None).json(&body)).await
+    }
+
+    pub async fn set_api_key(&self, provider: &str, key: &str) -> Result<()> {
+        let body = json!({ "type": "api", "key": key });
+        call(
+            self.request(Method::PUT, &format!("/auth/{provider}"), None)
+                .json(&body),
+        )
+        .await
+    }
+
+    pub async fn remove_auth(&self, provider: &str) -> Result<()> {
+        call(self.request(Method::DELETE, &format!("/auth/{provider}"), None)).await
+    }
+
+    /// Drops every project's loaded state, so credentials are read again.
+    /// It aborts the prompts running meanwhile.
+    pub async fn reload(&self) -> Result<()> {
+        call(self.request(Method::POST, "/global/dispose", None)).await
     }
 
     pub async fn agents(&self) -> Result<Vec<Agent>> {
-        Ok(send(self.request(Method::GET, "/agent", None))
-            .await?
-            .json()
-            .await?)
+        self.get("/agent").await
     }
 
     /// The providers that are set up, with their models.
     pub async fn providers(&self) -> Result<Providers> {
-        let request = self.request(Method::GET, "/config/providers", None);
-        Ok(send(request).await?.json().await?)
+        self.get("/config/providers").await
     }
 
     pub async fn config(&self) -> Result<Config> {
-        Ok(send(self.request(Method::GET, "/config", None))
-            .await?
-            .json()
-            .await?)
+        self.get("/config").await
     }
 
     /// The commands a prompt can run in `directory`, skills included.
     pub async fn commands(&self, directory: Option<&str>) -> Result<Vec<Command>> {
-        Ok(send(self.request(Method::GET, "/command", directory))
-            .await?
-            .json()
-            .await?)
+        json(self.request(Method::GET, "/command", directory)).await
     }
 
     /// Every MCP server that is set up, by name.
     pub async fn mcp_servers(&self) -> Result<HashMap<String, McpStatus>> {
-        Ok(send(self.request(Method::GET, "/mcp", None))
-            .await?
-            .json()
-            .await?)
+        self.get("/mcp").await
     }
 
     pub async fn switch_mcp_server(&self, name: &str, connect: bool) -> Result<()> {
         let action = if connect { "connect" } else { "disconnect" };
-        let path = format!("/mcp/{name}/{action}");
-        send(self.request(Method::POST, &path, None)).await?;
-        Ok(())
+        call(self.request(Method::POST, &format!("/mcp/{name}/{action}"), None)).await
     }
 
     /// Runs a command; it returns once the agent is done, while the reply
@@ -324,12 +455,11 @@ impl Api {
         command: &CommandRun<'_>,
     ) -> Result<()> {
         let path = format!("/session/{session_id}/command");
-        send(
+        call(
             self.request(Method::POST, &path, Some(directory))
                 .json(command),
         )
-        .await?;
-        Ok(())
+        .await
     }
 
     /// Queues a prompt; the reply arrives as events.
@@ -340,30 +470,27 @@ impl Api {
         prompt: &Prompt<'_>,
     ) -> Result<()> {
         let path = format!("/session/{session_id}/prompt_async");
-        send(
+        call(
             self.request(Method::POST, &path, Some(directory))
                 .json(prompt),
         )
-        .await?;
-        Ok(())
+        .await
     }
 
     pub async fn abort(&self, session_id: &str, directory: &str) -> Result<()> {
         let path = format!("/session/{session_id}/abort");
-        send(self.request(Method::POST, &path, Some(directory))).await?;
-        Ok(())
+        call(self.request(Method::POST, &path, Some(directory))).await
     }
 
     /// Answers a permission request: `once`, `always` or `reject`.
     pub async fn reply_permission(&self, id: &str, directory: &str, reply: &str) -> Result<()> {
         let path = format!("/permission/{id}/reply");
-        let body = serde_json::json!({ "reply": reply });
-        send(
+        let body = json!({ "reply": reply });
+        call(
             self.request(Method::POST, &path, Some(directory))
                 .json(&body),
         )
-        .await?;
-        Ok(())
+        .await
     }
 
     /// Subscribes to everything happening in `directory`.
@@ -374,6 +501,17 @@ impl Api {
             buffer: Vec::new(),
         })
     }
+}
+
+/// Sends a request and reads its JSON answer.
+async fn json<T: DeserializeOwned>(request: RequestBuilder) -> Result<T> {
+    Ok(send(request).await?.json().await?)
+}
+
+/// Sends a request whose answer doesn't matter.
+async fn call(request: RequestBuilder) -> Result<()> {
+    send(request).await?;
+    Ok(())
 }
 
 /// Sends a request and turns an error status into an error carrying the body.

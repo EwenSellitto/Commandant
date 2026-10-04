@@ -15,8 +15,9 @@ use anyhow::{Context, anyhow, bail};
 use commandant_proto::hello::Auth;
 use commandant_proto::node_link_client::NodeLinkClient;
 use commandant_proto::{
-    AgentPrompt, AgentSessions, CancelTask, HarnessStarted, Heartbeat, Hello, ListAgentOptions,
-    ListAgentSessions, NodeCredential, OrchestratorMsg, Reply, StartHarness, TaskFinished, Welcome,
+    AgentPrompt, AgentProviders, AgentSessions, CancelTask, GetSessionHistory, HarnessStarted,
+    Heartbeat, Hello, ListAgentOptions, ListAgentSessions, ListProviders, NodeCredential,
+    OrchestratorMsg, ProviderAuth, Reply, SessionHistory, StartHarness, TaskFinished, Welcome,
     WorkerMsg, orchestrator_msg,
 };
 use tokio::sync::{mpsc, oneshot};
@@ -274,29 +275,35 @@ async fn serve(
                         }
                     }
                     Some(orchestrator_msg::Msg::ListOptions(ListAgentOptions { request_id, mcp })) => {
-                        let (host, outbound) = (host.clone(), outbound.clone());
-                        tokio::spawn(async move {
-                            let options = async { harness(&host)?.options(mcp).await };
-                            reply(&outbound, request_id, options.await).await;
-                        });
+                        ask_harness(host, outbound, request_id, |h| async move { h.options(mcp).await });
                     }
                     Some(orchestrator_msg::Msg::ListSessions(ListAgentSessions { request_id })) => {
-                        let (host, outbound) = (host.clone(), outbound.clone());
-                        tokio::spawn(async move {
-                            let sessions = async { harness(&host)?.sessions().await };
-                            let sessions = sessions.await.map(|sessions| AgentSessions {
-                                sessions,
-                                ..Default::default()
-                            });
-                            reply(&outbound, request_id, sessions).await;
+                        ask_harness(host, outbound, request_id, |h| async move {
+                            let sessions = h.sessions().await?;
+                            Ok(AgentSessions { sessions, ..Default::default() })
+                        });
+                    }
+                    Some(orchestrator_msg::Msg::GetHistory(GetSessionHistory { request_id, session_id })) => {
+                        ask_harness(host, outbound, request_id, |h| async move {
+                            let entries = h.history(&session_id).await?;
+                            Ok(SessionHistory { entries, ..Default::default() })
+                        });
+                    }
+                    Some(orchestrator_msg::Msg::ListProviders(ListProviders { request_id })) => {
+                        ask_harness(host, outbound, request_id, |h| async move {
+                            let providers = h.providers().await?;
+                            Ok(AgentProviders { providers, ..Default::default() })
+                        });
+                    }
+                    Some(orchestrator_msg::Msg::ProviderAuth(ProviderAuth { request_id, provider, action })) => {
+                        info!(%provider, "signing the agent in or out of a provider");
+                        ask_harness(host, outbound, request_id, |h| async move {
+                            h.authenticate(&provider, action).await
                         });
                     }
                     Some(orchestrator_msg::Msg::StartHarness(StartHarness { request_id, harness })) => {
-                        let (host, outbound) = (host.clone(), outbound.clone());
-                        tokio::spawn(async move {
-                            let started = start_harness(&host, &harness).await;
-                            reply(&outbound, request_id, started).await;
-                        });
+                        let host = host.clone();
+                        answer(outbound, request_id, async move { start_harness(&host, &harness).await });
                     }
                     Some(orchestrator_msg::Msg::Cancel(CancelTask { task_id })) => {
                         if let Some(cancel) = cancels.remove(&task_id) {
@@ -358,6 +365,36 @@ async fn prompt(
 /// The harness the worker hosts, for a question that needs one.
 fn harness(host: &Host) -> anyhow::Result<Arc<dyn Harness>> {
     host.current().ok_or_else(|| anyhow!(NO_HARNESS))
+}
+
+/// Answers question `request_id` in the background with what the hosted
+/// harness says, or why it can't.
+fn ask_harness<T, F, Fut>(
+    host: &Arc<Host>,
+    outbound: &mpsc::Sender<WorkerMsg>,
+    request_id: String,
+    ask: F,
+) where
+    T: Reply + Send + 'static,
+    F: FnOnce(Arc<dyn Harness>) -> Fut + Send + 'static,
+    Fut: Future<Output = anyhow::Result<T>> + Send,
+{
+    let host = host.clone();
+    answer(
+        outbound,
+        request_id,
+        async move { ask(harness(&host)?).await },
+    );
+}
+
+/// Answers question `request_id` in the background with what `answer` comes to.
+fn answer<T: Reply + Send + 'static>(
+    outbound: &mpsc::Sender<WorkerMsg>,
+    request_id: String,
+    answer: impl Future<Output = anyhow::Result<T>> + Send + 'static,
+) {
+    let outbound = outbound.clone();
+    tokio::spawn(async move { reply(&outbound, request_id, answer.await).await });
 }
 
 /// Answers the orchestrator's question `request_id`: with `answer`, or with

@@ -975,6 +975,152 @@ mod agents {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_saved_session_shows_what_was_said() {
+        let Cluster {
+            mut client,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        let done = prompt(&mut client, ask("one")).await;
+        let request = GetSessionHistoryRequest {
+            node: "w1".into(),
+            session_id: done.finished.session_id.clone(),
+        };
+        let history = client.get_session_history(request).await.unwrap();
+        let entries: Vec<_> = history
+            .into_inner()
+            .entries
+            .into_iter()
+            .map(|e| (e.role, e.text))
+            .collect();
+        assert_eq!(
+            entries,
+            [("user", "one"), ("agent", "echo: one")].map(|(r, t)| (r.into(), t.into()))
+        );
+    }
+
+    async fn providers(client: &mut ControlClient) -> Vec<ModelProvider> {
+        let request = ListProvidersRequest { node: "w1".into() };
+        client
+            .list_providers(request)
+            .await
+            .unwrap()
+            .into_inner()
+            .providers
+    }
+
+    async fn authenticate(
+        client: &mut ControlClient,
+        provider: &str,
+        action: auth_action::Action,
+    ) -> Result<ProviderAuthResult, tonic::Status> {
+        let request = AuthenticateProviderRequest {
+            node: "w1".into(),
+            provider: provider.into(),
+            action: Some(AuthAction {
+                action: Some(action),
+            }),
+        };
+        client
+            .authenticate_provider(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    fn reloads(fake: &FakeOpencode) -> usize {
+        fake.log()
+            .iter()
+            .filter(|l| *l == "POST /global/dispose")
+            .count()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn providers_are_signed_in_to_without_disturbing_running_prompts() {
+        let Cluster {
+            mut client,
+            fake,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        let listed = providers(&mut client).await;
+        let other = listed.iter().find(|p| p.id == "other").unwrap();
+        assert!(!other.connected);
+        assert_eq!(other.methods.len(), 3);
+        assert_eq!(
+            listed.iter().find(|p| p.id == "fake").unwrap().methods[0].label,
+            "API key"
+        );
+
+        // Signed in while a prompt runs: OpenCode reloads only once it's done.
+        let (_, held) = start(&mut client, ask("hold on")).await;
+        let session = fake.wait_held(1).await.remove(0);
+        authenticate(
+            &mut client,
+            "fake",
+            auth_action::Action::ApiKey(" sk-1 ".into()),
+        )
+        .await
+        .unwrap();
+        assert!(fake.log().iter().any(|l| l.contains(r#""key":"sk-1""#)));
+        get_options(&mut client).await;
+        assert_eq!(reloads(&fake), 0, "the running prompt would be aborted");
+        fake.release(&session);
+        ok(&collect(held).await);
+        get_options(&mut client).await;
+        assert_eq!(reloads(&fake), 1);
+        get_options(&mut client).await;
+        assert_eq!(reloads(&fake), 1, "once is enough");
+
+        // OAuth with a code to paste back: a wrong one fails, the right one works.
+        let started = authenticate(&mut client, "other", auth_action::Action::OauthStart(1))
+            .await
+            .unwrap();
+        assert!(started.needs_code && started.url.contains("/other/"));
+        let finish = |code: &str| {
+            auth_action::Action::OauthFinish(OauthFinish {
+                index: 1,
+                code: code.into(),
+            })
+        };
+        assert!(
+            authenticate(&mut client, "other", finish("bad"))
+                .await
+                .is_err()
+        );
+        authenticate(&mut client, "other", finish("good"))
+            .await
+            .unwrap();
+        let listed = providers(&mut client).await;
+        assert_eq!(
+            listed
+                .iter()
+                .filter(|p| p.connected)
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>(),
+            ["fake", "other"],
+            "signed-in ones first"
+        );
+
+        authenticate(&mut client, "other", auth_action::Action::SignOut(true))
+            .await
+            .unwrap();
+        assert!(
+            !providers(&mut client)
+                .await
+                .iter()
+                .any(|p| p.id == "other" && p.connected)
+        );
+        let empty = authenticate(
+            &mut client,
+            "fake",
+            auth_action::Action::ApiKey("  ".into()),
+        );
+        assert!(empty.await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn older_opencode_lists_its_sessions_too() {
         let Cluster {
             mut client,

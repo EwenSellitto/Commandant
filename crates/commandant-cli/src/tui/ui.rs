@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 
 use super::app::{self, App, Screen};
-use super::chat::{self, Activity, Chat, Role, Unseen, or};
+use super::chat::{self, Activity, Auth, Chat, Role, Unseen, or};
 use super::picker::Picker;
 use super::text::{self, MUTED};
 
@@ -105,10 +105,7 @@ fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|node| {
             let dot = status_dot(node.online);
-            let mut facts = vec![
-                harness(node).to_string(),
-                format!("{}/{}", node.os, node.arch),
-            ];
+            let mut facts = facts(node);
             if !node.online {
                 facts.push(format!(
                     "seen {}",
@@ -121,7 +118,7 @@ fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
             ];
             spans.extend(dotted(facts.into_iter().map(|f| f.fg(MUTED))));
             if app.starting.contains(&node.id) {
-                spans.push("   starting its agent…".yellow());
+                spans.push(format!("   {} starting its agent…", spinner()).yellow());
             } else if node.online && node.harnesses.is_empty() && !node.can_host.is_empty() {
                 spans.push("   enter to start an agent".fg(MUTED));
             }
@@ -213,9 +210,7 @@ fn tab(number: usize, chat: &Chat, shown: bool) -> Vec<Span<'static>> {
     };
     let mut spans = vec![Span::styled(format!(" {number} {title}"), style)];
     let mark = match (&chat.activity, chat.unseen) {
-        (Activity::Working { since, .. }, _) => {
-            Some(Span::raw(format!(" {}", spinner(*since))).cyan())
-        }
+        (Activity::Working { .. }, _) => Some(Span::raw(format!(" {}", spinner())).cyan()),
         (Activity::Idle, Some(Unseen::Done)) => Some(" ●".green()),
         (Activity::Idle, Some(Unseen::Failed)) => Some(" ✗".red()),
         (Activity::Idle, None) => None,
@@ -234,11 +229,8 @@ fn draw_header(frame: &mut Frame, chat: &Chat, area: Rect) {
         Span::raw(node.name.clone()).bold(),
         Span::raw("  "),
     ];
-    let facts = [
-        harness(node).to_string(),
-        format!("{}/{}", node.os, node.arch),
-        format!("v{}", node.version),
-    ];
+    let mut facts = facts(node);
+    facts.push(format!("v{}", node.version));
     left.extend(dotted(facts.into_iter().map(|f| f.fg(MUTED))));
 
     let settings = &chat.settings;
@@ -361,6 +353,7 @@ fn welcome(chat: &Chat) -> Vec<Line<'static>> {
         ("/effort  Ctrl-T", "thinking effort"),
         ("/skills", "the agent's commands and skills"),
         ("/mcp", "connect MCP servers"),
+        ("/providers", "sign in to a model provider"),
         ("Esc", "cancel a turn"),
         ("PgUp PgDn", "scroll"),
         ("Ctrl-N  /new", "another session, working alongside"),
@@ -378,28 +371,67 @@ fn welcome(chat: &Chat) -> Vec<Line<'static>> {
     lines
 }
 
-/// What the agent is doing, and where the thread is scrolled.
+/// What the agent is doing, or what is still loading, and where the thread
+/// is scrolled.
 fn draw_status(frame: &mut Frame, chat: &Chat, area: Rect) {
+    let loading = |what: String| {
+        Line::from(vec![
+            Span::raw(format!("{} ", spinner())).fg(MUTED),
+            what.fg(MUTED),
+        ])
+    };
     let left = match &chat.activity {
-        Activity::Idle => Line::default(),
         Activity::Working {
             cancelling: true, ..
-        } => Line::from("  cancelling…").yellow(),
-        Activity::Working { since, .. } => {
-            let elapsed = since.elapsed();
-            Line::from(vec![
-                Span::raw(format!("{} ", spinner(*since))).cyan(),
-                Span::raw(chat.doing()).cyan(),
-                format!(" {}s", elapsed.as_secs()).fg(MUTED),
-                "  esc to cancel".fg(MUTED),
-            ])
+        } => Line::from(format!("{} cancelling…", spinner())).yellow(),
+        Activity::Working { since, .. } => Line::from(vec![
+            Span::raw(format!("{} ", spinner())).cyan(),
+            Span::raw(chat.doing()).cyan(),
+            format!(" {}", chat::elapsed(since.elapsed())).fg(MUTED),
+            "  esc to cancel".fg(MUTED),
+        ]),
+        Activity::Idle if !chat.node.online => {
+            Line::from(format!("● {} is offline", chat.node.name)).red()
         }
+        _ if let Some(Auth::Waiting { doing, .. }) = &chat.auth => Line::from(vec![
+            Span::raw(format!("{} ", spinner())).yellow(),
+            Span::raw(doing.clone()).yellow(),
+        ]),
+        Activity::Idle if chat.listing_providers.is_some() => {
+            loading(format!("listing {}'s model providers…", chat.node.name))
+        }
+        Activity::Idle if chat.loading_history => {
+            loading("loading the session's earlier messages…".into())
+        }
+        Activity::Idle if chat.options.is_none() && chat.fetching_options => {
+            loading(format!("asking {} what its agent offers…", chat.node.name))
+        }
+        Activity::Idle if chat.loading() => {
+            loading("connecting MCP servers; commands follow…".into())
+        }
+        Activity::Idle => mcp_summary(chat),
     };
     frame.render_widget(left, area);
     if chat.scroll > 0 {
         let more = Line::from(format!("↓ {} more lines  ", chat.scroll)).fg(MUTED);
         frame.render_widget(more.right_aligned(), area);
     }
+}
+
+/// `mcp 1/2 connected · 1 failed`, when the agent has MCP servers.
+fn mcp_summary(chat: &Chat) -> Line<'static> {
+    let Some(options) = chat.options.as_ref().filter(|o| !o.mcp_servers.is_empty()) else {
+        return Line::default();
+    };
+    let servers = &options.mcp_servers;
+    let connected = servers.iter().filter(|m| m.status == "connected").count();
+    let failed = servers.iter().filter(|m| m.status == "failed").count();
+    let mut spans = vec![format!("  mcp {connected}/{} connected", servers.len()).fg(MUTED)];
+    if failed > 0 {
+        spans.push(" · ".fg(MUTED));
+        spans.push(format!("{failed} failed").red());
+    }
+    Line::from(spans)
 }
 
 /// The prompt, on a solid slab with the agent's color down its edge.
@@ -413,10 +445,15 @@ fn draw_input(frame: &mut Frame, chat: &Chat, area: Rect) {
     let line = Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(3), 1);
 
     let input = &chat.input;
+    let secret = matches!(chat.auth, Some(Auth::Key { .. }));
     if input.text.is_empty() {
-        let hint = match chat.activity {
-            Activity::Idle => format!("Message {}…", or(chat.agent(), "the agent")),
-            Activity::Working { .. } => "Type the next prompt…".into(),
+        let hint = match (&chat.auth, &chat.activity) {
+            (Some(Auth::Key { .. }), _) => {
+                "Paste the API key (hidden), Enter to save, Esc to cancel".into()
+            }
+            (Some(Auth::Code { .. }), _) => "Paste the code the page shows, Esc to cancel".into(),
+            (_, Activity::Idle) => format!("Message {}…", or(chat.agent(), "the agent")),
+            (_, Activity::Working { .. }) => "Type the next prompt…".into(),
         };
         frame.render_widget(Span::raw(hint).fg(HINT), line);
         frame.set_cursor_position((line.x, line.y));
@@ -425,8 +462,11 @@ fn draw_input(frame: &mut Frame, chat: &Chat, area: Rect) {
     // Scroll sideways so the cursor stays visible.
     let width = (line.width as usize).saturating_sub(1);
     let offset = input.cursor.saturating_sub(width);
-    let visible: String = input.text.chars().skip(offset).take(width).collect();
-    let style = match input.text.starts_with('/') {
+    let visible: String = match secret {
+        true => "•".repeat(input.text.chars().count().saturating_sub(offset).min(width)),
+        false => input.text.chars().skip(offset).take(width).collect(),
+    };
+    let style = match input.text.starts_with('/') && !secret {
         true => Style::new().fg(color),
         false => Style::new(),
     };
@@ -516,12 +556,12 @@ fn draw_picker<T: Clone + PartialEq>(frame: &mut Frame, accent: Color, picker: &
     .areas(inner);
 
     frame.render_widget(Span::raw(picker.title).bold(), title);
-    frame.render_widget(
-        Line::from(format!("{} of {}", picker.shown_len(), picker.total()))
-            .fg(MUTED)
-            .right_aligned(),
-        title,
-    );
+    let count = format!("{} of {}", picker.shown_len(), picker.total());
+    let count = match picker.loading {
+        true => format!("{} loading · {count}", spinner()),
+        false => count,
+    };
+    frame.render_widget(Line::from(count).fg(MUTED).right_aligned(), title);
     let query = match picker.filter.as_str() {
         "" => Line::from(vec!["› ".fg(accent), "type to filter".fg(MUTED)]),
         filter => Line::from(vec!["› ".fg(accent), Span::raw(filter.to_string())]),
@@ -535,7 +575,12 @@ fn draw_picker<T: Clone + PartialEq>(frame: &mut Frame, accent: Color, picker: &
     );
 
     if picker.shown_len() == 0 {
-        frame.render_widget(Line::from("nothing matches").fg(MUTED), list);
+        let empty = if picker.loading {
+            "loading…"
+        } else {
+            "nothing matches"
+        };
+        frame.render_widget(Line::from(empty).fg(MUTED), list);
         return;
     }
     let items: Vec<ListItem> = picker
@@ -569,16 +614,19 @@ fn status_dot(online: bool) -> Span<'static> {
     if online { "● ".green() } else { "● ".red() }
 }
 
-/// The harness a node hosts, for showing.
-fn harness(node: &commandant_proto::NodeInfo) -> &str {
-    node.harnesses
+/// `opencode`, `linux/x86_64`: what a node runs, and on what.
+fn facts(node: &commandant_proto::NodeInfo) -> Vec<String> {
+    let harness = node
+        .harnesses
         .first()
-        .map_or("no agent harness", String::as_str)
+        .map_or("no agent harness", String::as_str);
+    vec![harness.to_string(), format!("{}/{}", node.os, node.arch)]
 }
 
-/// The spinner's frame for something under way since `since`.
-fn spinner(since: std::time::Instant) -> &'static str {
-    SPINNER[(since.elapsed().as_millis() / 100) as usize % SPINNER.len()]
+/// The spinner's frame now; every spinner on screen turns together.
+fn spinner() -> &'static str {
+    let now = std::time::UNIX_EPOCH.elapsed().unwrap_or_default();
+    SPINNER[(now.as_millis() / 100) as usize % SPINNER.len()]
 }
 
 /// `key does  key does`: the keys in bold, all of it dimmed.
@@ -748,6 +796,58 @@ mod tests {
             .collect();
         assert!(row_text.contains('…'), "{row_text}");
         assert!(x < 30);
+    }
+
+    #[test]
+    fn the_status_line_says_what_is_loading() {
+        let mut app = app();
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        let buf = render(&mut app);
+        find(&buf, "asking box-n1 what its agent offers…");
+
+        let options = commandant_proto::AgentOptions {
+            loading: true,
+            ..Default::default()
+        };
+        app.on_update(Update::Options("n1".into(), Ok(options)));
+        let buf = render(&mut app);
+        find(&buf, "connecting MCP servers");
+        assert!(app.busy(), "its spinner turns");
+
+        let mcp = |name: &str, status: &str| commandant_proto::McpServer {
+            name: name.into(),
+            status: status.into(),
+            ..Default::default()
+        };
+        let options = commandant_proto::AgentOptions {
+            mcp_servers: vec![mcp("docs", "connected"), mcp("x", "failed")],
+            ..Default::default()
+        };
+        app.on_update(Update::Options("n1".into(), Ok(options)));
+        let buf = render(&mut app);
+        find(&buf, "mcp 1/2 connected · 1 failed");
+        assert!(!app.busy());
+
+        app.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        let buf = render(&mut app);
+        find(&buf, "loading · ");
+    }
+
+    #[test]
+    fn an_api_key_is_masked_while_typed() {
+        let mut app = app();
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        let id = app.chats[0].id;
+        let chat = app.chats.iter_mut().find(|c| c.id == id).unwrap();
+        chat.auth = Some(Auth::Key {
+            provider: "acme".into(),
+        });
+        for c in "sk-abc".chars() {
+            app.on_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        let buf = render(&mut app);
+        find(&buf, "••••••");
+        assert!(absent(&buf, "sk-abc"));
     }
 
     #[test]

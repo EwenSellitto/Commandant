@@ -173,28 +173,58 @@ async fn perform(
             name,
             connect,
         } => {
-            tokio::spawn(async move {
-                let request = SwitchMcpServerRequest {
-                    node: node.clone(),
-                    name: name.clone(),
-                    connect,
-                };
-                let options = ask(control_.switch_mcp_server(request)).await;
-                let _ = tx_.send(Update::McpSwitched {
-                    chat,
-                    node,
-                    name,
-                    options,
-                });
+            let request = SwitchMcpServerRequest {
+                node: node.clone(),
+                name: name.clone(),
+                connect,
+            };
+            let call = async move { control_.switch_mcp_server(request).await };
+            spawn_ask(tx, call, move |options| Update::McpSwitched {
+                chat,
+                node,
+                name,
+                options,
             });
         }
         Action::FetchSessions(node) => {
-            tokio::spawn(async move {
-                let request = ListAgentSessionsRequest { node: node.clone() };
-                let sessions = ask(control_.list_agent_sessions(request))
-                    .await
-                    .map(|s| s.sessions);
-                let _ = tx_.send(Update::Sessions(node, sessions));
+            let request = ListAgentSessionsRequest { node: node.clone() };
+            let call = async move { control_.list_agent_sessions(request).await };
+            spawn_ask(tx, call, |sessions| {
+                Update::Sessions(node, sessions.map(|s| s.sessions))
+            });
+        }
+        Action::FetchHistory {
+            chat,
+            node,
+            session_id,
+        } => {
+            let request = GetSessionHistoryRequest { node, session_id };
+            let call = async move { control_.get_session_history(request).await };
+            spawn_ask(tx, call, move |history| {
+                Update::Chat(chat, Message::History(history.map(|h| h.entries)))
+            });
+        }
+        Action::FetchProviders { chat, node } => {
+            let request = ListProvidersRequest { node };
+            let call = async move { control_.list_providers(request).await };
+            spawn_ask(tx, call, move |providers| {
+                Update::Chat(chat, Message::Providers(providers.map(|p| p.providers)))
+            });
+        }
+        Action::Authenticate {
+            chat,
+            node,
+            provider,
+            action,
+        } => {
+            let request = AuthenticateProviderRequest {
+                node,
+                provider,
+                action: Some(action),
+            };
+            let call = async move { control_.authenticate_provider(request).await };
+            spawn_ask(tx, call, move |result| {
+                Update::Chat(chat, Message::Auth(result))
             });
         }
         Action::Cancel(task_id) => {
@@ -211,14 +241,12 @@ async fn perform(
             }
         }
         Action::StartHarness { node, harness } => {
-            tokio::spawn(async move {
-                let request = StartHarnessRequest {
-                    node: node.clone(),
-                    harness,
-                };
-                let started = ask(control_.start_harness(request)).await;
-                let _ = tx_.send(Update::HarnessStarted(node, started));
-            });
+            let request = StartHarnessRequest {
+                node: node.clone(),
+                harness,
+            };
+            let call = async move { control_.start_harness(request).await };
+            spawn_ask(tx, call, |started| Update::HarnessStarted(node, started));
         }
         // The app's own, or quitting, which the loop does.
         Action::NewChat
@@ -229,13 +257,21 @@ async fn perform(
     }
 }
 
-/// A unary call's answer, or what went wrong.
-async fn ask<T>(
-    call: impl Future<Output = Result<tonic::Response<T>, tonic::Status>>,
-) -> Result<T, String> {
-    call.await
-        .map(tonic::Response::into_inner)
-        .map_err(|status| status.message().to_string())
+/// Makes a unary call in the background, and sends what `update` makes of
+/// its answer, or of what went wrong.
+fn spawn_ask<T: Send + 'static>(
+    tx: &mpsc::UnboundedSender<Update>,
+    call: impl Future<Output = Result<tonic::Response<T>, tonic::Status>> + Send + 'static,
+    update: impl FnOnce(Result<T, String>) -> Update + Send + 'static,
+) {
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let answer = call
+            .await
+            .map(tonic::Response::into_inner)
+            .map_err(|status| status.message().to_string());
+        let _ = tx.send(update(answer));
+    });
 }
 
 /// Sends a prompt and relays its events to its chat.

@@ -36,6 +36,9 @@ envelope!(WorkerMsg.msg, worker_msg::Msg {
     Options(AgentOptions),
     Sessions(AgentSessions),
     HarnessStarted(HarnessStarted),
+    History(SessionHistory),
+    Providers(AgentProviders),
+    AuthResult(ProviderAuthResult),
 });
 
 envelope!(OrchestratorMsg.msg, orchestrator_msg::Msg {
@@ -46,6 +49,9 @@ envelope!(OrchestratorMsg.msg, orchestrator_msg::Msg {
     ListOptions(ListAgentOptions),
     ListSessions(ListAgentSessions),
     StartHarness(StartHarness),
+    GetHistory(GetSessionHistory),
+    ListProviders(ListProviders),
+    ProviderAuth(ProviderAuth),
 });
 
 /// The capability a worker lists for the harness it hosts: `harness:opencode`.
@@ -100,7 +106,14 @@ macro_rules! reply {
     };
 }
 
-reply!(AgentOptions => Options, AgentSessions => Sessions, HarnessStarted => HarnessStarted);
+reply!(
+    AgentOptions => Options,
+    AgentSessions => Sessions,
+    HarnessStarted => HarnessStarted,
+    SessionHistory => History,
+    AgentProviders => Providers,
+    ProviderAuthResult => AuthResult,
+);
 
 envelope!(TaskEvent.event, task_event::Event {
     Started(TaskStarted),

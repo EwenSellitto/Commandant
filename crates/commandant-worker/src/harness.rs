@@ -5,16 +5,19 @@
 //! an implementation of [`Harness`], and a line in [`start`]; the rest of the
 //! worker, the orchestrator and the clients only see the trait and the name.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use commandant_proto::{
-    AgentOptions, AgentPrompt, AgentSession, CAN_HOST, HOSTS, McpSwitch, TaskFinished, WorkerMsg,
+    AgentOptions, AgentPrompt, AgentSession, AuthAction, CAN_HOST, HOSTS, HistoryEntry, McpSwitch,
+    ModelProvider, OutputStream, ProviderAuthResult, TaskFinished, TaskOutput, WorkerMsg,
 };
 use tokio::sync::{mpsc, oneshot};
+use tracing::info;
 
 use crate::opencode::Opencode;
 
@@ -94,6 +97,156 @@ pub trait Harness: Send + Sync {
 
     /// The sessions it has saved, latest first.
     async fn sessions(&self) -> Result<Vec<AgentSession>>;
+
+    /// What was said in a saved session, oldest first.
+    async fn history(&self, session_id: &str) -> Result<Vec<HistoryEntry>>;
+
+    /// The model providers it knows, and how to sign in to each.
+    async fn providers(&self) -> Result<Vec<ModelProvider>>;
+
+    /// One step of signing in to (or out of) a provider.
+    async fn authenticate(
+        &self,
+        provider: &str,
+        action: Option<AuthAction>,
+    ) -> Result<ProviderAuthResult>;
+}
+
+/// How many of a session's latest entries its history keeps, well inside a
+/// gRPC message.
+const HISTORY: usize = 300;
+
+/// The latest `HISTORY` entries of a session's history.
+// ponytail: drops the oldest; page through them if anyone scrolls that far.
+pub fn keep_latest<T>(mut entries: Vec<T>) -> Vec<T> {
+    let skip = entries.len().saturating_sub(HISTORY);
+    entries.split_off(skip)
+}
+
+/// Where a prompt's reply goes: the agent's text on stdout, its thinking on
+/// the reasoning stream, and notes on what it does on stderr as
+/// `[<harness>] …` lines, each stream's lines kept whole.
+pub struct Output<'a> {
+    task_id: &'a str,
+    harness: HarnessKind,
+    out: &'a mpsc::Sender<WorkerMsg>,
+    /// The stream whose last line is unfinished.
+    mid_line: Option<OutputStream>,
+}
+
+impl<'a> Output<'a> {
+    pub fn new(task_id: &'a str, harness: HarnessKind, out: &'a mpsc::Sender<WorkerMsg>) -> Self {
+        Self {
+            task_id,
+            harness,
+            out,
+            mid_line: None,
+        }
+    }
+
+    /// Writes reply text or thinking, on a new line if the other was
+    /// unfinished.
+    pub async fn say(&mut self, stream: OutputStream, text: String) {
+        if text.is_empty() {
+            return;
+        }
+        if self.mid_line.is_some_and(|s| s != stream) {
+            self.end_line().await;
+        }
+        self.mid_line = (!text.ends_with('\n')).then_some(stream);
+        self.write(stream, text).await;
+    }
+
+    /// Finishes the unfinished line, if any.
+    pub async fn end_line(&mut self) {
+        if let Some(stream) = self.mid_line.take() {
+            self.write(stream, "\n".into()).await;
+        }
+    }
+
+    /// A line about what the agent is doing.
+    pub async fn note(&mut self, line: &str) {
+        self.end_line().await;
+        let line = format!("[{}] {line}\n", self.harness);
+        self.write(OutputStream::Stderr, line).await;
+    }
+
+    async fn write(&self, stream: OutputStream, text: String) {
+        let output = TaskOutput {
+            task_id: self.task_id.to_string(),
+            stream: stream.into(),
+            data: text.into_bytes(),
+        };
+        let _ = self.out.send(output.into()).await;
+    }
+}
+
+/// Sessions answering a prompt, which take no other meanwhile.
+#[derive(Default)]
+pub struct Busy(Mutex<HashSet<String>>);
+
+/// Holds a session busy until dropped.
+pub struct Claim<'a> {
+    busy: &'a Busy,
+    session_id: String,
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        self.busy.0.lock().unwrap().remove(&self.session_id);
+    }
+}
+
+impl Busy {
+    /// Marks a session busy, unless it already is.
+    pub fn claim(&self, session_id: &str) -> Result<Claim<'_>> {
+        let fresh = self.0.lock().unwrap().insert(session_id.to_string());
+        ensure!(
+            fresh,
+            "session {session_id} is already answering a prompt; wait for it, or cancel it"
+        );
+        Ok(Claim {
+            busy: self,
+            session_id: session_id.to_string(),
+        })
+    }
+
+    pub fn contains(&self, session_id: &str) -> bool {
+        self.0.lock().unwrap().contains(session_id)
+    }
+}
+
+/// Finds `name` on the PATH or in `~/<installed_in>`, else installs it with
+/// the shell command `install` (needs bash).
+pub async fn ensure_installed(name: &str, installed_in: &str, install: &str) -> Result<PathBuf> {
+    if let Some(binary) = find_binary(name, installed_in) {
+        return Ok(binary);
+    }
+    info!("{name} not found; installing it with: {install}");
+    #[cfg(unix)]
+    {
+        let status = tokio::process::Command::new("bash")
+            .args(["-c", &format!("set -o pipefail; {install}")])
+            .stdin(std::process::Stdio::null())
+            .status()
+            .await
+            .with_context(|| format!("running the {name} installer (it needs bash and curl)"))?;
+        ensure!(status.success(), "the {name} installer failed ({status})");
+    }
+    #[cfg(not(unix))]
+    bail!("install {name} first, then restart the worker");
+    #[allow(unreachable_code)]
+    find_binary(name, installed_in)
+        .with_context(|| format!("the {name} installer finished, but no {name} binary was found"))
+}
+
+fn find_binary(name: &str, installed_in: &str) -> Option<PathBuf> {
+    let binary = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .chain(std::env::home_dir().map(|home| home.join(installed_in)))
+        .map(|dir| dir.join(&binary))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Starts a harness, installing it first if need be.

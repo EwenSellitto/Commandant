@@ -1,10 +1,11 @@
 //! The agent's saved sessions, so a client can pick one up again.
 
 use anyhow::Result;
-use commandant_proto::AgentSession;
+use commandant_proto::{AgentSession, HistoryEntry};
 
 use super::Opencode;
-use super::api::SavedSession;
+use super::api::{SavedMessage, SavedSession};
+use crate::harness::keep_latest;
 
 /// How many sessions a listing shows.
 const LIMIT: usize = 50;
@@ -12,7 +13,46 @@ const LIMIT: usize = 50;
 /// The latest saved sessions.
 pub async fn list(opencode: &Opencode) -> Result<Vec<AgentSession>> {
     let saved = opencode.api().await?.sessions(LIMIT).await?;
-    Ok(sessions(saved, |id| opencode.is_busy(id)))
+    Ok(sessions(saved, |id| opencode.busy.contains(id)))
+}
+
+/// What was said in `session_id`, oldest first.
+pub async fn history(opencode: &Opencode, session_id: &str) -> Result<Vec<HistoryEntry>> {
+    let messages = opencode.api().await?.messages(session_id).await?;
+    Ok(entries(messages))
+}
+
+/// The prompts, replies, thinking and tool calls, as the chat shows them live.
+fn entries(messages: Vec<SavedMessage>) -> Vec<HistoryEntry> {
+    let mut entries = Vec::new();
+    for message in messages {
+        let user = message.info.role == "user";
+        for part in message.parts {
+            let (role, text) = match (part.kind.as_str(), part.state) {
+                ("text", _) if part.synthetic == Some(true) => continue,
+                ("text", _) if user => ("user", part.text),
+                ("text", _) => ("agent", part.text),
+                ("reasoning", _) => ("thinking", part.text),
+                ("tool", Some(state)) if state.status == "completed" => (
+                    "tool",
+                    format!("{} {}", part.tool, state.title.unwrap_or_default()),
+                ),
+                ("tool", Some(state)) if state.status == "error" => (
+                    "tool",
+                    format!("{} failed: {}", part.tool, state.error.unwrap_or_default()),
+                ),
+                _ => continue,
+            };
+            let text = text.trim().to_string();
+            if !text.is_empty() {
+                entries.push(HistoryEntry {
+                    role: role.into(),
+                    text,
+                });
+            }
+        }
+    }
+    keep_latest(entries)
 }
 
 /// Top-level sessions, latest first; subagents' ones are part of another.
@@ -71,6 +111,40 @@ mod tests {
         );
         assert_eq!((new.updated, new.busy, new.cost), (5, true, 0.5));
         assert!(!sessions[1].busy);
+    }
+
+    #[test]
+    fn history_keeps_what_the_chat_shows() {
+        let messages: Vec<SavedMessage> = serde_json::from_value(json!([
+            { "info": { "role": "user" }, "parts": [
+                { "type": "text", "text": "fix it" },
+                { "type": "text", "text": "<file contents>", "synthetic": true },
+            ]},
+            { "info": { "role": "assistant" }, "parts": [
+                { "type": "step-start" },
+                { "type": "reasoning", "text": "hmm" },
+                { "type": "tool", "tool": "bash", "state": { "status": "completed", "title": "ls" } },
+                { "type": "tool", "tool": "edit", "state": { "status": "error", "error": "denied" } },
+                { "type": "tool", "tool": "read", "state": { "status": "running" } },
+                { "type": "text", "text": "done\n" },
+            ]},
+        ]))
+        .unwrap();
+        let entries: Vec<_> = entries(messages)
+            .into_iter()
+            .map(|e| (e.role, e.text))
+            .collect();
+        let expected = [
+            ("user", "fix it"),
+            ("thinking", "hmm"),
+            ("tool", "bash ls"),
+            ("tool", "edit failed: denied"),
+            ("agent", "done"),
+        ];
+        assert_eq!(
+            entries,
+            expected.map(|(r, t)| (r.to_string(), t.to_string()))
+        );
     }
 
     #[test]

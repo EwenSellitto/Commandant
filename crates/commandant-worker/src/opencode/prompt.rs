@@ -3,14 +3,13 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Result, bail};
-use commandant_proto::{
-    AgentPrompt, AgentUsage, OutputStream, TaskFinished, TaskOutput, WorkerMsg,
-};
+use commandant_proto::{AgentPrompt, AgentUsage, OutputStream, TaskFinished, WorkerMsg};
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
 
 use super::Opencode;
 use super::api::{Api, CommandRun, Event, Prompt};
+use crate::harness::{HarnessKind, Output};
 
 /// Runs `task` until the agent goes idle or `cancel` fires (or its sender is
 /// dropped).
@@ -20,6 +19,9 @@ pub async fn converse(
     out: &mpsc::Sender<WorkerMsg>,
     mut cancel: oneshot::Receiver<()>,
 ) -> Result<TaskFinished> {
+    opencode.reload_if_stale().await?;
+    // A reload would abort this prompt, so none runs until it is done.
+    let _quiet = opencode.quiet.read().await;
     let api = opencode.api().await?;
     let prompt = Prompt::new(&task.prompt, &task.model, &task.agent, &task.variant)?;
     let directory = directory(&api, &task).await?;
@@ -33,7 +35,7 @@ pub async fn converse(
         "" => api.create_session(&directory).await?,
         id => id.to_string(),
     };
-    let _running = opencode.claim(&session_id)?;
+    let _running = opencode.busy.claim(&session_id)?;
     // Subscribed before prompting, so no event is missed.
     let mut events = api.events(&directory).await?;
     // A command only answers once the agent is done, so it runs aside while
@@ -66,7 +68,7 @@ pub async fn converse(
                 continue;
             }
             _ = &mut cancel => {
-                transcript.end_line().await;
+                transcript.output.end_line().await;
                 api.abort(&session_id, &directory).await?;
                 return Ok(TaskFinished {
                     task_id: task.task_id,
@@ -86,7 +88,7 @@ pub async fn converse(
                 .await?;
         }
         if let Some(finished) = transcript.finished() {
-            transcript.end_line().await;
+            transcript.output.end_line().await;
             return Ok(finished);
         }
     }
@@ -231,7 +233,7 @@ struct PermissionAsked {
 struct Transcript<'a> {
     task_id: &'a str,
     session_id: &'a str,
-    out: &'a mpsc::Sender<WorkerMsg>,
+    output: Output<'a>,
     /// The agent's messages. The prompt itself comes back as a user message.
     replies: HashSet<String>,
     /// Tokens and cost of each of the agent's messages, in order.
@@ -240,9 +242,8 @@ struct Transcript<'a> {
     reasoning: HashSet<String>,
     /// How many bytes of each text part were sent.
     sent: HashMap<String, usize>,
-    /// The part being written, and the stream whose last line is unfinished.
+    /// The part being written.
     current_part: Option<String>,
-    mid_line: Option<OutputStream>,
     /// Tool calls already reported.
     reported_tools: HashSet<String>,
     /// Set once the agent starts on the prompt, so going idle means it's done.
@@ -258,13 +259,12 @@ impl<'a> Transcript<'a> {
         Self {
             task_id,
             session_id,
-            out,
+            output: Output::new(task_id, HarnessKind::Opencode, out),
             replies: HashSet::new(),
             usage: Vec::new(),
             reasoning: HashSet::new(),
             sent: HashMap::new(),
             current_part: None,
-            mid_line: None,
             reported_tools: HashSet::new(),
             busy: false,
             idle: false,
@@ -332,7 +332,7 @@ impl<'a> Transcript<'a> {
                 let asked = parse::<PermissionAsked>(&properties)?;
                 if asked.session_id == self.session_id {
                     let what = format!("{} {}", asked.permission, asked.patterns.join(" "));
-                    self.note(&format!("allowed {}", what.trim())).await;
+                    self.output.note(&format!("allowed {}", what.trim())).await;
                     return Some(asked.id);
                 }
             }
@@ -361,7 +361,7 @@ impl<'a> Transcript<'a> {
                     _ => return,
                 };
                 if self.reported_tools.insert(part.id) {
-                    self.note(line.trim()).await;
+                    self.output.note(line.trim()).await;
                 }
             }
             _ => {}
@@ -418,34 +418,10 @@ impl<'a> Transcript<'a> {
             false => OutputStream::Stdout,
         };
         if self.current_part.as_ref() != Some(&part_id) {
-            self.end_line().await;
+            self.output.end_line().await;
             self.current_part = Some(part_id);
         }
-        self.mid_line = (!text.ends_with('\n')).then_some(stream);
-        self.write(stream, text).await;
-    }
-
-    /// Finishes the agent's unfinished line, if any.
-    async fn end_line(&mut self) {
-        if let Some(stream) = self.mid_line.take() {
-            self.write(stream, "\n".into()).await;
-        }
-    }
-
-    /// A line about what the agent is doing, on stderr.
-    async fn note(&mut self, line: &str) {
-        self.end_line().await;
-        self.write(OutputStream::Stderr, format!("[opencode] {line}\n"))
-            .await;
-    }
-
-    async fn write(&self, stream: OutputStream, text: String) {
-        let output = TaskOutput {
-            task_id: self.task_id.to_string(),
-            stream: stream.into(),
-            data: text.into_bytes(),
-        };
-        let _ = self.out.send(output.into()).await;
+        self.output.say(stream, text).await;
     }
 }
 
@@ -551,7 +527,7 @@ mod tests {
         }
         transcript.follow(status("s", "idle")).await;
         let finished = transcript.finished().expect("idle after busy");
-        transcript.end_line().await;
+        transcript.output.end_line().await;
         assert_eq!(finished.exit_code, Some(0));
         assert_eq!(finished.session_id, "s");
         assert_eq!(finished.model, "p/m");

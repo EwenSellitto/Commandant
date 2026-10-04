@@ -43,6 +43,8 @@ pub struct Picker<T> {
     shown: Vec<usize>,
     /// Position in `shown`.
     pub selected: usize,
+    /// More choices are on their way.
+    pub loading: bool,
 }
 
 impl<T: Clone + PartialEq> Picker<T> {
@@ -57,6 +59,7 @@ impl<T: Clone + PartialEq> Picker<T> {
             shown: (0..choices.len()).collect(),
             choices,
             selected,
+            loading: false,
         }
     }
 
@@ -80,6 +83,19 @@ impl<T: Clone + PartialEq> Picker<T> {
 
     pub fn total(&self) -> usize {
         self.choices.len()
+    }
+
+    /// Passes `key` to the picker in `slot`, if one is open, and closes it
+    /// once it is done. `None` if none was open; else what was chosen, if
+    /// anything.
+    pub fn take_key(slot: &mut Option<Self>, key: KeyEvent) -> Option<Option<T>> {
+        let chosen = match slot.as_mut()?.on_key(key) {
+            Outcome::Open => return Some(None),
+            Outcome::Closed => None,
+            Outcome::Chosen(value) => Some(value),
+        };
+        *slot = None;
+        Some(chosen)
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Outcome<T> {

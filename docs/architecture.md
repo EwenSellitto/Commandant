@@ -299,7 +299,24 @@ queue and whose replies would mix. `ListAgentSessions` is a question like
 `ListAgentOptions`: the worker lists OpenCode's top-level sessions in every
 directory (`GET /experimental/session`, else `/session`), latest first, and
 marks those it is running a prompt in. The TUI uses it to resume a session,
-and `node sessions` prints it.
+and `node sessions` prints it. Resuming one also asks `GetSessionHistory`, the
+same kind of question: the worker reads `GET /session/:id/message` and answers
+with the session's prompts, replies, thinking and tool calls (the latest 300),
+which the chat puts before anything said since.
+
+**Signing in to model providers.** `ListProviders` and `ProviderAuth` are
+questions too. In the TUI, `/providers` lists every provider the node's
+OpenCode knows (signed-in ones first); choosing one offers its sign-in
+methods, and Sign out. An API key is typed into a masked prompt and never
+shown in the thread. OAuth is two steps: the worker starts it and the TUI
+shows the URL and instructions; then either the user pastes back the code the
+page shows, or the worker waits (up to 10 minutes) for the browser sign-in to
+finish. A browser method that redirects to `localhost` only works from a
+browser on the node itself, so the TUI says to use a headless method otherwise.
+OpenCode only lists the new provider's models after reloading, which would
+abort the prompts running, so the worker reloads at the next options request
+or prompt that finds none running, and the TUI asks for the options again.
+Credentials travel as plainly as the rest of the gRPC traffic (see below).
 
 ## Task states
 
@@ -352,9 +369,7 @@ All traffic is plaintext today, so that address should be on a private network
   need prompts to name theirs.
 - **Interactive agents.** Questions and permission requests are auto-answered
   today. Forwarding them to the CLI would use the remaining reserved fields
-  (`WorkerMsg` 11–19, `OrchestratorMsg` 12–19).
+  (`WorkerMsg` 14–19, `OrchestratorMsg` 15–19).
 - **A fuller TUI.** `commandant tui` chats with one node's agent through the
-  same `Control` API. Next: showing a resumed session's history (the API only
-  streams new turns), picking nodes and sessions from within it, and answering
-  the agent's permission requests there.
+  same `Control` API. Next: answering the agent's permission requests there.
 - **TLS** for the gRPC port.
