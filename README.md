@@ -133,6 +133,10 @@ Every command has `--help`. Client commands find the orchestrator from, in order
 
 ### `commandant worker [LINK]`
 
+A worker refuses to run as root, and so does the server's `--local-worker`: it
+runs whatever it is told, so it gets one ordinary user's rights. The Docker
+image runs as its own `commandant` user (uid 1000).
+
 | Option | Env | |
 |---|---|---|
 | `LINK` | `COMMANDANT_LINK` | Link from `commandant server`; only needed the first time |

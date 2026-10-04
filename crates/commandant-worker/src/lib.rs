@@ -87,6 +87,9 @@ impl From<tonic::Status> for Stop {
 /// Sets up the harness, then stays connected to the orchestrator,
 /// reconnecting with backoff, until a fatal error occurs.
 pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    // SAFETY: plain syscall, no arguments.
+    normal_user(unsafe { libc::geteuid() })?;
     // Held until the worker stops: no other worker can be this node.
     let claim = state::claim(&config.state_dir, config.pick_free_state_dir)?;
     if claim.instance > 1 {
@@ -147,6 +150,16 @@ pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
+}
+
+/// Refuses root: a worker runs whatever the admin and its agent ask, so it
+/// gets no more than one user's rights (and Claude Code won't skip its
+/// permission prompts as root).
+fn normal_user(uid: u32) -> anyhow::Result<()> {
+    if uid == 0 {
+        bail!("workers run as a normal user, not root: start this one as another user");
+    }
+    Ok(())
 }
 
 /// One connection to the orchestrator, from handshake until it breaks.
@@ -437,4 +450,15 @@ fn hostname() -> String {
         .map(|h| h.trim().to_string())
         .filter(|h| !h.is_empty())
         .unwrap_or_else(|| "unknown".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_is_refused() {
+        assert!(normal_user(0).is_err());
+        assert!(normal_user(1000).is_ok());
+    }
 }
