@@ -60,6 +60,8 @@ The payload packs the host and the secret as bytes:
 | 1 | address kind: IPv4, IPv6 or a name, plus a flag when a port follows |
 | 4, 16 or 1 + length | the IP, or the name's length and the name |
 | 2, only with the flag | the port, when it isn't 7400 |
+
+With several addresses, a count byte comes first and the address rows repeat.
 | 1 | token kind: `cmda`, `cmdj`, `cmdn`, or 0 for any other text |
 | the rest | the token's hex as raw bytes (16 for new tokens), or its text |
 
@@ -101,6 +103,16 @@ The same secret works in two places:
 - **CLI** (`login`): used as the admin bearer token on every Control call.
 - **Worker** (`worker <link>`): used as a join token, but only the first time.
   In return the worker gets its own node credential.
+
+A link can carry several addresses (format 3: a count byte, then each
+address, then the token). The server puts the ones given with
+`--advertise a,b` first, then the address it detected for this machine.
+Clients, workers included, try all of them at once and keep the first that
+answers, so one link works from outside (a public name) and inside (the LAN
+address). In WSL 2's default NAT networking the detected address is WSL's
+own, which only Windows reaches: the server warns, and the fix is WSL's
+mirrored networking, or a port forward from Windows plus
+`--advertise <Windows' LAN address>`.
 
 Before connecting, every client resolves the link's host. If one of the
 resulting addresses belongs to the local machine (it can `bind()` to it), the

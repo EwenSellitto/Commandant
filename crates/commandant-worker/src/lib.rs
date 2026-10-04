@@ -21,7 +21,7 @@ use commandant_proto::{
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::Channel;
 use tonic::{Code, Streaming};
 use tracing::{info, warn};
 
@@ -219,16 +219,9 @@ fn hello(
 }
 
 async fn connect(server: &str) -> Result<Channel, Stop> {
-    let server = commandant_common::link::prefer_loopback(server).await;
-    Endpoint::from_shared(server)
-        .context("invalid server URL")
-        .map_err(Stop::Fatal)?
-        .connect_timeout(Duration::from_secs(10))
-        .http2_keep_alive_interval(Duration::from_secs(20))
-        .keep_alive_while_idle(true)
-        .connect()
+    commandant_proto::channel(server)
         .await
-        .map_err(|e| Stop::Retry(anyhow!("connecting: {e}")))
+        .map_err(|e| Stop::Retry(e.context("connecting")))
 }
 
 /// New credentials on first join; otherwise the saved ones, if the

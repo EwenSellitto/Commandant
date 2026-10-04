@@ -281,6 +281,26 @@ async fn worker_joins_runs_commands_and_reconnects() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_link_with_several_addresses_uses_the_one_that_answers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (addr, admin_token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
+    // First an address nobody answers on (TEST-NET-1), as a public IP seen
+    // from inside the network might be.
+    let hosts = format!("192.0.2.1:7400,{}", addr.trim_start_matches("http://"));
+    let link: Link = Link::new(&admin_token, &hosts).to_string().parse().unwrap();
+    assert_eq!(link.hosts.len(), 2);
+
+    let mut client = connect_control(&link.addr(), &admin_token).await.unwrap();
+    let state_dir = tmp.path().join("worker");
+    let worker = spawn_worker(&link.addr(), Some(link.token.clone()), &state_dir);
+    wait_for_node(&mut client, true).await;
+    // Both are remembered, for when the other one is the one that works.
+    let creds = saved_credentials(&state_dir).await;
+    assert_eq!(creds.server.as_deref(), Some(link.addr().as_str()));
+    worker.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn admin_link_enrols_workers() {
     let tmp = tempfile::tempdir().unwrap();
     let (addr, admin_token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
@@ -475,7 +495,7 @@ mod reset {
         // The link carries the new token; the remembered host stays.
         let link: Link = read_trimmed(&data_dir.join("link")).parse().unwrap();
         assert_eq!(link.token, new_token);
-        assert_eq!(link.host, format!("box.lan:{port}"));
+        assert_eq!(link.hosts[0], format!("box.lan:{port}"));
 
         let pid = child.id().expect("still running") as i32;
         assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);

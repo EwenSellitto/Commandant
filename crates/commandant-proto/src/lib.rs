@@ -6,6 +6,8 @@ pub mod v1 {
 
 pub use v1::*;
 
+use std::time::Duration;
+
 use tonic::metadata::{Ascii, MetadataValue};
 use tonic::service::Interceptor;
 use tonic::service::interceptor::InterceptedService;
@@ -127,10 +129,45 @@ pub type ControlClient = control_client::ControlClient<InterceptedService<Channe
 
 /// Connects to an orchestrator's Control service as an admin.
 pub async fn connect_control(addr: &str, token: &str) -> anyhow::Result<ControlClient> {
-    let addr = commandant_common::link::prefer_loopback(addr).await;
-    let channel = Endpoint::from_shared(addr)?.connect().await?;
     Ok(control_client::ControlClient::with_interceptor(
-        channel,
+        channel(addr).await?,
         BearerAuth::new(token)?,
     ))
+}
+
+/// How long one of an orchestrator's addresses gets to answer.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Connects to the orchestrator at `addr`, which may list several URLs
+/// separated by commas (say its public name and its LAN address): all are
+/// tried at once, and the first to answer is used.
+pub async fn channel(addr: &str) -> anyhow::Result<Channel> {
+    let mut attempts = tokio::task::JoinSet::new();
+    for url in commandant_common::link::urls(addr) {
+        let url = url.to_string();
+        attempts.spawn(async move {
+            let local = commandant_common::link::prefer_loopback(&url).await;
+            let connected = async {
+                Endpoint::from_shared(local)?
+                    .connect_timeout(CONNECT_TIMEOUT)
+                    .http2_keep_alive_interval(Duration::from_secs(20))
+                    .keep_alive_while_idle(true)
+                    .connect()
+                    .await
+                    .map_err(anyhow::Error::from)
+            };
+            connected.await.map_err(|e| format!("{url}: {e:#}"))
+        });
+    }
+    let mut failures = Vec::new();
+    while let Some(attempt) = attempts.join_next().await {
+        match attempt? {
+            Ok(channel) => return Ok(channel),
+            Err(failure) => failures.push(failure),
+        }
+    }
+    match failures.is_empty() {
+        true => anyhow::bail!("no orchestrator address given"),
+        false => anyhow::bail!("couldn't reach the orchestrator ({})", failures.join("; ")),
+    }
 }

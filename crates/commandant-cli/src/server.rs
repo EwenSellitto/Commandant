@@ -122,43 +122,60 @@ fn print_welcome(listen: SocketAddr, link: &Link) {
     eprintln!("Anyone with this link controls the cluster; keep it private.\n");
 }
 
-/// `host:port` for the link, in order of preference: `--advertise` (and
-/// remember it), the remembered value, a specific listen address, this
-/// machine's primary IP.
+/// The `host:port`s for the link, comma-separated, which clients try in
+/// turn: those `--advertise` lists (remembered), else the remembered ones,
+/// then the address this machine was found on, unless already there.
 fn advertised_host(
     data_dir: &Path,
     advertise: Option<String>,
     listen: SocketAddr,
 ) -> Result<String> {
     let remembered = data_dir.join(ADVERTISE_FILE);
-    let host = match non_blank(advertise) {
-        Some(host) => {
-            fs::write_private(&remembered, &format!("{host}\n"))?;
-            host
+    let given = match fs::non_blank(advertise) {
+        Some(hosts) => {
+            fs::write_private(&remembered, &format!("{hosts}\n"))?;
+            Some(hosts)
         }
-        None => match non_blank(fs::read_optional(&remembered)?) {
-            Some(host) => host,
-            None => detected_host(listen),
-        },
+        None => fs::read_setting(&remembered)?,
     };
-    Ok(link::with_port(&host, listen.port()))
+    let detected = detected_host(listen, given.is_some());
+    let hosts: Vec<String> = given
+        .iter()
+        .flat_map(|hosts| hosts.split(','))
+        .chain([detected.as_str()])
+        .map(|host| link::with_port(host.trim(), listen.port()))
+        .collect();
+    let mut unique = Vec::new();
+    for host in hosts {
+        if !unique.contains(&host) {
+            unique.push(host);
+        }
+    }
+    Ok(unique.join(","))
 }
 
-fn detected_host(listen: SocketAddr) -> String {
+/// The address this machine is reached on: the one it listens on, else its
+/// primary IP. `advertised` says whether other addresses come first.
+fn detected_host(listen: SocketAddr, advertised: bool) -> String {
     if !listen.ip().is_unspecified() {
         return listen.ip().to_string();
     }
     match link::primary_ip() {
-        Some(ip) => ip.to_string(),
+        Some(ip) => {
+            if link::behind_wsl_nat(ip) && !advertised {
+                tracing::warn!(
+                    "{ip} is WSL's own network, which other machines can't reach: \
+                     turn on WSL's mirrored networking, or forward the port from \
+                     Windows and pass --advertise <Windows' LAN address>"
+                );
+            }
+            ip.to_string()
+        }
         None => {
             tracing::warn!("no network address found; the link only works locally");
             "127.0.0.1".into()
         }
     }
-}
-
-fn non_blank(text: Option<String>) -> Option<String> {
-    text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
 }
 
 /// `listen`, with a wildcard address replaced by loopback.

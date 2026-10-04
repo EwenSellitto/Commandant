@@ -68,7 +68,8 @@ pub struct ServerArgs {
     #[arg(long, env = "COMMANDANT_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
     /// Host (or host:port) to put in the connection link, e.g. a DNS or
-    /// Tailscale name. Remembered; defaults to this machine's primary IP.
+    /// Tailscale name; several, comma-separated, are tried in turn by
+    /// clients. Remembered; this machine's primary IP is always added last.
     #[arg(long, env = "COMMANDANT_ADVERTISE")]
     pub advertise: Option<String>,
     /// Also run a worker on this machine.

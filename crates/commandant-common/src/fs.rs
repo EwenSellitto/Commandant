@@ -36,6 +36,17 @@ pub fn read_optional(path: &Path) -> Result<Option<String>> {
     }
 }
 
+/// A single-value setting kept in a file, trimmed; `None` if the file is
+/// missing or blank.
+pub fn read_setting(path: &Path) -> Result<Option<String>> {
+    Ok(non_blank(read_optional(path)?))
+}
+
+/// `text` trimmed, unless that leaves nothing.
+pub fn non_blank(text: Option<String>) -> Option<String> {
+    text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
+}
+
 /// Reads a single-value file (a token, a host...) without surrounding whitespace.
 pub fn read_trimmed(path: &Path) -> Result<String> {
     Ok(std::fs::read_to_string(path)
