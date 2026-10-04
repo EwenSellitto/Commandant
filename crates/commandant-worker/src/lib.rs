@@ -1,5 +1,6 @@
 //! The Commandant worker: dials into an orchestrator and runs what it's told.
 
+mod claude;
 mod exec;
 mod harness;
 mod opencode;
@@ -50,8 +51,9 @@ pub struct WorkerConfig {
     pub pick_free_state_dir: bool,
     /// The coding agent to host, if any.
     pub harness: Option<HarnessKind>,
-    /// The `opencode` to run; when unset it is looked for, or installed.
-    pub opencode_bin: Option<PathBuf>,
+    /// The binary of the harness to run (`opencode`, `claude`); when unset
+    /// it is looked for, or installed.
+    pub harness_bin: Option<PathBuf>,
 }
 
 /// Who the worker is, once `run` has claimed a state directory.
@@ -109,7 +111,7 @@ pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
             .or_else(|| (claim.instance > 1).then(|| format!("{}-{}", hostname(), claim.instance))),
         state_dir: claim.dir.clone(),
     };
-    let host = Arc::new(Host::new(config.opencode_bin));
+    let host = Arc::new(Host::new(config.harness_bin, claim.dir.clone()));
     // Otherwise one is started when a client asks for it.
     if let Some(kind) = config.harness {
         host.start(kind)

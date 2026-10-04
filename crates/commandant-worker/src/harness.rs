@@ -19,20 +19,23 @@ use commandant_proto::{
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
+use crate::claude::ClaudeCode;
 use crate::opencode::Opencode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HarnessKind {
     Opencode,
+    ClaudeCode,
 }
 
 impl HarnessKind {
     /// Every harness this worker can host.
-    pub const ALL: [HarnessKind; 1] = [HarnessKind::Opencode];
+    pub const ALL: [HarnessKind; 2] = [HarnessKind::Opencode, HarnessKind::ClaudeCode];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Opencode => "opencode",
+            Self::ClaudeCode => "claude-code",
         }
     }
 
@@ -40,6 +43,9 @@ impl HarnessKind {
     pub fn description(self) -> &'static str {
         match self {
             Self::Opencode => "OpenCode, installed on the node if it isn't there",
+            Self::ClaudeCode => {
+                "Claude Code on your Claude subscription, installed if it isn't there"
+            }
         }
     }
 
@@ -250,9 +256,14 @@ fn find_binary(name: &str, installed_in: &str) -> Option<PathBuf> {
 }
 
 /// Starts a harness, installing it first if need be.
-async fn start(kind: HarnessKind, opencode_bin: Option<PathBuf>) -> Result<Arc<dyn Harness>> {
+async fn start(
+    kind: HarnessKind,
+    harness_bin: Option<PathBuf>,
+    state_dir: PathBuf,
+) -> Result<Arc<dyn Harness>> {
     Ok(match kind {
-        HarnessKind::Opencode => Arc::new(Opencode::start(opencode_bin).await?),
+        HarnessKind::Opencode => Arc::new(Opencode::start(harness_bin).await?),
+        HarnessKind::ClaudeCode => Arc::new(ClaudeCode::start(harness_bin, &state_dir).await?),
     })
 }
 
@@ -271,14 +282,17 @@ enum Hosting {
 #[derive(Default)]
 pub struct Host {
     hosting: Mutex<Hosting>,
-    opencode_bin: Option<PathBuf>,
+    harness_bin: Option<PathBuf>,
+    /// The worker's own directory, for what a harness keeps (credentials).
+    state_dir: PathBuf,
 }
 
 impl Host {
-    pub fn new(opencode_bin: Option<PathBuf>) -> Self {
+    pub fn new(harness_bin: Option<PathBuf>, state_dir: PathBuf) -> Self {
         Self {
             hosting: Mutex::default(),
-            opencode_bin,
+            harness_bin,
+            state_dir,
         }
     }
 
@@ -309,7 +323,7 @@ impl Host {
                 Hosting::Nothing => *hosting = Hosting::Starting(kind),
             }
         }
-        let started = start(kind, self.opencode_bin.clone()).await;
+        let started = start(kind, self.harness_bin.clone(), self.state_dir.clone()).await;
         let mut hosting = self.hosting.lock().unwrap();
         match started {
             Ok(harness) => {
@@ -340,7 +354,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_host_refuses_a_second_start_and_keeps_none_on_failure() {
-        let host = Host::new(Some(PathBuf::from("/nonexistent/opencode")));
+        let host = Host::new(Some(PathBuf::from("/nonexistent/opencode")), PathBuf::new());
         assert!(host.start(HarnessKind::Opencode).await.is_err());
         assert!(host.current().is_none());
         assert!(host.hosted().is_empty());

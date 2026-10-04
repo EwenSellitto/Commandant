@@ -237,6 +237,20 @@ refused) and keeps it until it stops, then answers `HarnessStarted` with what
 it now hosts, which the orchestrator records on the connection. The TUI offers
 it when a node without an agent is opened.
 
+**Claude Code.** The other harness runs the `claude` CLI itself, once per
+prompt: `claude -p --output-format stream-json --include-partial-messages`,
+with `--session-id <new uuid>` (so the session is claimed before it starts)
+or `--resume <id>` in the session's own directory, the prompt on stdin, and
+`--model`/`--effort`/`--agent`. Text and thinking deltas stream as output,
+tool calls as notes; cancelling kills its process group. Its options come
+from a `claude` given no prompt: the SDK's `initialize` and `mcp_status`
+control requests answer with its agents, models and efforts, commands and
+MCP servers without calling the model. Sessions are read from
+`~/.claude/projects/*/<id>.jsonl`. It stays on the subscription: API key
+variables are removed, the `init` event's `apiKeySource` must be `none`, and
+signing in means `claude auth status` saying `claude.ai`, or a token from
+`claude setup-token` given as `CLAUDE_CODE_OAUTH_TOKEN`.
+
 **MCP servers load late.** OpenCode lists its MCP servers, and its commands
 (MCP prompts among them), only once those servers have connected, which can
 take 5 to 15 s after it starts. So the options wait at most 2 s for them: past
@@ -364,9 +378,9 @@ All traffic is plaintext today, so that address should be on a private network
 
 ## What's next
 
-- **More harnesses.** `HarnessKind` in the worker has one variant today, behind
-  the `Harness` trait. A worker hosts one at a time; hosting several would
-  need prompts to name theirs.
+- **More harnesses.** OpenCode and Claude Code sit behind the `Harness`
+  trait. A worker hosts one at a time; hosting several would need prompts to
+  name theirs.
 - **Interactive agents.** Questions and permission requests are auto-answered
   today. Forwarding them to the CLI would use the remaining reserved fields
   (`WorkerMsg` 14–19, `OrchestratorMsg` 15–19).

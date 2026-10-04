@@ -40,7 +40,7 @@ fn worker_config(addr: &str, join_token: Option<String>, state_dir: &Path) -> Wo
         state_dir: state_dir.to_path_buf(),
         pick_free_state_dir: false,
         harness: None,
-        opencode_bin: None,
+        harness_bin: None,
     }
 }
 
@@ -780,7 +780,7 @@ mod agents {
         let (addr, admin_token, stop) = start_orchestrator(&tmp.path().join("server")).await;
         let worker = tokio::spawn(commandant_worker::run(WorkerConfig {
             harness: Some(HarnessKind::Opencode),
-            opencode_bin: Some(fake.binary.clone()),
+            harness_bin: Some(fake.binary.clone()),
             ..worker_config(&addr, Some(admin_token.clone()), &tmp.path().join("worker"))
         }));
         let mut client = connect_control(&addr, &admin_token).await.unwrap();
@@ -1120,6 +1120,109 @@ mod agents {
         assert!(empty.await.is_err());
     }
 
+    /// A stand-in for `claude`: it answers `initialize` and `mcp_status`,
+    /// echoes a prompt as a stream-json turn, and logs how it was run.
+    const FAKE_CLAUDE: &str = r#"#!/bin/sh
+log="$(dirname "$0")/claude.log"
+case "$1" in
+  --version) echo "9.9.9 (Claude Code)"; exit 0 ;;
+  auth) echo '{"loggedIn":true,"authMethod":"claude.ai"}'; exit 0 ;;
+esac
+echo "args: $* token: ${CLAUDE_CODE_OAUTH_TOKEN:-none}" >> "$log"
+case " $* " in *" --input-format "*)
+  while read -r line; do
+    case "$line" in
+      *initialize*) echo '{"type":"control_response","response":{"subtype":"success","request_id":"init","response":{"agents":[{"name":"Explore","description":"Searches"}],"commands":[{"name":"review","description":"Review"}],"models":[{"value":"default"},{"value":"sonnet","displayName":"Sonnet","supportedEffortLevels":["low","high"]}]}}}' ;;
+      *mcp_status*) echo '{"type":"control_response","response":{"subtype":"success","request_id":"mcp","response":{"mcpServers":[{"name":"docs","status":"connected"}]}}}'; exit 0 ;;
+    esac
+  done
+  exit 0 ;;
+esac
+prompt=$(cat)
+echo "prompt: $prompt" >> "$log"
+echo '{"type":"system","subtype":"init","apiKeySource":"none","model":"claude-fake"}'
+echo '{"type":"stream_event","event":{"type":"content_block_start"}}'
+printf '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"echo: %s"}}}\n' "$prompt"
+echo '{"type":"result","is_error":false,"total_cost_usd":1.5,"usage":{"input_tokens":3,"output_tokens":2}}'
+"#;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn claude_code_runs_on_the_subscription_through_its_own_cli() {
+        let tmp = tempfile::tempdir().unwrap();
+        let binary = tmp.path().join("claude");
+        super::fake_opencode::write_script(&binary, FAKE_CLAUDE);
+        let (addr, admin_token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
+        let worker = tokio::spawn(commandant_worker::run(WorkerConfig {
+            harness: Some(HarnessKind::ClaudeCode),
+            harness_bin: Some(binary),
+            ..worker_config(&addr, Some(admin_token.clone()), &tmp.path().join("worker"))
+        }));
+        let mut client = connect_control(&addr, &admin_token).await.unwrap();
+        let node = wait_for_node(&mut client, true).await;
+        assert_eq!(node.harnesses, ["claude-code"]);
+        let log = || std::fs::read_to_string(tmp.path().join("claude.log")).unwrap_or_default();
+
+        let options = get_options(&mut client).await;
+        assert_eq!(options.agents[0].name, "Explore");
+        assert_eq!(options.models.len(), 1, "its default is no model at all");
+        assert_eq!(options.models[0].variants, ["low", "high"]);
+        assert_eq!(options.commands[0].name, "review");
+        assert_eq!(options.mcp_servers[0].status, "connected");
+
+        let request = PromptRequest {
+            model: "sonnet".into(),
+            variant: "high".into(),
+            ..ask("hi there")
+        };
+        let done = prompt(&mut client, request).await;
+        ok(&done);
+        assert_eq!(done.stdout, "echo: hi there\n");
+        assert_eq!(done.finished.model, "claude-fake");
+        assert_eq!(
+            done.finished.usage.unwrap().cost,
+            0.0,
+            "the subscription pays"
+        );
+        let session = done.finished.session_id.clone();
+        assert_eq!(session.len(), 36, "a UUID it was started with");
+        assert!(
+            log().contains(&format!(
+                "--session-id {session} --model sonnet --effort high"
+            )),
+            "{}",
+            log()
+        );
+
+        // A token from `claude setup-token` signs it in from then on.
+        let providers = client
+            .list_providers(ListProvidersRequest { node: "w1".into() })
+            .await
+            .unwrap()
+            .into_inner()
+            .providers;
+        assert!(providers[0].connected);
+        let request = AuthenticateProviderRequest {
+            node: "w1".into(),
+            provider: "claude".into(),
+            action: Some(AuthAction {
+                action: Some(auth_action::Action::ApiKey(" sk-ant-oat-x ".into())),
+            }),
+        };
+        client.authenticate_provider(request).await.unwrap();
+        let again = PromptRequest {
+            session_id: session.clone(),
+            command: "review".into(),
+            cwd: tmp.path().to_string_lossy().into(),
+            ..ask("the parser")
+        };
+        ok(&prompt(&mut client, again).await);
+        let log = log();
+        assert!(log.contains(&format!("--resume {session}")), "{log}");
+        assert!(log.contains("token: sk-ant-oat-x"), "{log}");
+        assert!(log.contains("prompt: /review the parser"), "{log}");
+        worker.abort();
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn older_opencode_lists_its_sessions_too() {
         let Cluster {
@@ -1366,7 +1469,7 @@ mod agents {
         let fake = FakeOpencode::start().await;
         let worker = |token: Option<String>| {
             tokio::spawn(commandant_worker::run(WorkerConfig {
-                opencode_bin: Some(fake.binary.clone()),
+                harness_bin: Some(fake.binary.clone()),
                 ..worker_config(&addr, token, &tmp.path().join("worker"))
             }))
         };
@@ -1374,7 +1477,7 @@ mod agents {
         let mut client = connect_control(&addr, &token).await.unwrap();
         let node = wait_for_node(&mut client, true).await;
         assert!(node.harnesses.is_empty());
-        assert_eq!(node.can_host, ["opencode"]);
+        assert_eq!(node.can_host, ["opencode", "claude-code"]);
         let starter = client.clone();
         let start = |harness: &str| {
             let mut client = starter.clone();
