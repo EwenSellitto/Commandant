@@ -8,6 +8,7 @@ rust-version.workspace = true
 anyhow.workspace = true
 commandant-common.workspace = true
 prost.workspace = true
+tokio.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
 

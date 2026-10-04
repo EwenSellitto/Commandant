@@ -9,6 +9,9 @@
 #   COMMANDANT_LINK='commandant://...' COMMANDANT_NODE_NAME=box-2b \
 #     docker compose -p box-2b -f docker/worker.compose.yml up -d
 #
+# The worker runs as the image's `commandant` user, never root. Volumes from
+# an older image, made by root, need `chown -R 1000:1000` on the host first.
+#
 # To host a coding agent, add COMMANDANT_HARNESS=opencode. It is installed on
 # the first start and kept, with its sessions and logins, in the home volume.
 # Give it a model provider by passing its API key, e.g. ANTHROPIC_API_KEY, in
@@ -25,7 +28,7 @@ services:
     command: ["worker"]
     # Passed through only when set in your shell.
     environment: [COMMANDANT_LINK, COMMANDANT_NODE_NAME, COMMANDANT_HARNESS]
-    volumes: [state:/state, home:/root]
+    volumes: [state:/state, home:/home/commandant]
     restart: unless-stopped
 
 volumes:

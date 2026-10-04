@@ -21,6 +21,8 @@ pub const SCHEME: &str = "commandant://";
 /// older, textual format still parse.
 const FORMAT: u8 = 2;
 const TEXT_FORMAT: u8 = 1;
+/// Several addresses, tried in turn: a count byte, the addresses, the token.
+const MULTI_FORMAT: u8 = 3;
 const KEY: &[u8] = b"commandant-link";
 
 /// How the address is packed; `CUSTOM_PORT` is added when a port follows.
@@ -37,36 +39,66 @@ const TOKEN_PREFIXES: [&str; 3] = ["cmda", "cmdj", "cmdn"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
     pub token: String,
-    /// `host:port`, as advertised by the orchestrator.
-    pub host: String,
+    /// `host:port`s the orchestrator may be reached on, as advertised: a
+    /// client tries each (a public name, say, then a LAN address).
+    pub hosts: Vec<String>,
 }
 
 impl Link {
-    pub fn new(token: &str, host: &str) -> Self {
+    /// `hosts` is one `host[:port]`, or several separated by commas.
+    pub fn new(token: &str, hosts: &str) -> Self {
         Self {
             token: token.to_string(),
-            host: with_port(host, DEFAULT_PORT),
+            hosts: hosts
+                .split(',')
+                .map(str::trim)
+                .filter(|h| !h.is_empty())
+                .map(|h| with_port(h, DEFAULT_PORT))
+                .collect(),
         }
     }
 
-    /// Link to an orchestrator URL such as `http://10.0.0.1:7400`.
+    /// Link to orchestrator URLs such as `http://10.0.0.1:7400`, comma-separated.
     pub fn for_addr(token: &str, addr: &str) -> Self {
-        let host = addr.trim_start_matches("http://").trim_end_matches('/');
-        Self::new(token, host)
+        let hosts: Vec<&str> = urls(addr)
+            .map(|url| url.trim_start_matches("http://").trim_end_matches('/'))
+            .collect();
+        Self::new(token, &hosts.join(","))
     }
 
-    /// Orchestrator URL, e.g. `http://10.0.0.1:7400`.
+    /// The orchestrator's URLs, comma-separated: `http://10.0.0.1:7400`.
     pub fn addr(&self) -> String {
-        format!("http://{}", self.host)
+        let urls: Vec<String> = self.hosts.iter().map(|h| format!("http://{h}")).collect();
+        urls.join(",")
     }
+}
+
+/// The URLs in an orchestrator address, which may list several separated by
+/// commas, to try in turn.
+pub fn urls(addr: &str) -> impl Iterator<Item = &str> {
+    addr.split(',').map(str::trim).filter(|u| !u.is_empty())
 }
 
 impl std::fmt::Display for Link {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut payload = Vec::new();
-        pack_host(&self.host, &mut payload);
+        // One address keeps the shorter format older clients read.
+        let format = match self.hosts.as_slice() {
+            [host] => {
+                pack_host(host, &mut payload);
+                FORMAT
+            }
+            hosts => {
+                let hosts = &hosts[..hosts.len().min(255)];
+                payload.push(hosts.len() as u8);
+                for host in hosts {
+                    pack_host(host, &mut payload);
+                }
+                MULTI_FORMAT
+            }
+        };
         pack_token(&self.token, &mut payload);
-        write!(f, "{SCHEME}{}", encode(FORMAT, payload))
+        write!(f, "{SCHEME}{}", encode(format, payload))
     }
 }
 
@@ -92,7 +124,7 @@ fn encode(format: u8, mut payload: Vec<u8>) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// The token and `host:port` in an encoded link.
+/// The token and `host:port`s (comma-separated) in an encoded link.
 fn decode(opaque: &str) -> Option<(String, String)> {
     let bytes = URL_SAFE_NO_PAD.decode(opaque).ok()?;
     let [format, payload @ .., sum] = bytes.as_slice() else {
@@ -108,6 +140,14 @@ fn decode(opaque: &str) -> Option<(String, String)> {
             let mut rest = payload.as_slice();
             let host = unpack_host(&mut rest)?;
             Some((unpack_token(rest)?, host))
+        }
+        MULTI_FORMAT => {
+            let mut rest = payload.as_slice();
+            let count = *take(&mut rest, 1)?.first()?;
+            let hosts = (0..count)
+                .map(|_| unpack_host(&mut rest))
+                .collect::<Option<Vec<_>>>()?;
+            Some((unpack_token(rest)?, hosts.join(",")))
         }
         TEXT_FORMAT => {
             let text = String::from_utf8(payload).ok()?;
@@ -231,10 +271,11 @@ impl std::str::FromStr for Link {
         } else {
             decode(payload).context("invalid link (truncated or mistyped?)")?
         };
-        if token.is_empty() || host.is_empty() {
+        let link = Self::new(&token, &host);
+        if token.is_empty() || link.hosts.is_empty() {
             anyhow::bail!("invalid link");
         }
-        Ok(Self::new(&token, &host))
+        Ok(link)
     }
 }
 
@@ -266,6 +307,17 @@ pub fn primary_ip() -> Option<IpAddr> {
     socket.connect(NEVER_ROUTED).ok()?;
     let ip = socket.local_addr().ok()?.ip();
     (!ip.is_unspecified()).then_some(ip)
+}
+
+/// Whether this runs in WSL 2 with its default NAT networking, where the
+/// machine's own address is only reachable from the Windows host.
+pub fn behind_wsl_nat(ip: IpAddr) -> bool {
+    let wsl = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .is_ok_and(|release| release.to_lowercase().contains("microsoft"));
+    // Mirrored networking gives WSL the LAN address itself.
+    let nat =
+        matches!(ip, IpAddr::V4(v4) if v4.octets()[0] == 172 && (16..32).contains(&v4.octets()[1]));
+    wsl && nat
 }
 
 /// Whether `ip` belongs to this machine (only local addresses can be bound).
@@ -326,16 +378,28 @@ mod tests {
             Link::new("t", "10.0.0.1:7400")
         );
 
+        // Several addresses, tried in turn; each with its own port.
+        let link = Link::new("cmda_abc", "home.example.org:9000, 192.168.1.15");
+        assert_eq!(link.hosts, ["home.example.org:9000", "192.168.1.15:7400"]);
+        assert_eq!(
+            link.addr(),
+            "http://home.example.org:9000,http://192.168.1.15:7400"
+        );
+        assert_eq!(link.to_string().parse::<Link>().unwrap(), link);
+        assert_eq!(Link::for_addr("cmda_abc", &link.addr()), link);
+        let typed: Link = "commandant://t@a.lan,b.lan:81".parse().unwrap();
+        assert_eq!(typed.hosts, ["a.lan:7400", "b.lan:81"]);
+
         // Plain links still work.
         let link: Link = "commandant://cmda_abc@10.0.0.1:7400".parse().unwrap();
         assert_eq!(link.token, "cmda_abc");
         assert_eq!(link.addr(), "http://10.0.0.1:7400");
 
         let link: Link = "commandant://t@box.lan".parse().unwrap();
-        assert_eq!(link.host, "box.lan:7400");
+        assert_eq!(link.hosts, ["box.lan:7400"]);
         let link: Link = "commandant://t@[fd00::1]:9000/".parse().unwrap();
         assert_eq!(link.addr(), "http://[fd00::1]:9000");
-        assert_eq!(Link::new("t", "fd00::1").host, "[fd00::1]:7400");
+        assert_eq!(Link::new("t", "fd00::1").hosts, ["[fd00::1]:7400"]);
 
         assert!("http://10.0.0.1:7400".parse::<Link>().is_err());
         assert!("commandant://10.0.0.1:7400".parse::<Link>().is_err());

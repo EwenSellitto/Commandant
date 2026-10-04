@@ -14,8 +14,10 @@ Workers *dial into* the orchestrator and keep one gRPC stream open, so they work
 behind NAT, from laptops and from Docker without opening any port.
 
 A task is either a shell command (`commandant run`) or a prompt for the node's
-coding agent (`commandant prompt`). The agent harness supported today is
-[OpenCode](https://opencode.ai), which the worker installs and runs for you.
+coding agent (`commandant prompt`). The agent harnesses supported today are
+[OpenCode](https://opencode.ai) and [Claude Code](https://code.claude.com),
+which the worker installs and runs for you. Claude Code always runs on your
+Claude subscription, never an API key (see below).
 
 Documentation: [architecture and diagrams](docs/architecture.md) ·
 [crates and modules](docs/crates.md)
@@ -126,10 +128,14 @@ Every command has `--help`. Client commands find the orchestrator from, in order
 | `--reset` | | off | Delete the database and start afresh, after confirming twice |
 | `--advertise` | `COMMANDANT_ADVERTISE` | primary IP | Host put in the link (remembered) |
 | `--local-worker` | `COMMANDANT_LOCAL_WORKER` | off | Also run a worker in-process |
-| `--harness` | `COMMANDANT_HARNESS` | none | Coding agent for the local worker (`opencode`) |
-| `--opencode-bin` | `COMMANDANT_OPENCODE_BIN` | on `PATH` | The `opencode` binary for the local worker |
+| `--harness` | `COMMANDANT_HARNESS` | none | Coding agent for the local worker (`opencode`, `claude-code`) |
+| `--harness-bin` | `COMMANDANT_HARNESS_BIN` | on `PATH` | The agent's binary for the local worker (`--opencode-bin` still works) |
 
 ### `commandant worker [LINK]`
+
+A worker refuses to run as root, and so does the server's `--local-worker`: it
+runs whatever it is told, so it gets one ordinary user's rights. The Docker
+image runs as its own `commandant` user (uid 1000).
 
 | Option | Env | |
 |---|---|---|
@@ -137,8 +143,8 @@ Every command has `--help`. Client commands find the orchestrator from, in order
 | `--name` | `COMMANDANT_NODE_NAME` | Node name (defaults to the hostname; must be unique) |
 | `--state-dir` | `COMMANDANT_STATE_DIR` | Where credentials live (default `~/.local/share/commandant/worker`) |
 | `--server` / `--join-token` | `COMMANDANT_SERVER` / `COMMANDANT_JOIN_TOKEN` | URL + token, as an alternative to a link |
-| `--harness` | `COMMANDANT_HARNESS` | Coding agent to host (`opencode`); installed if missing |
-| `--opencode-bin` | `COMMANDANT_OPENCODE_BIN` | The `opencode` binary to run, instead of the one on `PATH` (or installed) |
+| `--harness` | `COMMANDANT_HARNESS` | Coding agent to host (`opencode`, `claude-code`); installed if missing |
+| `--harness-bin` | `COMMANDANT_HARNESS_BIN` | The agent's binary (`opencode`, `claude`) to run, instead of the one on `PATH` (or installed); `--opencode-bin` still works |
 
 Several workers can run on one machine. Each locks its state directory while it
 runs, so no two are ever the same node. Started without `--state-dir`, a worker
@@ -189,6 +195,27 @@ Task statuses: `running`, `succeeded` (exit 0), `failed`, `cancelled`, and
 ---
 
 ## Coding agents
+
+### Claude Code, on your subscription
+
+`--harness claude-code` (or `node start-agent my-box claude-code`, or the TUI)
+runs the real `claude` CLI, installed with Anthropic's installer if missing,
+once per prompt (`claude -p` with streamed JSON). Its own settings, skills,
+agents, hooks and MCP servers apply, and sessions are its own transcripts, so
+`claude --resume` picks them up too.
+
+It only ever uses your Claude subscription:
+
+- `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are removed from its
+  environment, and a turn is stopped as soon as Claude Code says it found an
+  API key anywhere else (settings, `apiKeyHelper`).
+- Sign the node in once: run `claude` on it and `/login`, or run
+  `claude setup-token` where a browser is and paste the token in the TUI
+  (`/providers`). The token is kept in the worker's state directory (0600).
+- No cost is shown: the subscription's usage limits apply instead.
+
+Permissions are skipped (`--dangerously-skip-permissions`), as nobody is there
+to answer them. Its MCP servers are managed with `claude mcp` on the node.
 
 A worker started with `--harness opencode`, or asked to start it later (by
 `node start-agent` or the TUI; a worker started without `--harness` hosts none

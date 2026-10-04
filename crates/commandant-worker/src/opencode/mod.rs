@@ -2,31 +2,34 @@
 //! running on loopback, and relays prompts to it.
 
 mod api;
+mod auth;
 mod options;
 mod prompt;
 mod sessions;
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, info, warn};
 
 use commandant_proto::{
-    AgentOptions, AgentPrompt, AgentSession, McpSwitch, TaskFinished, WorkerMsg,
+    AgentOptions, AgentPrompt, AgentSession, AuthAction, HistoryEntry, McpSwitch, ModelProvider,
+    ProviderAuthResult, TaskFinished, WorkerMsg,
 };
 use tokio::sync::oneshot;
 
-use crate::harness::{Harness, HarnessKind};
+use crate::harness::{Busy, Harness, HarnessKind, ensure_installed};
 
 use self::api::Api;
 
-const INSTALL_SCRIPT: &str = "https://opencode.ai/install";
+/// Installs into `~/.opencode/bin`, leaving shell profiles alone.
+const INSTALL: &str = "curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path";
 /// The first start can be slow: OpenCode fetches its plugins.
 const START_TIMEOUT: Duration = Duration::from_secs(120);
 /// What `opencode serve` prints once it accepts requests.
@@ -35,20 +38,14 @@ const LISTENING: &str = "listening on ";
 pub struct Opencode {
     binary: PathBuf,
     server: Mutex<Option<Server>>,
-    /// Sessions answering a prompt, which can't take another meanwhile.
-    busy: std::sync::Mutex<HashSet<String>>,
-}
-
-/// Holds a session busy until dropped.
-struct Running<'a> {
-    opencode: &'a Opencode,
-    session_id: String,
-}
-
-impl Drop for Running<'_> {
-    fn drop(&mut self) {
-        self.opencode.busy.lock().unwrap().remove(&self.session_id);
-    }
+    /// Sessions answering a prompt: OpenCode would queue a second one, and
+    /// the two replies would mix.
+    busy: Busy,
+    /// Set when credentials changed. OpenCode only reads them again on a
+    /// reload, which aborts the prompts running, so it waits for none to be.
+    stale: AtomicBool,
+    /// Held shared by every running prompt, and exclusively by a reload.
+    quiet: RwLock<()>,
 }
 
 struct Server {
@@ -62,38 +59,42 @@ impl Opencode {
     pub async fn start(binary: Option<PathBuf>) -> Result<Self> {
         let binary = match binary {
             Some(binary) => binary,
-            None => ensure_installed().await?,
+            None => ensure_installed("opencode", ".opencode/bin", INSTALL).await?,
         };
-        let opencode = Self {
-            binary,
-            server: Mutex::new(None),
-            busy: Default::default(),
-        };
-        let api = opencode.api().await?;
-        // Gets OpenCode connecting its MCP servers now, which listing the
-        // commands waits for, rather than when a client first asks.
-        tokio::spawn(async move {
-            let _ = api.commands(None).await;
-        });
+        let opencode = Self::new(binary);
+        warm_up(opencode.api().await?);
         Ok(opencode)
     }
 
-    /// Marks a session busy, unless it already is: OpenCode would queue a
-    /// second prompt, and the two replies would mix.
-    fn claim(&self, session_id: &str) -> Result<Running<'_>> {
-        let fresh = self.busy.lock().unwrap().insert(session_id.to_string());
-        ensure!(
-            fresh,
-            "session {session_id} is already answering a prompt; wait for it, or cancel it"
-        );
-        Ok(Running {
-            opencode: self,
-            session_id: session_id.to_string(),
-        })
+    fn new(binary: PathBuf) -> Self {
+        Self {
+            binary,
+            server: Mutex::new(None),
+            busy: Default::default(),
+            stale: AtomicBool::new(false),
+            quiet: RwLock::new(()),
+        }
     }
 
-    fn is_busy(&self, session_id: &str) -> bool {
-        self.busy.lock().unwrap().contains(session_id)
+    fn credentials_changed(&self) {
+        self.stale.store(true, Ordering::Relaxed);
+    }
+
+    /// Reloads OpenCode if credentials changed and no prompt is running;
+    /// otherwise a later call does.
+    async fn reload_if_stale(&self) -> Result<()> {
+        if !self.stale.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let Ok(_quiet) = self.quiet.try_write() else {
+            return Ok(());
+        };
+        let api = self.api().await?;
+        api.reload().await?;
+        self.stale.store(false, Ordering::Relaxed);
+        info!("reloaded opencode for its new credentials");
+        warm_up(api);
+        Ok(())
     }
 
     /// A client for the server, which is restarted if it has died.
@@ -134,6 +135,30 @@ impl Harness for Opencode {
     async fn sessions(&self) -> Result<Vec<AgentSession>> {
         sessions::list(self).await
     }
+
+    async fn history(&self, session_id: &str) -> Result<Vec<HistoryEntry>> {
+        sessions::history(self, session_id).await
+    }
+
+    async fn providers(&self) -> Result<Vec<ModelProvider>> {
+        auth::providers(self).await
+    }
+
+    async fn authenticate(
+        &self,
+        provider: &str,
+        action: Option<AuthAction>,
+    ) -> Result<ProviderAuthResult> {
+        auth::authenticate(self, provider, action).await
+    }
+}
+
+/// Gets OpenCode connecting its MCP servers now, which listing the commands
+/// waits for, rather than when a client first asks.
+fn warm_up(api: Api) {
+    tokio::spawn(async move {
+        let _ = api.commands(None).await;
+    });
 }
 
 /// Runs `opencode serve` on a free loopback port, behind a random password.
@@ -208,65 +233,21 @@ fn random_password() -> String {
     hex::encode(bytes)
 }
 
-/// Finds opencode, installing it with the official script if needed.
-async fn ensure_installed() -> Result<PathBuf> {
-    if let Some(binary) = find_binary() {
-        return Ok(binary);
-    }
-    info!("opencode not found; installing it from {INSTALL_SCRIPT}");
-    install().await?;
-    find_binary().context("the opencode installer finished, but no opencode binary was found")
-}
-
-/// `opencode` on the PATH, else where the installer puts it.
-fn find_binary() -> Option<PathBuf> {
-    let binary = format!("opencode{}", std::env::consts::EXE_SUFFIX);
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path)
-        .chain(std::env::home_dir().map(|home| home.join(".opencode").join("bin")))
-        .map(|dir| dir.join(&binary))
-        .find(|candidate| candidate.is_file())
-}
-
-/// Installs into `~/.opencode/bin`, leaving shell profiles alone.
-#[cfg(unix)]
-async fn install() -> Result<()> {
-    let script =
-        format!("set -o pipefail; curl -fsSL {INSTALL_SCRIPT} | bash -s -- --no-modify-path");
-    let status = Command::new("bash")
-        .args(["-c", &script])
-        .stdin(Stdio::null())
-        .status()
-        .await
-        .context("running the opencode installer (it needs bash and curl)")?;
-    ensure!(status.success(), "the opencode installer failed ({status})");
-    Ok(())
-}
-
-#[cfg(not(unix))]
-async fn install() -> Result<()> {
-    bail!("install opencode first (npm install -g opencode-ai), then restart the worker")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn a_session_takes_one_prompt_at_a_time() {
-        let opencode = Opencode {
-            binary: PathBuf::new(),
-            server: Mutex::new(None),
-            busy: Default::default(),
-        };
-        let running = opencode.claim("ses_a").unwrap();
-        assert!(opencode.is_busy("ses_a"));
-        assert!(opencode.claim("ses_a").is_err());
+        let opencode = Opencode::new(PathBuf::new());
+        let running = opencode.busy.claim("ses_a").unwrap();
+        assert!(opencode.busy.contains("ses_a"));
+        assert!(opencode.busy.claim("ses_a").is_err());
         // Other sessions run alongside.
-        let other = opencode.claim("ses_b").unwrap();
+        let other = opencode.busy.claim("ses_b").unwrap();
         drop(running);
-        assert!(!opencode.is_busy("ses_a"));
-        assert!(opencode.claim("ses_a").is_ok());
+        assert!(!opencode.busy.contains("ses_a"));
+        assert!(opencode.busy.claim("ses_a").is_ok());
         drop(other);
     }
 }

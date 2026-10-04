@@ -40,7 +40,7 @@ fn worker_config(addr: &str, join_token: Option<String>, state_dir: &Path) -> Wo
         state_dir: state_dir.to_path_buf(),
         pick_free_state_dir: false,
         harness: None,
-        opencode_bin: None,
+        harness_bin: None,
     }
 }
 
@@ -281,6 +281,26 @@ async fn worker_joins_runs_commands_and_reconnects() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_link_with_several_addresses_uses_the_one_that_answers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (addr, admin_token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
+    // First an address nobody answers on (TEST-NET-1), as a public IP seen
+    // from inside the network might be.
+    let hosts = format!("192.0.2.1:7400,{}", addr.trim_start_matches("http://"));
+    let link: Link = Link::new(&admin_token, &hosts).to_string().parse().unwrap();
+    assert_eq!(link.hosts.len(), 2);
+
+    let mut client = connect_control(&link.addr(), &admin_token).await.unwrap();
+    let state_dir = tmp.path().join("worker");
+    let worker = spawn_worker(&link.addr(), Some(link.token.clone()), &state_dir);
+    wait_for_node(&mut client, true).await;
+    // Both are remembered, for when the other one is the one that works.
+    let creds = saved_credentials(&state_dir).await;
+    assert_eq!(creds.server.as_deref(), Some(link.addr().as_str()));
+    worker.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn admin_link_enrols_workers() {
     let tmp = tempfile::tempdir().unwrap();
     let (addr, admin_token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
@@ -475,7 +495,7 @@ mod reset {
         // The link carries the new token; the remembered host stays.
         let link: Link = read_trimmed(&data_dir.join("link")).parse().unwrap();
         assert_eq!(link.token, new_token);
-        assert_eq!(link.host, format!("box.lan:{port}"));
+        assert_eq!(link.hosts[0], format!("box.lan:{port}"));
 
         let pid = child.id().expect("still running") as i32;
         assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
@@ -760,7 +780,7 @@ mod agents {
         let (addr, admin_token, stop) = start_orchestrator(&tmp.path().join("server")).await;
         let worker = tokio::spawn(commandant_worker::run(WorkerConfig {
             harness: Some(HarnessKind::Opencode),
-            opencode_bin: Some(fake.binary.clone()),
+            harness_bin: Some(fake.binary.clone()),
             ..worker_config(&addr, Some(admin_token.clone()), &tmp.path().join("worker"))
         }));
         let mut client = connect_control(&addr, &admin_token).await.unwrap();
@@ -952,6 +972,255 @@ mod agents {
         fake.release(&busy);
         ok(&collect(held).await);
         assert!(list_sessions(&mut client).await.iter().all(|s| !s.busy));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_saved_session_shows_what_was_said() {
+        let Cluster {
+            mut client,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        let done = prompt(&mut client, ask("one")).await;
+        let request = GetSessionHistoryRequest {
+            node: "w1".into(),
+            session_id: done.finished.session_id.clone(),
+        };
+        let history = client.get_session_history(request).await.unwrap();
+        let entries: Vec<_> = history
+            .into_inner()
+            .entries
+            .into_iter()
+            .map(|e| (e.role, e.text))
+            .collect();
+        assert_eq!(
+            entries,
+            [("user", "one"), ("agent", "echo: one")].map(|(r, t)| (r.into(), t.into()))
+        );
+    }
+
+    async fn providers(client: &mut ControlClient) -> Vec<ModelProvider> {
+        let request = ListProvidersRequest { node: "w1".into() };
+        client
+            .list_providers(request)
+            .await
+            .unwrap()
+            .into_inner()
+            .providers
+    }
+
+    async fn authenticate(
+        client: &mut ControlClient,
+        provider: &str,
+        action: auth_action::Action,
+    ) -> Result<ProviderAuthResult, tonic::Status> {
+        let request = AuthenticateProviderRequest {
+            node: "w1".into(),
+            provider: provider.into(),
+            action: Some(AuthAction {
+                action: Some(action),
+            }),
+        };
+        client
+            .authenticate_provider(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    fn reloads(fake: &FakeOpencode) -> usize {
+        fake.log()
+            .iter()
+            .filter(|l| *l == "POST /global/dispose")
+            .count()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn providers_are_signed_in_to_without_disturbing_running_prompts() {
+        let Cluster {
+            mut client,
+            fake,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        let listed = providers(&mut client).await;
+        let other = listed.iter().find(|p| p.id == "other").unwrap();
+        assert!(!other.connected);
+        assert_eq!(other.methods.len(), 3);
+        assert_eq!(
+            listed.iter().find(|p| p.id == "fake").unwrap().methods[0].label,
+            "API key"
+        );
+
+        // Signed in while a prompt runs: OpenCode reloads only once it's done.
+        let (_, held) = start(&mut client, ask("hold on")).await;
+        let session = fake.wait_held(1).await.remove(0);
+        authenticate(
+            &mut client,
+            "fake",
+            auth_action::Action::ApiKey(" sk-1 ".into()),
+        )
+        .await
+        .unwrap();
+        assert!(fake.log().iter().any(|l| l.contains(r#""key":"sk-1""#)));
+        get_options(&mut client).await;
+        assert_eq!(reloads(&fake), 0, "the running prompt would be aborted");
+        fake.release(&session);
+        ok(&collect(held).await);
+        get_options(&mut client).await;
+        assert_eq!(reloads(&fake), 1);
+        get_options(&mut client).await;
+        assert_eq!(reloads(&fake), 1, "once is enough");
+
+        // OAuth with a code to paste back: a wrong one fails, the right one works.
+        let started = authenticate(&mut client, "other", auth_action::Action::OauthStart(1))
+            .await
+            .unwrap();
+        assert!(started.needs_code && started.url.contains("/other/"));
+        let finish = |code: &str| {
+            auth_action::Action::OauthFinish(OauthFinish {
+                index: 1,
+                code: code.into(),
+            })
+        };
+        assert!(
+            authenticate(&mut client, "other", finish("bad"))
+                .await
+                .is_err()
+        );
+        authenticate(&mut client, "other", finish("good"))
+            .await
+            .unwrap();
+        let listed = providers(&mut client).await;
+        assert_eq!(
+            listed
+                .iter()
+                .filter(|p| p.connected)
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>(),
+            ["fake", "other"],
+            "signed-in ones first"
+        );
+
+        authenticate(&mut client, "other", auth_action::Action::SignOut(true))
+            .await
+            .unwrap();
+        assert!(
+            !providers(&mut client)
+                .await
+                .iter()
+                .any(|p| p.id == "other" && p.connected)
+        );
+        let empty = authenticate(
+            &mut client,
+            "fake",
+            auth_action::Action::ApiKey("  ".into()),
+        );
+        assert!(empty.await.is_err());
+    }
+
+    /// A stand-in for `claude`: it answers `initialize` and `mcp_status`,
+    /// echoes a prompt as a stream-json turn, and logs how it was run.
+    const FAKE_CLAUDE: &str = r#"#!/bin/sh
+log="$(dirname "$0")/claude.log"
+case "$1" in
+  --version) echo "9.9.9 (Claude Code)"; exit 0 ;;
+  auth) echo '{"loggedIn":true,"authMethod":"claude.ai"}'; exit 0 ;;
+esac
+echo "args: $* token: ${CLAUDE_CODE_OAUTH_TOKEN:-none}" >> "$log"
+case " $* " in *" --input-format "*)
+  while read -r line; do
+    case "$line" in
+      *initialize*) echo '{"type":"control_response","response":{"subtype":"success","request_id":"init","response":{"agents":[{"name":"Explore","description":"Searches"}],"commands":[{"name":"review","description":"Review"}],"models":[{"value":"default"},{"value":"sonnet","displayName":"Sonnet","supportedEffortLevels":["low","high"]}]}}}' ;;
+      *mcp_status*) echo '{"type":"control_response","response":{"subtype":"success","request_id":"mcp","response":{"mcpServers":[{"name":"docs","status":"connected"}]}}}'; exit 0 ;;
+    esac
+  done
+  exit 0 ;;
+esac
+prompt=$(cat)
+echo "prompt: $prompt" >> "$log"
+echo '{"type":"system","subtype":"init","apiKeySource":"none","model":"claude-fake"}'
+echo '{"type":"stream_event","event":{"type":"content_block_start"}}'
+printf '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"echo: %s"}}}\n' "$prompt"
+echo '{"type":"result","is_error":false,"total_cost_usd":1.5,"usage":{"input_tokens":3,"output_tokens":2}}'
+"#;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn claude_code_runs_on_the_subscription_through_its_own_cli() {
+        let tmp = tempfile::tempdir().unwrap();
+        let binary = tmp.path().join("claude");
+        super::fake_opencode::write_script(&binary, FAKE_CLAUDE);
+        let (addr, admin_token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
+        let worker = tokio::spawn(commandant_worker::run(WorkerConfig {
+            harness: Some(HarnessKind::ClaudeCode),
+            harness_bin: Some(binary),
+            ..worker_config(&addr, Some(admin_token.clone()), &tmp.path().join("worker"))
+        }));
+        let mut client = connect_control(&addr, &admin_token).await.unwrap();
+        let node = wait_for_node(&mut client, true).await;
+        assert_eq!(node.harnesses, ["claude-code"]);
+        let log = || std::fs::read_to_string(tmp.path().join("claude.log")).unwrap_or_default();
+
+        let options = get_options(&mut client).await;
+        assert_eq!(options.agents[0].name, "Explore");
+        assert_eq!(options.models.len(), 1, "its default is no model at all");
+        assert_eq!(options.models[0].variants, ["low", "high"]);
+        assert_eq!(options.commands[0].name, "review");
+        assert_eq!(options.mcp_servers[0].status, "connected");
+
+        let request = PromptRequest {
+            model: "sonnet".into(),
+            variant: "high".into(),
+            ..ask("hi there")
+        };
+        let done = prompt(&mut client, request).await;
+        ok(&done);
+        assert_eq!(done.stdout, "echo: hi there\n");
+        assert_eq!(done.finished.model, "claude-fake");
+        assert_eq!(
+            done.finished.usage.unwrap().cost,
+            0.0,
+            "the subscription pays"
+        );
+        let session = done.finished.session_id.clone();
+        assert_eq!(session.len(), 36, "a UUID it was started with");
+        assert!(
+            log().contains(&format!(
+                "--session-id {session} --model sonnet --effort high"
+            )),
+            "{}",
+            log()
+        );
+
+        // A token from `claude setup-token` signs it in from then on.
+        let providers = client
+            .list_providers(ListProvidersRequest { node: "w1".into() })
+            .await
+            .unwrap()
+            .into_inner()
+            .providers;
+        assert!(providers[0].connected);
+        let request = AuthenticateProviderRequest {
+            node: "w1".into(),
+            provider: "claude".into(),
+            action: Some(AuthAction {
+                action: Some(auth_action::Action::ApiKey(" sk-ant-oat-x ".into())),
+            }),
+        };
+        client.authenticate_provider(request).await.unwrap();
+        let again = PromptRequest {
+            session_id: session.clone(),
+            command: "review".into(),
+            cwd: tmp.path().to_string_lossy().into(),
+            ..ask("the parser")
+        };
+        ok(&prompt(&mut client, again).await);
+        let log = log();
+        assert!(log.contains(&format!("--resume {session}")), "{log}");
+        assert!(log.contains("token: sk-ant-oat-x"), "{log}");
+        assert!(log.contains("prompt: /review the parser"), "{log}");
+        worker.abort();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1200,7 +1469,7 @@ mod agents {
         let fake = FakeOpencode::start().await;
         let worker = |token: Option<String>| {
             tokio::spawn(commandant_worker::run(WorkerConfig {
-                opencode_bin: Some(fake.binary.clone()),
+                harness_bin: Some(fake.binary.clone()),
                 ..worker_config(&addr, token, &tmp.path().join("worker"))
             }))
         };
@@ -1208,7 +1477,7 @@ mod agents {
         let mut client = connect_control(&addr, &token).await.unwrap();
         let node = wait_for_node(&mut client, true).await;
         assert!(node.harnesses.is_empty());
-        assert_eq!(node.can_host, ["opencode"]);
+        assert_eq!(node.can_host, ["opencode", "claude-code"]);
         let starter = client.clone();
         let start = |harness: &str| {
             let mut client = starter.clone();

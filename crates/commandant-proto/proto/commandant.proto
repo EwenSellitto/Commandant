@@ -114,8 +114,11 @@ message WorkerMsg {
     AgentOptions options = 10;
     AgentSessions sessions = 11;
     HarnessStarted harness_started = 12;
+    SessionHistory history = 13;
+    AgentProviders providers = 14;
+    ProviderAuthResult auth_result = 15;
   }
-  reserved 13 to 19; // agent events
+  reserved 16 to 19; // agent events
 }
 
 message Welcome {
@@ -195,6 +198,81 @@ message AgentSession {
   double cost = 9;                   // US dollars so far
 }
 
+// Asks the node's agent harness what was said in one of its sessions.
+message GetSessionHistory {
+  string request_id = 1;
+  string session_id = 2;
+}
+
+// A session's turns, oldest first; only the latest ones if it is long.
+message SessionHistory {
+  string request_id = 1;
+  repeated HistoryEntry entries = 2;
+  string error = 3;
+}
+
+message HistoryEntry {
+  string role = 1;                   // user | agent | thinking | tool
+  string text = 2;
+}
+
+// Asks the node's agent harness which model providers it knows.
+message ListProviders {
+  string request_id = 1;
+}
+
+// The model providers a node's agent knows, the signed-in ones first.
+message AgentProviders {
+  string request_id = 1;
+  repeated ModelProvider providers = 2;
+  string error = 3;
+}
+
+message ModelProvider {
+  string id = 1;
+  string name = 2;
+  bool connected = 3;                // has credentials
+  repeated AuthMethod methods = 4;   // how to sign in
+}
+
+message AuthMethod {
+  string label = 1;
+  bool oauth = 2;                    // false: an API key
+  uint32 index = 3;                  // which of the provider's OAuth methods
+}
+
+// Signs a node's agent in to, or out of, a model provider.
+message ProviderAuth {
+  string request_id = 1;
+  string provider = 2;
+  AuthAction action = 3;
+}
+
+message AuthAction {
+  oneof action {
+    string api_key = 1;
+    uint32 oauth_start = 2;          // an AuthMethod index
+    OauthFinish oauth_finish = 3;
+    bool sign_out = 4;
+  }
+}
+
+// Completes an OAuth sign-in: with the code the provider showed, or
+// (without) once the user is done in the browser, which can take minutes.
+message OauthFinish {
+  uint32 index = 1;
+  string code = 2;
+}
+
+message ProviderAuthResult {
+  string request_id = 1;
+  string error = 2;
+  // After oauth_start: where to sign in, and what the provider says to do.
+  string url = 3;
+  string instructions = 4;
+  bool needs_code = 5;               // finish with the code the page shows
+}
+
 message OrchestratorMsg {
   oneof msg {
     Welcome welcome = 1;
@@ -204,8 +282,11 @@ message OrchestratorMsg {
     ListAgentOptions list_options = 11;
     ListAgentSessions list_sessions = 12;
     StartHarness start_harness = 13;
+    GetSessionHistory get_history = 14;
+    ListProviders list_providers = 15;
+    ProviderAuth provider_auth = 16;
   }
-  reserved 14 to 19; // agent control
+  reserved 17 to 19; // agent control
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +303,11 @@ service Control {
   // Connects or disconnects an MCP server; answers with the new options.
   rpc SwitchMcpServer(SwitchMcpServerRequest) returns (AgentOptions);
   rpc ListAgentSessions(ListAgentSessionsRequest) returns (AgentSessions);
+  rpc GetSessionHistory(GetSessionHistoryRequest) returns (SessionHistory);
+  rpc ListProviders(ListProvidersRequest) returns (AgentProviders);
+  // Signs a node's agent in to or out of a model provider. Finishing an
+  // OAuth sign-in without a code answers once the user is done (10 minutes at most).
+  rpc AuthenticateProvider(AuthenticateProviderRequest) returns (ProviderAuthResult);
   // Starts a harness on a node that hosts none; answers once it is ready,
   // which can take minutes if it has to be installed.
   rpc StartHarness(StartHarnessRequest) returns (NodeInfo);
@@ -294,6 +380,21 @@ message StartHarnessRequest {
 
 message ListAgentSessionsRequest {
   string node = 1;                   // id, id prefix or name
+}
+
+message GetSessionHistoryRequest {
+  string node = 1;                   // id, id prefix or name
+  string session_id = 2;
+}
+
+message ListProvidersRequest {
+  string node = 1;                   // id, id prefix or name
+}
+
+message AuthenticateProviderRequest {
+  string node = 1;                   // id, id prefix or name
+  string provider = 2;
+  AuthAction action = 3;
 }
 
 message SwitchMcpServerRequest {

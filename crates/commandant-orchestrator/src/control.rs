@@ -111,12 +111,24 @@ impl ControlService {
         needle: &str,
         mcp: Option<McpSwitch>,
     ) -> Result<Response<AgentOptions>, Status> {
+        let ask = |request_id| ListAgentOptions { request_id, mcp }.into();
+        self.ask_harness(needle, ask, "say what its agent offers", QUERY_TIMEOUT)
+            .await
+    }
+
+    /// Puts a question to the harness of the node `needle` names, which must
+    /// be online and host one.
+    async fn ask_harness<T: Reply>(
+        &self,
+        needle: &str,
+        question: impl FnOnce(String) -> OrchestratorMsg,
+        doing: &str,
+        wait: Duration,
+    ) -> Result<Response<T>, Status> {
         let (node, conn) = self.connected_node(needle).await?;
         harness(&node, &conn)?;
-        let ask = |request_id| ListAgentOptions { request_id, mcp }.into();
-        let doing = "say what its agent offers";
-        let options = self.ask(&node, &conn, ask, doing, QUERY_TIMEOUT).await?;
-        Ok(Response::new(options))
+        let answer = self.ask(&node, &conn, question, doing, wait).await?;
+        Ok(Response::new(answer))
     }
 
     /// Puts a question to a node's worker and waits up to `wait` for its
@@ -317,13 +329,75 @@ impl Control for ControlService {
         &self,
         request: Request<ListAgentSessionsRequest>,
     ) -> Result<Response<AgentSessions>, Status> {
-        let (node, conn) = self.connected_node(&request.into_inner().node).await?;
-        harness(&node, &conn)?;
         let ask = |request_id| ListAgentSessions { request_id }.into();
-        let sessions = self
-            .ask(&node, &conn, ask, "list its sessions", QUERY_TIMEOUT)
-            .await?;
-        Ok(Response::new(sessions))
+        self.ask_harness(
+            &request.into_inner().node,
+            ask,
+            "list its sessions",
+            QUERY_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn get_session_history(
+        &self,
+        request: Request<GetSessionHistoryRequest>,
+    ) -> Result<Response<SessionHistory>, Status> {
+        let GetSessionHistoryRequest { node, session_id } = request.into_inner();
+        let ask = |request_id| {
+            GetSessionHistory {
+                request_id,
+                session_id,
+            }
+            .into()
+        };
+        self.ask_harness(&node, ask, "show the session", QUERY_TIMEOUT)
+            .await
+    }
+
+    async fn list_providers(
+        &self,
+        request: Request<ListProvidersRequest>,
+    ) -> Result<Response<AgentProviders>, Status> {
+        let ask = |request_id| ListProviders { request_id }.into();
+        self.ask_harness(
+            &request.into_inner().node,
+            ask,
+            "list its providers",
+            QUERY_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn authenticate_provider(
+        &self,
+        request: Request<AuthenticateProviderRequest>,
+    ) -> Result<Response<ProviderAuthResult>, Status> {
+        let AuthenticateProviderRequest {
+            node,
+            provider,
+            action,
+        } = request.into_inner();
+        if provider.is_empty() {
+            return Err(Status::invalid_argument("a provider is required"));
+        }
+        // Finishing in the browser waits for the user.
+        let wait = match action.as_ref().and_then(|a| a.action.as_ref()) {
+            Some(auth_action::Action::OauthFinish(finish)) if finish.code.is_empty() => {
+                START_TIMEOUT
+            }
+            _ => QUERY_TIMEOUT,
+        };
+        let ask = |request_id| {
+            ProviderAuth {
+                request_id,
+                provider,
+                action,
+            }
+            .into()
+        };
+        self.ask_harness(&node, ask, "sign in to the provider", wait)
+            .await
     }
 
     async fn start_harness(

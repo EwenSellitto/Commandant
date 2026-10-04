@@ -60,6 +60,8 @@ The payload packs the host and the secret as bytes:
 | 1 | address kind: IPv4, IPv6 or a name, plus a flag when a port follows |
 | 4, 16 or 1 + length | the IP, or the name's length and the name |
 | 2, only with the flag | the port, when it isn't 7400 |
+
+With several addresses, a count byte comes first and the address rows repeat.
 | 1 | token kind: `cmda`, `cmdj`, `cmdn`, or 0 for any other text |
 | the rest | the token's hex as raw bytes (16 for new tokens), or its text |
 
@@ -101,6 +103,16 @@ The same secret works in two places:
 - **CLI** (`login`): used as the admin bearer token on every Control call.
 - **Worker** (`worker <link>`): used as a join token, but only the first time.
   In return the worker gets its own node credential.
+
+A link can carry several addresses (format 3: a count byte, then each
+address, then the token). The server puts the ones given with
+`--advertise a,b` first, then the address it detected for this machine.
+Clients, workers included, try all of them at once and keep the first that
+answers, so one link works from outside (a public name) and inside (the LAN
+address). In WSL 2's default NAT networking the detected address is WSL's
+own, which only Windows reaches: the server warns, and the fix is WSL's
+mirrored networking, or a port forward from Windows plus
+`--advertise <Windows' LAN address>`.
 
 Before connecting, every client resolves the link's host. If one of the
 resulting addresses belongs to the local machine (it can `bind()` to it), the
@@ -225,6 +237,20 @@ refused) and keeps it until it stops, then answers `HarnessStarted` with what
 it now hosts, which the orchestrator records on the connection. The TUI offers
 it when a node without an agent is opened.
 
+**Claude Code.** The other harness runs the `claude` CLI itself, once per
+prompt: `claude -p --output-format stream-json --include-partial-messages`,
+with `--session-id <new uuid>` (so the session is claimed before it starts)
+or `--resume <id>` in the session's own directory, the prompt on stdin, and
+`--model`/`--effort`/`--agent`. Text and thinking deltas stream as output,
+tool calls as notes; cancelling kills its process group. Its options come
+from a `claude` given no prompt: the SDK's `initialize` and `mcp_status`
+control requests answer with its agents, models and efforts, commands and
+MCP servers without calling the model. Sessions are read from
+`~/.claude/projects/*/<id>.jsonl`. It stays on the subscription: API key
+variables are removed, the `init` event's `apiKeySource` must be `none`, and
+signing in means `claude auth status` saying `claude.ai`, or a token from
+`claude setup-token` given as `CLAUDE_CODE_OAUTH_TOKEN`.
+
 **MCP servers load late.** OpenCode lists its MCP servers, and its commands
 (MCP prompts among them), only once those servers have connected, which can
 take 5 to 15 s after it starts. So the options wait at most 2 s for them: past
@@ -287,7 +313,24 @@ queue and whose replies would mix. `ListAgentSessions` is a question like
 `ListAgentOptions`: the worker lists OpenCode's top-level sessions in every
 directory (`GET /experimental/session`, else `/session`), latest first, and
 marks those it is running a prompt in. The TUI uses it to resume a session,
-and `node sessions` prints it.
+and `node sessions` prints it. Resuming one also asks `GetSessionHistory`, the
+same kind of question: the worker reads `GET /session/:id/message` and answers
+with the session's prompts, replies, thinking and tool calls (the latest 300),
+which the chat puts before anything said since.
+
+**Signing in to model providers.** `ListProviders` and `ProviderAuth` are
+questions too. In the TUI, `/providers` lists every provider the node's
+OpenCode knows (signed-in ones first); choosing one offers its sign-in
+methods, and Sign out. An API key is typed into a masked prompt and never
+shown in the thread. OAuth is two steps: the worker starts it and the TUI
+shows the URL and instructions; then either the user pastes back the code the
+page shows, or the worker waits (up to 10 minutes) for the browser sign-in to
+finish. A browser method that redirects to `localhost` only works from a
+browser on the node itself, so the TUI says to use a headless method otherwise.
+OpenCode only lists the new provider's models after reloading, which would
+abort the prompts running, so the worker reloads at the next options request
+or prompt that finds none running, and the TUI asks for the options again.
+Credentials travel as plainly as the rest of the gRPC traffic (see below).
 
 ## Task states
 
@@ -335,14 +378,12 @@ All traffic is plaintext today, so that address should be on a private network
 
 ## What's next
 
-- **More harnesses.** `HarnessKind` in the worker has one variant today, behind
-  the `Harness` trait. A worker hosts one at a time; hosting several would
-  need prompts to name theirs.
+- **More harnesses.** OpenCode and Claude Code sit behind the `Harness`
+  trait. A worker hosts one at a time; hosting several would need prompts to
+  name theirs.
 - **Interactive agents.** Questions and permission requests are auto-answered
   today. Forwarding them to the CLI would use the remaining reserved fields
-  (`WorkerMsg` 11–19, `OrchestratorMsg` 12–19).
+  (`WorkerMsg` 14–19, `OrchestratorMsg` 15–19).
 - **A fuller TUI.** `commandant tui` chats with one node's agent through the
-  same `Control` API. Next: showing a resumed session's history (the API only
-  streams new turns), picking nodes and sessions from within it, and answering
-  the agent's permission requests there.
+  same `Control` API. Next: answering the agent's permission requests there.
 - **TLS** for the gRPC port.

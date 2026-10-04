@@ -16,6 +16,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/bin/commandant /usr/local/bin/commandant
 
+# Workers refuse root; the server needs nothing more either. Volumes mounted
+# on these directories start out owned by this user.
+RUN useradd --create-home --uid 1000 commandant \
+    && mkdir -p /state /data /work \
+    && chown commandant: /state /data /work
+USER commandant
 ENV COMMANDANT_STATE_DIR=/state \
     COMMANDANT_DATA_DIR=/data
 WORKDIR /work

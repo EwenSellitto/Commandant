@@ -10,7 +10,7 @@ use commandant_proto::*;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::chat::{self, Activity, Chat, Message, Settings};
-use super::picker::{Choice, Outcome, Picker};
+use super::picker::{Choice, Picker};
 
 /// Tells chats apart for as long as the UI runs.
 pub type ChatId = u64;
@@ -33,6 +33,24 @@ pub enum Action {
     },
     /// Ask a node which sessions its agent has saved.
     FetchSessions(String),
+    /// Ask a node's agent which model providers it knows, for a chat.
+    FetchProviders {
+        chat: ChatId,
+        node: String,
+    },
+    /// Have a node's agent do a step of signing in to a provider, for a chat.
+    Authenticate {
+        chat: ChatId,
+        node: String,
+        provider: String,
+        action: AuthAction,
+    },
+    /// Ask a node what was said in a session, for a chat resuming it.
+    FetchHistory {
+        chat: ChatId,
+        node: String,
+        session_id: String,
+    },
     /// Connect (or disconnect) one of a node's MCP servers, for a chat.
     SwitchMcp {
         chat: ChatId,
@@ -187,14 +205,19 @@ impl App {
         self.chats.iter().filter(move |c| c.node.id == node_id)
     }
 
-    /// Whether anything on screen moves on its own: a working chat's
-    /// spinner, or a node starting its agent.
+    /// Whether anything on screen moves on its own: a spinner for a working
+    /// chat, something loading, or a node starting its agent.
     pub fn busy(&self) -> bool {
         !self.starting.is_empty()
-            || self
-                .chats
-                .iter()
-                .any(|c| matches!(c.activity, Activity::Working { .. }))
+            || self.picker.as_ref().is_some_and(|p| p.loading)
+            || self.chats.iter().any(|c| {
+                matches!(c.activity, Activity::Working { .. })
+                    || c.fetching_options
+                    || c.loading_history
+                    || c.loading()
+                    || c.listing_providers.is_some()
+                    || matches!(c.auth, Some(chat::Auth::Waiting { .. }))
+            })
     }
 
     /// Tasks still running, for quitting.
@@ -226,16 +249,8 @@ impl App {
         if ctrl && matches!(key.code, KeyCode::Char('c' | 'd')) {
             return vec![Action::Quit];
         }
-        if let Some(picker) = &mut self.picker {
-            match picker.on_key(key) {
-                Outcome::Open => {}
-                Outcome::Closed => self.picker = None,
-                Outcome::Chosen(choice) => {
-                    self.picker = None;
-                    return self.choose(choice);
-                }
-            }
-            return Vec::new();
+        if let Some(chosen) = Picker::take_key(&mut self.picker, key) {
+            return chosen.map_or_else(Vec::new, |choice| self.choose(choice));
         }
         if self.screen == Screen::Nodes {
             return self.on_node_key(key);
@@ -273,7 +288,7 @@ impl App {
                 self.new_chat(node, settings)
             }
             Action::ShowSessions => {
-                self.open_session_picker(&node.id);
+                self.open_session_picker(&node.id, true);
                 vec![Action::FetchSessions(node.id)]
             }
             Action::ShowNodes => {
@@ -449,7 +464,8 @@ impl App {
     }
 
     /// The node's open chats, then the sessions it saved that aren't open.
-    fn open_session_picker(&mut self, node_id: &str) {
+    /// `loading` while the node is asked for them again.
+    fn open_session_picker(&mut self, node_id: &str, loading: bool) {
         let filter = self.picker.take().map(|p| p.filter).unwrap_or_default();
         let current = self.chat().map(|c| AppChoice::Chat(c.id));
         let mut choices = vec![Choice::new(
@@ -488,8 +504,9 @@ impl App {
                 detail.join(" · "),
             ));
         }
-        let picker = Picker::new(SESSIONS, choices, current.as_ref());
-        self.picker = Some(picker.with_filter(&filter));
+        let mut picker = Picker::new(SESSIONS, choices, current.as_ref()).with_filter(&filter);
+        picker.loading = loading;
+        self.picker = Some(picker);
     }
 
     /// Does what the app's picker offered.
@@ -511,6 +528,11 @@ impl App {
             return Vec::new();
         };
         let node = chat.node.clone();
+        let fetch = Action::FetchHistory {
+            chat: self.next_id,
+            node: node.id.clone(),
+            session_id: saved.id.clone(),
+        };
         let settings = Settings {
             session_id: saved.id,
             cwd: saved.directory,
@@ -518,12 +540,13 @@ impl App {
             agent: saved.agent,
             effort: saved.variant,
         };
-        let actions = self.new_chat(node, settings);
+        let mut actions = self.new_chat(node, settings);
         if let Some(chat) = self.chat_mut() {
             chat.title = saved.title;
             chat.spent = saved.cost;
-            chat.info("continuing this session; its earlier messages aren't shown here");
+            chat.loading_history = true;
         }
+        actions.push(fetch);
         actions
     }
 
@@ -555,7 +578,8 @@ impl App {
                 if shown {
                     chat.unseen = None;
                 }
-                action.into_iter().collect()
+                // Signing in asks for the options again, maybe while they're being asked for.
+                action.and_then(|a| self.ask_once(a)).into_iter().collect()
             }
             Update::Options(node, Err(failure)) if failure.transient => {
                 // Busy starting its agent, say: ask again before saying so.
@@ -665,7 +689,7 @@ impl App {
                 }
                 let picking = self.picker.as_ref().is_some_and(|p| p.title == SESSIONS);
                 if picking && self.chat().is_some_and(|c| c.node.id == node) {
-                    self.open_session_picker(&node);
+                    self.open_session_picker(&node, false);
                 }
                 Vec::new()
             }
@@ -805,7 +829,48 @@ pub(crate) mod tests {
         assert_eq!(picker.total(), 3);
 
         type_text(&mut app, "store");
-        app.on_key(key(KeyCode::Enter));
+        let actions = app.on_key(key(KeyCode::Enter));
+        let Some(Action::FetchHistory {
+            chat: resumed,
+            session_id,
+            ..
+        }) = actions.last()
+        else {
+            panic!("resuming asks for the session's earlier messages");
+        };
+        assert_eq!((*resumed, session_id.as_str()), (shown(&app), "ses_old"));
+        assert!(app.busy(), "loading them shows a spinner");
+        // What was said since resuming stays after them.
+        let resumed = *resumed;
+        app.on_update(Update::Chat(resumed, started("t1")));
+        app.on_update(Update::Chat(
+            resumed,
+            chat::tests::output(OutputStream::Stdout, b"new"),
+        ));
+        let entry = |role: &str, text: &str| HistoryEntry {
+            role: role.into(),
+            text: text.into(),
+        };
+        let history = Ok(vec![
+            entry("user", "old question"),
+            entry("agent", "old answer"),
+        ]);
+        app.on_update(Update::Chat(resumed, Message::History(history)));
+        let chat = app.chat().unwrap();
+        assert!(!chat.loading_history);
+        let thread: Vec<_> = chat
+            .thread
+            .iter()
+            .map(|e| (e.role, e.text.as_str()))
+            .collect();
+        assert_eq!(
+            thread,
+            [
+                (chat::Role::User, "old question"),
+                (chat::Role::Agent, "old answer"),
+                (chat::Role::Agent, "new"),
+            ]
+        );
         let chat = app.chat().unwrap();
         assert_eq!(chat.title, "refactor the store");
         assert_eq!(chat.settings.session_id, "ses_old");
@@ -1270,6 +1335,8 @@ pub(crate) mod tests {
         let mut app = app();
         assert!(!app.busy());
         app.on_key(key(KeyCode::Enter));
+        assert!(app.busy(), "asking for the options shows a spinner");
+        app.on_update(Update::Options("n1".into(), Ok(AgentOptions::default())));
         let (id, _) = send(&mut app, "hi");
         assert!(app.busy(), "a working chat's spinner turns");
         app.on_update(Update::Chat(id, finished("ses_a")));

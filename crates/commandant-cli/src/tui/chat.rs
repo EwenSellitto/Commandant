@@ -9,12 +9,44 @@ use commandant_proto::*;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::app::{Action, ChatId};
-use super::picker::{Choice, Outcome, Picker};
+use super::picker::{Choice, Picker};
 
-/// What the worker prefixes its notes with.
-const NOTE_PREFIX: &str = "[opencode] ";
 /// Lines moved by PageUp / PageDown.
 const PAGE: u16 = 10;
+/// The chat's own commands, for completing and `/help`.
+pub const COMMANDS: [(&str, &str); 17] = [
+    ("help", "what every command and key does"),
+    ("agent", "choose an agent"),
+    ("model", "choose a model"),
+    ("effort", "choose a thinking effort"),
+    ("skills", "the agent's commands and skills"),
+    ("mcp", "connect or disconnect MCP servers"),
+    ("providers", "sign in to or out of a model provider"),
+    ("new", "another session, working alongside"),
+    ("sessions", "switch, or resume a saved one"),
+    ("close", "close this session"),
+    ("nodes", "the other nodes"),
+    ("commands", "same as /skills"),
+    ("login", "same as /providers"),
+    ("quit", "leave"),
+    ("exit", "same as /quit"),
+    ("logout", "same as /providers"),
+    ("?", "same as /help"),
+];
+/// The keys, for `/help` and an empty chat.
+pub const KEYS: [(&str, &str); 11] = [
+    ("Tab", "switch agent, or complete a /command"),
+    ("↑ ↓", "earlier prompts, or move in the /command list"),
+    ("Ctrl-T", "next thinking effort"),
+    ("Esc", "cancel a turn"),
+    ("PgUp PgDn", "scroll"),
+    ("Ctrl-N", "new session"),
+    ("Ctrl-O", "sessions"),
+    ("Alt-← Alt-→", "previous / next session"),
+    ("Ctrl-W", "close this session"),
+    ("Ctrl-G", "the other nodes"),
+    ("Ctrl-U", "clear the prompt"),
+];
 
 /// Sent with every prompt; `session_id` fills in after the first reply.
 #[derive(Clone, Default)]
@@ -59,6 +91,28 @@ pub enum Choose {
     Effort(String),
     Command(String),
     Mcp(String),
+    /// A model provider, to sign in to or out of.
+    Provider(String),
+    /// Sign in to a provider: with an API key, or its OAuth method `oauth`.
+    SignIn {
+        provider: String,
+        oauth: Option<u32>,
+    },
+    SignOut(String),
+}
+
+/// Where signing in to a provider has got to.
+pub enum Auth {
+    /// The next Enter sends the input, shown masked, as the API key.
+    Key { provider: String },
+    /// The next Enter sends the code the provider's page showed.
+    Code { provider: String, index: u32 },
+    /// The node is at it; `start` is set while it starts OAuth method `start`.
+    Waiting {
+        provider: String,
+        start: Option<u32>,
+        doing: String,
+    },
 }
 
 /// What background tasks report to a chat.
@@ -68,6 +122,11 @@ pub enum Message {
     Failed(String),
     Node(NodeInfo),
     Options(Result<Arc<AgentOptions>, String>),
+    /// A resumed session's earlier turns.
+    History(Result<Vec<HistoryEntry>, String>),
+    Providers(Result<Vec<ModelProvider>, String>),
+    /// How a step of signing in went.
+    Auth(Result<ProviderAuthResult, String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,13 +192,28 @@ pub struct Chat {
     partial_note: String,
     /// The agents, models and efforts the node offers, once it has said.
     pub options: Option<Arc<AgentOptions>>,
-    fetching_options: bool,
+    pub fetching_options: bool,
+    /// Waiting for a resumed session's earlier turns.
+    pub loading_history: bool,
+    /// The node's model providers, as last listed; the filter to open their
+    /// picker with while they're listed.
+    providers: Vec<ModelProvider>,
+    pub listing_providers: Option<String>,
+    pub auth: Option<Auth>,
     /// A picker asked for before the options came, to open once they do.
     pending_pick: Option<(Pick, String)>,
     /// The model that last replied, which tells what "default" means.
     pub used_model: String,
     /// The floating window, when open.
     pub picker: Option<Picker<Choose>>,
+    /// The highlighted completion of a `/command` being typed.
+    pub suggested: usize,
+    /// What was sent, oldest first, to bring back with ↑↓.
+    sent: Vec<String>,
+    /// Which of them is shown, while going through them; what was being
+    /// typed before, to come back to.
+    recalled: Option<usize>,
+    draft: String,
     /// What the session has cost so far, in US dollars.
     pub spent: f64,
     /// Tokens in the session's context after the last turn.
@@ -169,10 +243,18 @@ impl Chat {
             partial_reasoning: Vec::new(),
             partial_note: String::new(),
             fetching_options: options.is_none(),
+            loading_history: false,
+            providers: Vec::new(),
+            listing_providers: None,
+            auth: None,
             pending_pick: None,
             options,
             used_model: String::new(),
             picker: None,
+            suggested: 0,
+            sent: Vec::new(),
+            recalled: None,
+            draft: String::new(),
             spent: 0.0,
             context: 0,
         }
@@ -239,6 +321,7 @@ impl Chat {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
             Event::Paste(text) => {
+                self.recalled = None;
                 // The prompt is a single line.
                 self.input.insert_str(&text.replace(['\r', '\n'], " "));
                 None
@@ -252,24 +335,44 @@ impl Chat {
         if ctrl && matches!(key.code, KeyCode::Char('c' | 'd')) {
             return Some(Action::Quit);
         }
-        if let Some(picker) = &mut self.picker {
-            match picker.on_key(key) {
-                Outcome::Open => {}
-                Outcome::Closed => self.picker = None,
-                Outcome::Chosen(choice) => {
-                    self.picker = None;
-                    return self.choose(choice);
-                }
-            }
-            return None;
+        if let Some(chosen) = Picker::take_key(&mut self.picker, key) {
+            return chosen.and_then(|choice| self.choose(choice));
+        }
+        let suggestions = self.suggestions().len();
+        let completing = suggestions > 0;
+        // What's typed changed: back to the best match, and a recalled
+        // prompt becomes one being written.
+        if matches!(
+            key.code,
+            KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete
+        ) {
+            self.suggested = 0;
+            self.recalled = None;
         }
         match key.code {
+            KeyCode::Up if completing => {
+                self.suggested = (self.suggested + suggestions - 1) % suggestions;
+            }
+            KeyCode::Down if completing => self.suggested = (self.suggested + 1) % suggestions,
+            KeyCode::Up => self.recall(-1),
+            KeyCode::Down => self.recall(1),
+            KeyCode::Tab if completing => self.complete(),
+            // A partly typed command runs the one highlighted.
+            KeyCode::Enter if completing && self.input.text.len() > 1 && !self.typed_exactly() => {
+                self.complete();
+                return self.submit();
+            }
             KeyCode::Char('u') if ctrl => self.input.clear(),
             KeyCode::Char('t') if ctrl => return self.cycle_effort(),
             KeyCode::Tab => return self.cycle_agent(1),
             KeyCode::BackTab => return self.cycle_agent(-1),
             KeyCode::Char(c) => self.input.insert(c),
             KeyCode::Enter => return self.submit(),
+            KeyCode::Esc if matches!(self.auth, Some(Auth::Key { .. } | Auth::Code { .. })) => {
+                self.auth = None;
+                self.input.clear();
+                self.info("not signed in");
+            }
             KeyCode::Esc => return self.cancel(),
             KeyCode::Backspace => self.input.backspace(),
             KeyCode::Delete => self.input.delete(),
@@ -290,10 +393,18 @@ impl Chat {
         if text.is_empty() {
             return None;
         }
+        if let Some(action) = self.send_secret(&text) {
+            return Some(action);
+        }
+        self.recalled = None;
+        if self.sent.last() != Some(&text) {
+            self.sent.push(text.clone());
+        }
         if let Some(command) = text.strip_prefix('/') {
             let (command, filter) = command.split_once(' ').unwrap_or((command, ""));
             let pick = match command {
                 "quit" | "exit" => return Some(Action::Quit),
+                "help" | "?" => return self.help(),
                 "new" => return self.app_command(Action::NewChat),
                 "sessions" => return self.app_command(Action::ShowSessions),
                 "nodes" => return self.app_command(Action::ShowNodes),
@@ -303,6 +414,10 @@ impl Chat {
                 "effort" => Pick::Effort,
                 "commands" | "skills" => Pick::Command,
                 "mcp" => Pick::Mcp,
+                "providers" | "login" | "logout" => {
+                    self.input.clear();
+                    return self.list_providers(filter.trim());
+                }
                 // One of the agent's own commands or skills, its arguments after it.
                 name if self.is_agent_command(name) => {
                     let (name, arguments) = (name.to_string(), filter.trim().to_string());
@@ -322,6 +437,96 @@ impl Chat {
         self.send(text.clone(), String::new(), text)
     }
 
+    /// The commands, the chat's own then the agent's, that complete the
+    /// `/name` being typed (before its arguments), with what they do; the
+    /// highlighted one is `suggested`.
+    pub fn suggestions(&self) -> Vec<(String, String)> {
+        let Some(typed) = self.input.text.strip_prefix('/') else {
+            return Vec::new();
+        };
+        // A recalled one was complete when sent.
+        if typed.contains(' ') || self.auth.is_some() || self.recalled.is_some() {
+            return Vec::new();
+        }
+        let own = COMMANDS.iter().map(|(n, d)| (n.to_string(), d.to_string()));
+        let agent = self
+            .options
+            .iter()
+            .flat_map(|o| &o.commands)
+            .map(|c| (c.name.clone(), or(&c.description, &c.source).to_string()));
+        own.chain(agent)
+            .filter(|(n, _)| n.starts_with(typed))
+            .collect()
+    }
+
+    /// Whether the input names a command as it is.
+    fn typed_exactly(&self) -> bool {
+        self.is_command(&self.input.text[1..])
+    }
+
+    /// Whether `name` is one of the chat's commands or the agent's.
+    fn is_command(&self, name: &str) -> bool {
+        COMMANDS.iter().any(|(n, _)| *n == name) || self.is_agent_command(name)
+    }
+
+    /// How many characters of the input name a known `/command`, before its
+    /// arguments; 0 when it names none.
+    pub fn command_len(&self) -> usize {
+        let Some(typed) = self.input.text.strip_prefix('/') else {
+            return 0;
+        };
+        let name = typed.split(' ').next().unwrap_or_default();
+        match self.is_command(name) {
+            true => 1 + name.chars().count(),
+            false => 0,
+        }
+    }
+
+    /// Fills in the highlighted completion, ready for its arguments.
+    fn complete(&mut self) {
+        if let Some((name, _)) = self.suggestions().get(self.suggested) {
+            self.input.set(&format!("/{name} "));
+        }
+        self.suggested = 0;
+    }
+
+    /// Shows the prompt sent before (`-1`) or after (`1`) the one shown; past
+    /// the latest, what was being typed.
+    fn recall(&mut self, step: isize) {
+        let at = match (self.recalled, step) {
+            (None, 1) => return,
+            (None, _) => {
+                self.draft = self.input.text.clone();
+                self.sent.len().checked_sub(1)
+            }
+            (Some(at), -1) => Some(at.saturating_sub(1)),
+            (Some(at), _) => Some(at + 1).filter(|&next| next < self.sent.len()),
+        };
+        self.recalled = at;
+        match at {
+            Some(at) => self.input.set(&self.sent[at].clone()),
+            None => self.input.set(&std::mem::take(&mut self.draft)),
+        }
+    }
+
+    /// Every command and key, in the thread.
+    fn help(&mut self) -> Option<Action> {
+        self.input.clear();
+        let mut lines = vec!["commands".to_string()];
+        lines.extend(COMMANDS.iter().map(|(n, d)| format!("  /{n:<12}{d}")));
+        if let Some(options) = self.options.clone().filter(|o| !o.commands.is_empty()) {
+            lines.push("the agent's commands and skills".into());
+            let agent = options.commands.iter();
+            lines.extend(
+                agent.map(|c| format!("  /{:<12}{}", c.name, or(&c.description, &c.source))),
+            );
+        }
+        lines.push("keys".into());
+        lines.extend(KEYS.iter().map(|(k, d)| format!("  {k:<13}{d}")));
+        self.info(&lines.join("\n"));
+        None
+    }
+
     /// One of the app's commands, which clears the input like the others.
     fn app_command(&mut self, action: Action) -> Option<Action> {
         self.input.clear();
@@ -329,7 +534,7 @@ impl Chat {
     }
 
     /// Whether the commands and MCP servers are still to come.
-    fn loading(&self) -> bool {
+    pub fn loading(&self) -> bool {
         self.options.as_ref().is_some_and(|o| o.loading)
     }
 
@@ -406,7 +611,7 @@ impl Chat {
                 (choices, Some(Choose::Agent(self.agent().to_string())))
             }
             Pick::Model => {
-                let default = or(&options.default_model, "OpenCode picks");
+                let default = or(&options.default_model, "the agent picks");
                 let models = options.models.iter().map(|m| {
                     let detail = format!("{} · {}", m.provider, m.id);
                     Choice::new(Choose::Model(m.id.clone()), &m.name, detail)
@@ -519,6 +724,30 @@ impl Chat {
             }
             // Ready for its arguments.
             Choose::Command(name) => self.input.insert_str(&format!("/{name} ")),
+            Choose::Provider(id) => self.open_sign_in(&id),
+            Choose::SignIn {
+                provider,
+                oauth: None,
+            } => {
+                let name = self.provider_name(&provider);
+                self.info(&format!(
+                    "paste the API key for {name} and press Enter (Esc to cancel)"
+                ));
+                self.auth = Some(Auth::Key { provider });
+            }
+            Choose::SignIn {
+                provider,
+                oauth: Some(index),
+            } => {
+                let doing = format!("starting to sign in to {}…", self.provider_name(&provider));
+                let start = auth_action::Action::OauthStart(index);
+                return Some(self.authenticate(provider, Some(index), doing, start));
+            }
+            Choose::SignOut(provider) => {
+                let doing = format!("signing out of {}…", self.provider_name(&provider));
+                let action = auth_action::Action::SignOut(true);
+                return Some(self.authenticate(provider, None, doing, action));
+            }
             Choose::Mcp(name) => {
                 let connect = self.options.as_ref().is_some_and(|o| {
                     o.mcp_servers
@@ -540,6 +769,163 @@ impl Chat {
             }
         }
         None
+    }
+
+    /// Sends the API key or code the input holds, if one is asked for. It is
+    /// kept out of the thread.
+    fn send_secret(&mut self, text: &str) -> Option<Action> {
+        let (provider, action) = match self.auth.take()? {
+            Auth::Key { provider } => (provider, auth_action::Action::ApiKey(text.into())),
+            Auth::Code { provider, index } => {
+                let finish = OauthFinish {
+                    index,
+                    code: text.into(),
+                };
+                (provider, auth_action::Action::OauthFinish(finish))
+            }
+            waiting @ Auth::Waiting { .. } => {
+                self.auth = Some(waiting);
+                return None;
+            }
+        };
+        self.input.clear();
+        let doing = format!("signing in to {}…", self.provider_name(&provider));
+        Some(self.authenticate(provider, None, doing, action))
+    }
+
+    /// Has the node do a step of signing in, and waits for it.
+    fn authenticate(
+        &mut self,
+        provider: String,
+        start: Option<u32>,
+        doing: String,
+        action: auth_action::Action,
+    ) -> Action {
+        self.auth = Some(Auth::Waiting {
+            provider: provider.clone(),
+            start,
+            doing,
+        });
+        Action::Authenticate {
+            chat: self.id,
+            node: self.node.id.clone(),
+            provider,
+            action: AuthAction {
+                action: Some(action),
+            },
+        }
+    }
+
+    fn provider_name(&self, id: &str) -> String {
+        let provider = self.providers.iter().find(|p| p.id == id);
+        provider.map_or_else(|| id.to_string(), |p| p.name.clone())
+    }
+
+    /// Asks the node for its providers, to pick one when they come.
+    fn list_providers(&mut self, filter: &str) -> Option<Action> {
+        if self.listing_providers.is_some() {
+            return None;
+        }
+        self.listing_providers = Some(filter.to_string());
+        Some(Action::FetchProviders {
+            chat: self.id,
+            node: self.node.id.clone(),
+        })
+    }
+
+    fn open_providers(&mut self, filter: &str) {
+        let choices = self
+            .providers
+            .iter()
+            .map(|p| {
+                let detail = match p.connected {
+                    true => format!("signed in · {}", p.id),
+                    false => p.id.clone(),
+                };
+                Choice::new(Choose::Provider(p.id.clone()), &p.name, detail)
+            })
+            .collect();
+        let picker = Picker::new("Providers (Enter signs in or out)", choices, None);
+        self.picker = Some(picker.with_filter(filter));
+    }
+
+    /// The ways to sign in to `provider`, and out if it is signed in.
+    fn open_sign_in(&mut self, id: &str) {
+        let Some(provider) = self.providers.iter().find(|p| p.id == id) else {
+            return;
+        };
+        let mut choices: Vec<_> = provider
+            .methods
+            .iter()
+            .map(|m| {
+                let choose = Choose::SignIn {
+                    provider: id.to_string(),
+                    oauth: m.oauth.then_some(m.index),
+                };
+                let detail = if m.oauth { "OAuth" } else { "paste a key" };
+                Choice::new(choose, &m.label, detail)
+            })
+            .collect();
+        if provider.connected {
+            let detail = format!("forget {}'s credentials on this node", provider.name);
+            choices.push(Choice::new(
+                Choose::SignOut(id.to_string()),
+                "Sign out",
+                detail,
+            ));
+        }
+        self.picker = Some(Picker::new("Sign in with", choices, None));
+    }
+
+    /// Takes in how a step of signing in went, which may call for the next.
+    fn signed_in(&mut self, result: Result<ProviderAuthResult, String>) -> Option<Action> {
+        // Esc'd meanwhile, or not this chat's.
+        let Some(Auth::Waiting {
+            provider, start, ..
+        }) = self.auth.take()
+        else {
+            return None;
+        };
+        let name = self.provider_name(&provider);
+        let result = match result {
+            Ok(result) => result,
+            Err(e) => {
+                self.push(Role::Error, &format!("couldn't sign in to {name}: {e}"));
+                return None;
+            }
+        };
+        let Some(index) = start else {
+            self.info(&format!("{name}: done; its models follow"));
+            return Some(Action::fetch_options(&self.node.id));
+        };
+        // OAuth has started: say where to go.
+        if !result.instructions.is_empty() {
+            self.info(&result.instructions);
+        }
+        self.info(&format!("open {}", result.url));
+        if result.needs_code {
+            self.info("then paste the code it shows here");
+            self.auth = Some(Auth::Code { provider, index });
+            return None;
+        }
+        // A redirect back to the node's loopback only works in a browser there.
+        if result.url.contains("localhost") || result.url.contains("127.0.0.1") {
+            self.info(&format!(
+                "that page sends the browser back to {}: sign in from a browser there, or pick a headless method",
+                self.node.name
+            ));
+        }
+        let finish = OauthFinish {
+            index,
+            code: String::new(),
+        };
+        let doing = format!("waiting for you to sign in to {name}…");
+        Some(self.authenticate(
+            provider,
+            None,
+            doing,
+            auth_action::Action::OauthFinish(finish),
+        ))
     }
 
     /// How switching an MCP server went, which this chat asked for.
@@ -618,6 +1004,41 @@ impl Chat {
                         &format!("couldn't list the agent's options: {e}"),
                     ),
                     Err(_) => {}
+                }
+            }
+            Message::Providers(providers) => {
+                let filter = self.listing_providers.take().unwrap_or_default();
+                match providers {
+                    Ok(providers) => {
+                        self.providers = providers;
+                        self.open_providers(&filter);
+                    }
+                    Err(e) => self.push(Role::Error, &format!("couldn't list the providers: {e}")),
+                }
+            }
+            Message::Auth(result) => return self.signed_in(result),
+            Message::History(history) => {
+                self.loading_history = false;
+                match history {
+                    Ok(entries) => {
+                        let agent = self.agent().to_string();
+                        let earlier = entries.into_iter().map(|e| Entry {
+                            role: match e.role.as_str() {
+                                "user" => Role::User,
+                                "thinking" => Role::Thinking,
+                                "tool" => Role::Tool,
+                                _ => Role::Agent,
+                            },
+                            text: e.text,
+                            agent: agent.clone(),
+                        });
+                        // Before whatever was said since resuming.
+                        self.thread.splice(0..0, earlier);
+                    }
+                    Err(e) => self.push(
+                        Role::Error,
+                        &format!("couldn't load the session's earlier messages: {e}"),
+                    ),
                 }
             }
             Message::Failed(error) => {
@@ -699,13 +1120,18 @@ impl Chat {
         self.activity = Activity::Idle;
     }
 
-    /// The worker reports tools and errors as `[opencode] …` lines.
+    /// The worker reports tools as `[<harness>] …` lines, and errors as
+    /// any other.
     fn note(&mut self, text: &str) {
+        let prefix = format!(
+            "[{}] ",
+            self.node.harnesses.first().map_or("", String::as_str)
+        );
         self.partial_note.push_str(text);
         while let Some(end) = self.partial_note.find('\n') {
             let line: String = self.partial_note.drain(..=end).collect();
             let line = line.trim_end();
-            match line.strip_prefix(NOTE_PREFIX) {
+            match line.strip_prefix(&prefix) {
                 Some(tool) => self.push(Role::Tool, tool),
                 None if !line.is_empty() => self.push(Role::Error, line),
                 None => {}
@@ -825,10 +1251,7 @@ pub fn cycle<T: PartialEq + Copy>(items: &[T], current: T, step: isize) -> Optio
     Some(items[next as usize])
 }
 
-/// `value`, or `default` when it is empty.
-pub fn or<'a>(value: &'a str, default: &'a str) -> &'a str {
-    if value.is_empty() { default } else { value }
-}
+pub use commandant_common::or;
 
 /// Decodes output, holding back a character split across chunks in `partial`.
 fn decode(partial: &mut Vec<u8>, data: &[u8]) -> String {
@@ -905,6 +1328,12 @@ impl Input {
     fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
+    }
+
+    /// Replaces the text, the cursor at its end.
+    fn set(&mut self, text: &str) {
+        self.text = text.to_string();
+        self.end();
     }
 }
 
@@ -1306,6 +1735,196 @@ pub(crate) mod tests {
             said.contains("couldn't list the agent's options: timed out"),
             "{said}"
         );
+    }
+
+    fn listed(app: &mut Chat) {
+        assert!(matches!(
+            command(app, "/providers"),
+            Some(Action::FetchProviders { .. })
+        ));
+        let method = |label: &str, oauth: bool, index: u32| AuthMethod {
+            label: label.into(),
+            oauth,
+            index,
+        };
+        let providers = vec![ModelProvider {
+            id: "acme".into(),
+            name: "Acme".into(),
+            connected: true,
+            methods: vec![
+                method("Browser", true, 0),
+                method("Code", true, 1),
+                method("API key", false, 2),
+            ],
+        }];
+        assert!(app.on_message(Message::Providers(Ok(providers))).is_none());
+        assert!(app.picker.is_some(), "the providers come in a picker");
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        // Browser, Code, API key, Sign out.
+        assert_eq!(app.picker.as_ref().unwrap().total(), 4);
+    }
+
+    fn sent(action: Option<Action>) -> (String, auth_action::Action) {
+        match action {
+            Some(Action::Authenticate {
+                provider, action, ..
+            }) => (provider, action.action.unwrap()),
+            _ => panic!("a sign-in step is sent"),
+        }
+    }
+
+    #[test]
+    fn an_api_key_is_sent_but_never_shown() {
+        let mut app = with_options();
+        listed(&mut app);
+        for _ in 0..2 {
+            app.on_key(KeyEvent::from(KeyCode::Down));
+        }
+        assert!(app.on_key(KeyEvent::from(KeyCode::Enter)).is_none());
+        assert!(matches!(app.auth, Some(Auth::Key { .. })));
+        type_text(&mut app, "sk-secret");
+        let (provider, action) = sent(app.on_key(KeyEvent::from(KeyCode::Enter)));
+        assert_eq!(provider, "acme");
+        assert_eq!(action, auth_action::Action::ApiKey("sk-secret".into()));
+        assert!(app.thread.iter().all(|e| !e.text.contains("sk-secret")));
+        assert!(app.input.text.is_empty());
+
+        // Done: the node's models are asked for again.
+        let done = app.on_message(Message::Auth(Ok(ProviderAuthResult::default())));
+        assert!(matches!(done, Some(Action::FetchOptions { .. })));
+        assert!(app.auth.is_none());
+
+        // Esc backs out of typing a key.
+        listed(&mut app);
+        for _ in 0..2 {
+            app.on_key(KeyEvent::from(KeyCode::Down));
+        }
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        type_text(&mut app, "sk-");
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        assert!(app.auth.is_none() && app.input.text.is_empty());
+    }
+
+    #[test]
+    fn oauth_waits_in_the_browser_or_takes_the_code() {
+        let mut app = with_options();
+        listed(&mut app);
+        let (_, start) = sent(app.on_key(KeyEvent::from(KeyCode::Enter)));
+        assert_eq!(start, auth_action::Action::OauthStart(0));
+        let started = ProviderAuthResult {
+            url: "https://acme.test/authorize?redirect_uri=http://localhost:1455".into(),
+            ..Default::default()
+        };
+        // It finishes by itself, once the user is done in the browser.
+        let (_, finish) = sent(app.on_message(Message::Auth(Ok(started))));
+        assert!(matches!(finish, auth_action::Action::OauthFinish(f) if f.code.is_empty()));
+        assert!(app.thread.iter().any(|e| e.text.contains("acme.test")));
+        assert!(app.thread.iter().any(|e| e.text.contains("headless")));
+        app.on_message(Message::Auth(Err("timed out".into())));
+        assert!(
+            app.thread
+                .last()
+                .unwrap()
+                .text
+                .contains("couldn't sign in to Acme: timed out")
+        );
+
+        listed(&mut app);
+        app.on_key(KeyEvent::from(KeyCode::Down));
+        sent(app.on_key(KeyEvent::from(KeyCode::Enter)));
+        let started = ProviderAuthResult {
+            url: "https://acme.test/code".into(),
+            needs_code: true,
+            ..Default::default()
+        };
+        assert!(app.on_message(Message::Auth(Ok(started))).is_none());
+        type_text(&mut app, "abc");
+        let (_, finish) = sent(app.on_key(KeyEvent::from(KeyCode::Enter)));
+        assert!(
+            matches!(finish, auth_action::Action::OauthFinish(f) if f.index == 1 && f.code == "abc")
+        );
+    }
+
+    #[test]
+    fn slash_commands_complete_as_they_are_typed() {
+        let mut app = with_options();
+        type_text(&mut app, "/re");
+        let names: Vec<_> = app.suggestions().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["review"], "the agent's own commands too");
+        // Tab fills it in, ready for arguments, rather than switching agent.
+        app.on_key(KeyEvent::from(KeyCode::Tab));
+        assert_eq!(
+            (app.input.text.as_str(), app.agent()),
+            ("/review ", "build")
+        );
+        assert!(
+            app.suggestions().is_empty(),
+            "nothing to complete past the name"
+        );
+
+        // Arrows pick among several; Enter on a partial name runs the one picked.
+        app.input.clear();
+        type_text(&mut app, "/s");
+        let names: Vec<_> = app.suggestions().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["skills", "sessions"]);
+        app.on_key(KeyEvent::from(KeyCode::Down));
+        assert_eq!(app.suggested, 1);
+        app.on_key(KeyEvent::from(KeyCode::Up));
+        app.on_key(KeyEvent::from(KeyCode::Up));
+        assert_eq!(app.suggested, 1, "wraps round");
+        assert!(matches!(
+            app.on_key(KeyEvent::from(KeyCode::Enter)),
+            Some(Action::ShowSessions)
+        ));
+
+        // Typing again starts from the top; no match, no list.
+        type_text(&mut app, "/zzz");
+        assert!(app.suggestions().is_empty());
+    }
+
+    #[test]
+    fn arrows_bring_back_what_was_sent_without_completing_it() {
+        let mut app = with_options();
+        command(&mut app, "first");
+        app.on_message(Message::Failed("stop".into()));
+        command(&mut app, "/mcp");
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        type_text(&mut app, "draft");
+
+        app.on_key(KeyEvent::from(KeyCode::Up));
+        assert_eq!(app.input.text, "/mcp");
+        assert!(
+            app.suggestions().is_empty(),
+            "no list for a recalled command"
+        );
+        app.on_key(KeyEvent::from(KeyCode::Up));
+        app.on_key(KeyEvent::from(KeyCode::Up));
+        assert_eq!(app.input.text, "first", "stops at the oldest");
+        app.on_key(KeyEvent::from(KeyCode::Down));
+        app.on_key(KeyEvent::from(KeyCode::Down));
+        assert_eq!(app.input.text, "draft", "past the latest, what was typed");
+        app.on_key(KeyEvent::from(KeyCode::Down));
+        assert_eq!(app.input.text, "draft");
+
+        // Editing a recalled command completes it again, and the arrows then
+        // move in the list instead.
+        app.on_key(KeyEvent::from(KeyCode::Up));
+        app.on_key(KeyEvent::from(KeyCode::Backspace));
+        assert_eq!(app.input.text, "/mc");
+        assert_eq!(app.suggestions()[0].0, "mcp");
+        app.on_key(KeyEvent::from(KeyCode::Up));
+        assert_eq!(app.input.text, "/mc");
+    }
+
+    #[test]
+    fn help_lists_every_command_and_key() {
+        let mut app = with_options();
+        assert!(command(&mut app, "/help").is_none());
+        let help = &app.thread.last().unwrap().text;
+        for needle in ["/providers", "/review", "Ctrl-T", "/quit"] {
+            assert!(help.contains(needle), "{needle} missing from {help}");
+        }
+        assert!(app.input.text.is_empty());
     }
 
     #[test]

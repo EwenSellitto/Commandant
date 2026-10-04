@@ -1,5 +1,6 @@
 //! The Commandant worker: dials into an orchestrator and runs what it's told.
 
+mod claude;
 mod exec;
 mod harness;
 mod opencode;
@@ -15,13 +16,14 @@ use anyhow::{Context, anyhow, bail};
 use commandant_proto::hello::Auth;
 use commandant_proto::node_link_client::NodeLinkClient;
 use commandant_proto::{
-    AgentPrompt, AgentSessions, CancelTask, HarnessStarted, Heartbeat, Hello, ListAgentOptions,
-    ListAgentSessions, NodeCredential, OrchestratorMsg, Reply, StartHarness, TaskFinished, Welcome,
+    AgentPrompt, AgentProviders, AgentSessions, CancelTask, GetSessionHistory, HarnessStarted,
+    Heartbeat, Hello, ListAgentOptions, ListAgentSessions, ListProviders, NodeCredential,
+    OrchestratorMsg, ProviderAuth, Reply, SessionHistory, StartHarness, TaskFinished, Welcome,
     WorkerMsg, orchestrator_msg,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::Channel;
 use tonic::{Code, Streaming};
 use tracing::{info, warn};
 
@@ -49,8 +51,9 @@ pub struct WorkerConfig {
     pub pick_free_state_dir: bool,
     /// The coding agent to host, if any.
     pub harness: Option<HarnessKind>,
-    /// The `opencode` to run; when unset it is looked for, or installed.
-    pub opencode_bin: Option<PathBuf>,
+    /// The binary of the harness to run (`opencode`, `claude`); when unset
+    /// it is looked for, or installed.
+    pub harness_bin: Option<PathBuf>,
 }
 
 /// Who the worker is, once `run` has claimed a state directory.
@@ -84,6 +87,9 @@ impl From<tonic::Status> for Stop {
 /// Sets up the harness, then stays connected to the orchestrator,
 /// reconnecting with backoff, until a fatal error occurs.
 pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    // SAFETY: plain syscall, no arguments.
+    normal_user(unsafe { libc::geteuid() })?;
     // Held until the worker stops: no other worker can be this node.
     let claim = state::claim(&config.state_dir, config.pick_free_state_dir)?;
     if claim.instance > 1 {
@@ -108,7 +114,7 @@ pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
             .or_else(|| (claim.instance > 1).then(|| format!("{}-{}", hostname(), claim.instance))),
         state_dir: claim.dir.clone(),
     };
-    let host = Arc::new(Host::new(config.opencode_bin));
+    let host = Arc::new(Host::new(config.harness_bin, claim.dir.clone()));
     // Otherwise one is started when a client asks for it.
     if let Some(kind) = config.harness {
         host.start(kind)
@@ -144,6 +150,16 @@ pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
+}
+
+/// Refuses root: a worker runs whatever the admin and its agent ask, so it
+/// gets no more than one user's rights (and Claude Code won't skip its
+/// permission prompts as root).
+fn normal_user(uid: u32) -> anyhow::Result<()> {
+    if uid == 0 {
+        bail!("workers run as a normal user, not root: start this one as another user");
+    }
+    Ok(())
 }
 
 /// One connection to the orchestrator, from handshake until it breaks.
@@ -219,16 +235,9 @@ fn hello(
 }
 
 async fn connect(server: &str) -> Result<Channel, Stop> {
-    let server = commandant_common::link::prefer_loopback(server).await;
-    Endpoint::from_shared(server)
-        .context("invalid server URL")
-        .map_err(Stop::Fatal)?
-        .connect_timeout(Duration::from_secs(10))
-        .http2_keep_alive_interval(Duration::from_secs(20))
-        .keep_alive_while_idle(true)
-        .connect()
+    commandant_proto::channel(server)
         .await
-        .map_err(|e| Stop::Retry(anyhow!("connecting: {e}")))
+        .map_err(|e| Stop::Retry(e.context("connecting")))
 }
 
 /// New credentials on first join; otherwise the saved ones, if the
@@ -281,29 +290,35 @@ async fn serve(
                         }
                     }
                     Some(orchestrator_msg::Msg::ListOptions(ListAgentOptions { request_id, mcp })) => {
-                        let (host, outbound) = (host.clone(), outbound.clone());
-                        tokio::spawn(async move {
-                            let options = async { harness(&host)?.options(mcp).await };
-                            reply(&outbound, request_id, options.await).await;
-                        });
+                        ask_harness(host, outbound, request_id, |h| async move { h.options(mcp).await });
                     }
                     Some(orchestrator_msg::Msg::ListSessions(ListAgentSessions { request_id })) => {
-                        let (host, outbound) = (host.clone(), outbound.clone());
-                        tokio::spawn(async move {
-                            let sessions = async { harness(&host)?.sessions().await };
-                            let sessions = sessions.await.map(|sessions| AgentSessions {
-                                sessions,
-                                ..Default::default()
-                            });
-                            reply(&outbound, request_id, sessions).await;
+                        ask_harness(host, outbound, request_id, |h| async move {
+                            let sessions = h.sessions().await?;
+                            Ok(AgentSessions { sessions, ..Default::default() })
+                        });
+                    }
+                    Some(orchestrator_msg::Msg::GetHistory(GetSessionHistory { request_id, session_id })) => {
+                        ask_harness(host, outbound, request_id, |h| async move {
+                            let entries = h.history(&session_id).await?;
+                            Ok(SessionHistory { entries, ..Default::default() })
+                        });
+                    }
+                    Some(orchestrator_msg::Msg::ListProviders(ListProviders { request_id })) => {
+                        ask_harness(host, outbound, request_id, |h| async move {
+                            let providers = h.providers().await?;
+                            Ok(AgentProviders { providers, ..Default::default() })
+                        });
+                    }
+                    Some(orchestrator_msg::Msg::ProviderAuth(ProviderAuth { request_id, provider, action })) => {
+                        info!(%provider, "signing the agent in or out of a provider");
+                        ask_harness(host, outbound, request_id, |h| async move {
+                            h.authenticate(&provider, action).await
                         });
                     }
                     Some(orchestrator_msg::Msg::StartHarness(StartHarness { request_id, harness })) => {
-                        let (host, outbound) = (host.clone(), outbound.clone());
-                        tokio::spawn(async move {
-                            let started = start_harness(&host, &harness).await;
-                            reply(&outbound, request_id, started).await;
-                        });
+                        let host = host.clone();
+                        answer(outbound, request_id, async move { start_harness(&host, &harness).await });
                     }
                     Some(orchestrator_msg::Msg::Cancel(CancelTask { task_id })) => {
                         if let Some(cancel) = cancels.remove(&task_id) {
@@ -367,6 +382,36 @@ fn harness(host: &Host) -> anyhow::Result<Arc<dyn Harness>> {
     host.current().ok_or_else(|| anyhow!(NO_HARNESS))
 }
 
+/// Answers question `request_id` in the background with what the hosted
+/// harness says, or why it can't.
+fn ask_harness<T, F, Fut>(
+    host: &Arc<Host>,
+    outbound: &mpsc::Sender<WorkerMsg>,
+    request_id: String,
+    ask: F,
+) where
+    T: Reply + Send + 'static,
+    F: FnOnce(Arc<dyn Harness>) -> Fut + Send + 'static,
+    Fut: Future<Output = anyhow::Result<T>> + Send,
+{
+    let host = host.clone();
+    answer(
+        outbound,
+        request_id,
+        async move { ask(harness(&host)?).await },
+    );
+}
+
+/// Answers question `request_id` in the background with what `answer` comes to.
+fn answer<T: Reply + Send + 'static>(
+    outbound: &mpsc::Sender<WorkerMsg>,
+    request_id: String,
+    answer: impl Future<Output = anyhow::Result<T>> + Send + 'static,
+) {
+    let outbound = outbound.clone();
+    tokio::spawn(async move { reply(&outbound, request_id, answer.await).await });
+}
+
 /// Answers the orchestrator's question `request_id`: with `answer`, or with
 /// why there is none.
 async fn reply<T: Reply>(
@@ -405,4 +450,15 @@ fn hostname() -> String {
         .map(|h| h.trim().to_string())
         .filter(|h| !h.is_empty())
         .unwrap_or_else(|| "unknown".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_is_refused() {
+        assert!(normal_user(0).is_err());
+        assert!(normal_user(1000).is_ok());
+    }
 }

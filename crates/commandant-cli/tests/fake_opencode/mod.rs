@@ -34,6 +34,10 @@ struct Session {
 #[derive(Default)]
 struct State {
     sessions: Mutex<Vec<Session>>,
+    /// Providers with credentials.
+    connected: Mutex<Vec<String>>,
+    /// What each session's turns said, as `GET /session/:id/message` lists it.
+    messages: Mutex<HashMap<String, Vec<Value>>>,
     mcp: Mutex<BTreeMap<String, (String, Option<String>)>>,
     /// Held turns, by session.
     held: Mutex<HashMap<String, oneshot::Sender<Release>>>,
@@ -90,12 +94,7 @@ impl FakeOpencode {
         // `serve` is all a worker runs; sleeping stands for the server.
         let script =
             format!("#!/bin/sh\necho \"opencode server listening on {url}\"\nexec sleep 300\n");
-        std::fs::write(&binary, script).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        write_script(&binary, &script);
         Self {
             state,
             binary,
@@ -133,6 +132,13 @@ impl FakeOpencode {
         })
         .await
     }
+}
+
+/// Writes an executable shell script, a stand-in for an agent's binary.
+pub fn write_script(path: &std::path::Path, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, script).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 async fn serve(listener: TcpListener, state: Arc<State>) {
@@ -226,6 +232,49 @@ async fn route(
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match (method, parts.as_slice()) {
         ("GET", ["global", "health"]) => (200, json!({ "healthy": true })),
+        ("GET", ["provider"]) => {
+            let all = json!([{ "id": "fake", "name": "Fake" }, { "id": "other", "name": "Other" }]);
+            let connected = state.connected.lock().unwrap().clone();
+            (
+                200,
+                json!({ "all": all, "connected": connected, "default": {} }),
+            )
+        }
+        ("GET", ["provider", "auth"]) => (
+            200,
+            json!({ "other": [
+                { "type": "oauth", "label": "Browser" },
+                { "type": "oauth", "label": "Paste a code" },
+                { "type": "api", "label": "API key" },
+            ]}),
+        ),
+        ("POST", ["provider", id, "oauth", "authorize"]) => {
+            let code = body["method"] == 1;
+            let method = if code { "code" } else { "auto" };
+            let url = format!("https://example.com/{id}/authorize");
+            (
+                200,
+                json!({ "url": url, "method": method, "instructions": "Sign in there" }),
+            )
+        }
+        ("POST", ["provider", id, "oauth", "callback"]) => {
+            state.log.lock().unwrap().push(format!("callback {body}"));
+            if body["method"] == 1 && body["code"] != "good" {
+                return (400, json!({ "name": "ProviderAuthOauthCallbackFailed" }));
+            }
+            state.connected.lock().unwrap().push(id.to_string());
+            (200, json!(true))
+        }
+        ("PUT", ["auth", id]) => {
+            state.log.lock().unwrap().push(format!("auth {id} {body}"));
+            state.connected.lock().unwrap().push(id.to_string());
+            (200, json!(true))
+        }
+        ("DELETE", ["auth", id]) => {
+            state.connected.lock().unwrap().retain(|c| c != id);
+            (200, json!(true))
+        }
+        ("POST", ["global", "dispose"]) => (200, json!(true)),
         ("GET", ["agent"]) => (
             200,
             json!([
@@ -301,6 +350,10 @@ async fn route(
                                  "time": { "created": 1, "updated": 1_000_000 + s.updated * 1000 } }))
                 .collect();
             (200, Value::Array(listed))
+        }
+        ("GET", ["session", id, "message"]) => {
+            let messages = state.messages.lock().unwrap();
+            (200, json!(messages.get(*id).cloned().unwrap_or_default()))
         }
         ("GET", ["session", id]) => match find_session(state, id) {
             Some(s) => (200, json!({ "id": s.id, "directory": s.directory })),
@@ -426,6 +479,17 @@ async fn turn(state: Arc<State>, session_id: String, text: String) {
         session.updated = n;
     }
     let (message, part) = (format!("msg_{n}"), format!("prt_{n}"));
+    state
+        .messages
+        .lock()
+        .unwrap()
+        .entry(session_id.clone())
+        .or_default()
+        .extend([
+            json!({ "info": { "role": "user" }, "parts": [{ "type": "text", "text": text }] }),
+            json!({ "info": { "role": "assistant" }, "parts": [
+                { "type": "text", "text": format!("echo: {text}") }] }),
+        ]);
     let status = |kind: &str| json!({ "sessionID": session_id, "status": { "type": kind } });
     emit("session.status", status("busy"));
     emit(
