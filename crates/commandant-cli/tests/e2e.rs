@@ -494,6 +494,78 @@ mod reset {
     }
 }
 
+/// A worker whose saved credentials the orchestrator doesn't know (say it
+/// was reset) joins again with the token it was given, but only when it
+/// starts: a node removed while running stays removed.
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_credentials_give_way_to_a_fresh_token() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("worker");
+    let (old_addr, old_token, _old_stop) = start_orchestrator(&tmp.path().join("old")).await;
+    let mut old = connect_control(&old_addr, &old_token).await.unwrap();
+    let worker = spawn_worker(&old_addr, Some(old_token), &state_dir);
+    wait_for_node(&mut old, true).await;
+    let stale = saved_credentials(&state_dir).await;
+    worker.abort();
+
+    // A fresh orchestrator: without a token, the stale credentials are fatal.
+    let (addr, token, _stop) = start_orchestrator(&tmp.path().join("new")).await;
+    let mut client = connect_control(&addr, &token).await.unwrap();
+    let err = tokio::time::timeout(WAIT, spawn_worker(&addr, None, &state_dir))
+        .await
+        .expect("an unknown node should fail fast")
+        .unwrap()
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("unknown node"), "{err:#}");
+
+    // With one, it joins afresh and keeps the new credentials.
+    let worker = spawn_worker(&addr, Some(token.clone()), &state_dir);
+    let node = wait_for_node(&mut client, true).await;
+    let fresh = tokio::time::timeout(WAIT, async {
+        loop {
+            let creds = commandant_worker::state::load(&state_dir).unwrap().unwrap();
+            if creds.node_id != stale.node_id {
+                return creds;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the new credentials were never saved");
+    assert_eq!(fresh.node_id, node.id);
+
+    // A second worker can't take its name, and is told what to do.
+    let other = tempfile::tempdir().unwrap();
+    let err = tokio::time::timeout(WAIT, spawn_worker(&addr, Some(token), other.path()))
+        .await
+        .expect("a taken name should fail fast")
+        .unwrap()
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("another --name"), "{err:#}");
+
+    // Removed while running, it stops rather than joining again.
+    client
+        .remove_node(RemoveNodeRequest { node: "w1".into() })
+        .await
+        .unwrap();
+    let stopped = tokio::time::timeout(WAIT, worker)
+        .await
+        .expect("a removed node should stop")
+        .unwrap();
+    let err = stopped.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("this node was removed"),
+        "{err:#}"
+    );
+    let nodes = client
+        .list_nodes(ListNodesRequest {})
+        .await
+        .unwrap()
+        .into_inner()
+        .nodes;
+    assert!(nodes.is_empty(), "it didn't come back");
+}
+
 #[cfg(unix)]
 mod fake_opencode;
 

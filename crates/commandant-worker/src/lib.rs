@@ -54,6 +54,9 @@ enum Stop {
     /// Retrying won't help (bad credentials, name conflict...).
     Fatal(anyhow::Error),
     Retry(anyhow::Error),
+    /// The orchestrator doesn't know the saved credentials, but there is a
+    /// join token to join with instead.
+    Stale(anyhow::Error),
 }
 
 impl From<tonic::Status> for Stop {
@@ -78,13 +81,27 @@ pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
         None => None,
     };
     let mut backoff = MIN_BACKOFF;
+    // Saved credentials the orchestrator rejects are given up only on the
+    // first connection, when the token was just given (say after the
+    // orchestrator was reset). A node removed later stays removed.
+    let mut first = true;
+    let mut use_saved = true;
     loop {
         let started = Instant::now();
-        let Err(stop) = session(&config, harness.as_ref()).await;
+        let Err(stop) = session(&config, harness.as_ref(), use_saved, first).await;
         match stop {
             Stop::Fatal(e) => return Err(e),
+            Stop::Stale(e) => {
+                warn!(
+                    "{e:#}: the orchestrator doesn't know the node saved in {}; joining again with the token",
+                    config.state_dir.display()
+                );
+                use_saved = false;
+                continue;
+            }
             Stop::Retry(e) => warn!("connection to {} lost: {e:#}", config.server),
         }
+        first = false;
         let was_healthy = started.elapsed() > MAX_BACKOFF;
         if was_healthy {
             backoff = MIN_BACKOFF;
@@ -99,10 +116,21 @@ pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
 async fn session(
     config: &WorkerConfig,
     harness: Option<&Arc<Opencode>>,
+    use_saved: bool,
+    first: bool,
 ) -> Result<Infallible, Stop> {
-    let saved = state::load(&config.state_dir).map_err(Stop::Fatal)?;
+    let saved = state::load(&config.state_dir)
+        .map_err(Stop::Fatal)?
+        .filter(|_| use_saved);
     let hello = hello(config, saved.as_ref())?;
     let channel = connect(&config.server).await?;
+    let can_rejoin = first && saved.is_some() && config.join_token.is_some();
+    let rejected = |status: tonic::Status| match status.code() {
+        Code::Unauthenticated if can_rejoin => {
+            Stop::Stale(anyhow!("{}: {}", status.code(), status.message()))
+        }
+        _ => status.into(),
+    };
 
     let (outbound, outbound_rx) = mpsc::channel::<WorkerMsg>(256);
     outbound
@@ -111,10 +139,11 @@ async fn session(
         .expect("receiver is alive");
     let mut inbound = NodeLinkClient::new(channel)
         .link(ReceiverStream::new(outbound_rx))
-        .await?
+        .await
+        .map_err(rejected)?
         .into_inner();
 
-    let welcome = match inbound.message().await? {
+    let welcome = match inbound.message().await.map_err(rejected)? {
         Some(OrchestratorMsg {
             msg: Some(orchestrator_msg::Msg::Welcome(welcome)),
         }) => welcome,

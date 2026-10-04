@@ -53,9 +53,13 @@ impl Registry {
         self.nodes.lock().unwrap().clear();
     }
 
-    /// Drops the node's connection, whichever it is.
-    pub fn kick(&self, node_id: &str) {
-        self.nodes.lock().unwrap().remove(node_id);
+    /// Drops the node's connection, whichever it is, telling the worker why
+    /// rather than leaving it to notice at its next heartbeat.
+    pub fn kick(&self, node_id: &str, why: &str) {
+        let removed = self.nodes.lock().unwrap().remove(node_id);
+        if let Some(connection) = removed {
+            let _ = connection.tx.try_send(Err(Status::unauthenticated(why)));
+        }
     }
 
     pub fn get(&self, node_id: &str) -> Option<Connection> {

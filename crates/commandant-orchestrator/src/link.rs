@@ -135,7 +135,9 @@ fn harnesses(hello: &Hello) -> Vec<String> {
 }
 
 fn name_taken(name: &str) -> Status {
-    Status::already_exists(format!("a node named {name:?} already exists"))
+    Status::already_exists(format!(
+        "a node named {name:?} already exists; give this worker another --name"
+    ))
 }
 
 #[tonic::async_trait]

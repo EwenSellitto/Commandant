@@ -215,7 +215,7 @@ impl Control for ControlService {
             .delete_node(&node.id)
             .await
             .map_err(internal)?;
-        self.shared.registry.kick(&node.id);
+        self.shared.registry.kick(&node.id, "this node was removed");
         info!(node_id = %node.id, name = %node.name, "node removed");
         Ok(Response::new(RemoveNodeResponse {}))
     }
