@@ -64,6 +64,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_input(frame, chat, input);
     draw_footer(frame, chat, footer);
     let accent = agent_color(chat, chat.agent());
+    draw_suggestions(frame, chat, accent, thread);
     if let Some(picker) = &chat.picker {
         draw_picker(frame, accent, picker);
     }
@@ -347,27 +348,22 @@ fn welcome(chat: &Chat) -> Vec<Line<'static>> {
         ]),
         Line::default(),
     ];
-    let keys = [
-        ("Tab", "switch agent"),
-        ("/model", "choose a model"),
-        ("/effort  Ctrl-T", "thinking effort"),
-        ("/skills", "the agent's commands and skills"),
-        ("/mcp", "connect MCP servers"),
-        ("/providers", "sign in to a model provider"),
-        ("Esc", "cancel a turn"),
-        ("PgUp PgDn", "scroll"),
-        ("Ctrl-N  /new", "another session, working alongside"),
-        ("Ctrl-O  /sessions", "switch, or resume a saved one"),
-        ("Alt-← Alt-→", "previous / next session"),
-        ("Ctrl-W  /close", "close this session"),
-        ("Ctrl-G  /nodes", "the other nodes"),
-    ];
-    for (key, does) in keys {
+    let keys = chat::KEYS.iter().map(|&(k, d)| (k.to_string(), d));
+    let commands = chat::COMMANDS[1..7]
+        .iter()
+        .map(|&(n, d)| (format!("/{n}"), d));
+    for (key, does) in keys.take(4).chain(commands) {
         lines.push(Line::from(vec![
-            Span::raw(format!("{INDENT}{key:<19}")).bold(),
+            Span::raw(format!("{INDENT}{key:<13}")).bold(),
             does.fg(MUTED),
         ]));
     }
+    lines.push(Line::default());
+    lines.push(Line::from(vec![
+        Span::raw(INDENT),
+        "/help".bold(),
+        " for every command and key".fg(MUTED),
+    ]));
     lines
 }
 
@@ -466,11 +462,21 @@ fn draw_input(frame: &mut Frame, chat: &Chat, area: Rect) {
         true => "•".repeat(input.text.chars().count().saturating_sub(offset).min(width)),
         false => input.text.chars().skip(offset).take(width).collect(),
     };
-    let style = match input.text.starts_with('/') && !secret {
-        true => Style::new().fg(color),
-        false => Style::new(),
+    // Only a known command's name is colored, not what follows it.
+    let colored = match secret {
+        true => 0,
+        false => chat.command_len().saturating_sub(offset),
     };
-    frame.render_widget(Span::styled(visible, style), line);
+    let at = visible
+        .char_indices()
+        .nth(colored)
+        .map_or(visible.len(), |(i, _)| i);
+    let (command, rest) = visible.split_at(at);
+    let spans = vec![
+        Span::raw(command.to_string()).fg(color),
+        Span::raw(rest.to_string()),
+    ];
+    frame.render_widget(Line::from(spans), line);
     let x = line.x + (input.cursor - offset) as u16;
     frame.set_cursor_position((x, line.y));
 }
@@ -531,6 +537,44 @@ fn draw_footer(frame: &mut Frame, chat: &Chat, area: Rect) {
     };
     frame.render_widget(left, area);
     frame.render_widget(right.right_aligned(), area);
+}
+
+/// The commands completing what is typed, on a panel at the bottom of
+/// `area`, just over the prompt.
+fn draw_suggestions(frame: &mut Frame, chat: &Chat, accent: Color, area: Rect) {
+    const SHOWN: usize = 8;
+    let suggestions = chat.suggestions();
+    if suggestions.is_empty() {
+        return;
+    }
+    let height = suggestions.len().min(SHOWN).min(area.height as usize);
+    let area = Rect::new(
+        area.x,
+        area.bottom() - height as u16,
+        area.width,
+        height as u16,
+    );
+    frame.render_widget(Clear, area);
+    frame.render_widget(Block::new().bg(PANEL), area);
+    let width = suggestions
+        .iter()
+        .map(|(n, _)| n.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 3;
+    let items: Vec<ListItem> = suggestions
+        .iter()
+        .map(|(name, does)| {
+            ListItem::new(Line::from(vec![
+                Span::raw(format!(" {:<width$}", format!("/{name}"))).fg(accent),
+                Span::raw(does.clone()).fg(MUTED),
+            ]))
+        })
+        .collect();
+    let list =
+        List::new(items).highlight_style(Style::new().bg(SELECTED).add_modifier(Modifier::BOLD));
+    let mut state = ListState::default().with_selected(Some(chat.suggested));
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 /// The picker: a solid panel centred over everything else.
@@ -831,6 +875,51 @@ mod tests {
         app.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
         let buf = render(&mut app);
         find(&buf, "loading · ");
+    }
+
+    #[test]
+    fn only_a_known_commands_name_is_colored() {
+        let mut app = app();
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        let typed = |app: &mut App, text: &str| {
+            let id = app.chat().unwrap().id;
+            let chat = app.chats.iter_mut().find(|c| c.id == id).unwrap();
+            chat.input = Default::default();
+            for c in text.chars() {
+                app.on_key(KeyEvent::from(KeyCode::Char(c)));
+            }
+            render(app)
+        };
+        let accent = Color::Cyan;
+        let buf = typed(&mut app, "/model smart");
+        assert_eq!(buf[find(&buf, "/model smart")].fg, accent);
+        let (x, y) = find(&buf, " smart");
+        assert_eq!(buf[(x + 1, y)].fg, Color::Reset, "its argument isn't");
+        let buf = typed(&mut app, "/nope x");
+        assert_eq!(buf[find(&buf, "/nope x")].fg, Color::Reset, "unknown");
+    }
+
+    #[test]
+    fn completions_float_over_the_prompt() {
+        let mut app = app();
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        for c in "/pro".chars() {
+            app.on_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        let buf = render(&mut app);
+        // The empty chat's welcome lists it too: the completion is the lowest.
+        let row = (0..buf.area.height)
+            .rev()
+            .find(|&y| {
+                let text: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+                text.contains("/providers ")
+            })
+            .unwrap();
+        assert_eq!(buf[(2, row)].bg, SELECTED);
+        let input = (0..buf.area.height)
+            .find(|&y| buf[(1, y)].bg == SURFACE)
+            .unwrap();
+        assert_eq!(row + 2, input, "just over the prompt, past the status line");
     }
 
     #[test]

@@ -13,6 +13,40 @@ use super::picker::{Choice, Picker};
 
 /// Lines moved by PageUp / PageDown.
 const PAGE: u16 = 10;
+/// The chat's own commands, for completing and `/help`.
+pub const COMMANDS: [(&str, &str); 17] = [
+    ("help", "what every command and key does"),
+    ("agent", "choose an agent"),
+    ("model", "choose a model"),
+    ("effort", "choose a thinking effort"),
+    ("skills", "the agent's commands and skills"),
+    ("mcp", "connect or disconnect MCP servers"),
+    ("providers", "sign in to or out of a model provider"),
+    ("new", "another session, working alongside"),
+    ("sessions", "switch, or resume a saved one"),
+    ("close", "close this session"),
+    ("nodes", "the other nodes"),
+    ("commands", "same as /skills"),
+    ("login", "same as /providers"),
+    ("quit", "leave"),
+    ("exit", "same as /quit"),
+    ("logout", "same as /providers"),
+    ("?", "same as /help"),
+];
+/// The keys, for `/help` and an empty chat.
+pub const KEYS: [(&str, &str); 11] = [
+    ("Tab", "switch agent, or complete a /command"),
+    ("↑ ↓", "earlier prompts, or move in the /command list"),
+    ("Ctrl-T", "next thinking effort"),
+    ("Esc", "cancel a turn"),
+    ("PgUp PgDn", "scroll"),
+    ("Ctrl-N", "new session"),
+    ("Ctrl-O", "sessions"),
+    ("Alt-← Alt-→", "previous / next session"),
+    ("Ctrl-W", "close this session"),
+    ("Ctrl-G", "the other nodes"),
+    ("Ctrl-U", "clear the prompt"),
+];
 
 /// Sent with every prompt; `session_id` fills in after the first reply.
 #[derive(Clone, Default)]
@@ -172,6 +206,14 @@ pub struct Chat {
     pub used_model: String,
     /// The floating window, when open.
     pub picker: Option<Picker<Choose>>,
+    /// The highlighted completion of a `/command` being typed.
+    pub suggested: usize,
+    /// What was sent, oldest first, to bring back with ↑↓.
+    sent: Vec<String>,
+    /// Which of them is shown, while going through them; what was being
+    /// typed before, to come back to.
+    recalled: Option<usize>,
+    draft: String,
     /// What the session has cost so far, in US dollars.
     pub spent: f64,
     /// Tokens in the session's context after the last turn.
@@ -209,6 +251,10 @@ impl Chat {
             options,
             used_model: String::new(),
             picker: None,
+            suggested: 0,
+            sent: Vec::new(),
+            recalled: None,
+            draft: String::new(),
             spent: 0.0,
             context: 0,
         }
@@ -275,6 +321,7 @@ impl Chat {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
             Event::Paste(text) => {
+                self.recalled = None;
                 // The prompt is a single line.
                 self.input.insert_str(&text.replace(['\r', '\n'], " "));
                 None
@@ -291,7 +338,30 @@ impl Chat {
         if let Some(chosen) = Picker::take_key(&mut self.picker, key) {
             return chosen.and_then(|choice| self.choose(choice));
         }
+        let suggestions = self.suggestions().len();
+        let completing = suggestions > 0;
+        // What's typed changed: back to the best match, and a recalled
+        // prompt becomes one being written.
+        if matches!(
+            key.code,
+            KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete
+        ) {
+            self.suggested = 0;
+            self.recalled = None;
+        }
         match key.code {
+            KeyCode::Up if completing => {
+                self.suggested = (self.suggested + suggestions - 1) % suggestions;
+            }
+            KeyCode::Down if completing => self.suggested = (self.suggested + 1) % suggestions,
+            KeyCode::Up => self.recall(-1),
+            KeyCode::Down => self.recall(1),
+            KeyCode::Tab if completing => self.complete(),
+            // A partly typed command runs the one highlighted.
+            KeyCode::Enter if completing && self.input.text.len() > 1 && !self.typed_exactly() => {
+                self.complete();
+                return self.submit();
+            }
             KeyCode::Char('u') if ctrl => self.input.clear(),
             KeyCode::Char('t') if ctrl => return self.cycle_effort(),
             KeyCode::Tab => return self.cycle_agent(1),
@@ -326,10 +396,15 @@ impl Chat {
         if let Some(action) = self.send_secret(&text) {
             return Some(action);
         }
+        self.recalled = None;
+        if self.sent.last() != Some(&text) {
+            self.sent.push(text.clone());
+        }
         if let Some(command) = text.strip_prefix('/') {
             let (command, filter) = command.split_once(' ').unwrap_or((command, ""));
             let pick = match command {
                 "quit" | "exit" => return Some(Action::Quit),
+                "help" | "?" => return self.help(),
                 "new" => return self.app_command(Action::NewChat),
                 "sessions" => return self.app_command(Action::ShowSessions),
                 "nodes" => return self.app_command(Action::ShowNodes),
@@ -360,6 +435,96 @@ impl Chat {
             return self.open_picker(pick, filter.trim());
         }
         self.send(text.clone(), String::new(), text)
+    }
+
+    /// The commands, the chat's own then the agent's, that complete the
+    /// `/name` being typed (before its arguments), with what they do; the
+    /// highlighted one is `suggested`.
+    pub fn suggestions(&self) -> Vec<(String, String)> {
+        let Some(typed) = self.input.text.strip_prefix('/') else {
+            return Vec::new();
+        };
+        // A recalled one was complete when sent.
+        if typed.contains(' ') || self.auth.is_some() || self.recalled.is_some() {
+            return Vec::new();
+        }
+        let own = COMMANDS.iter().map(|(n, d)| (n.to_string(), d.to_string()));
+        let agent = self
+            .options
+            .iter()
+            .flat_map(|o| &o.commands)
+            .map(|c| (c.name.clone(), or(&c.description, &c.source).to_string()));
+        own.chain(agent)
+            .filter(|(n, _)| n.starts_with(typed))
+            .collect()
+    }
+
+    /// Whether the input names a command as it is.
+    fn typed_exactly(&self) -> bool {
+        self.is_command(&self.input.text[1..])
+    }
+
+    /// Whether `name` is one of the chat's commands or the agent's.
+    fn is_command(&self, name: &str) -> bool {
+        COMMANDS.iter().any(|(n, _)| *n == name) || self.is_agent_command(name)
+    }
+
+    /// How many characters of the input name a known `/command`, before its
+    /// arguments; 0 when it names none.
+    pub fn command_len(&self) -> usize {
+        let Some(typed) = self.input.text.strip_prefix('/') else {
+            return 0;
+        };
+        let name = typed.split(' ').next().unwrap_or_default();
+        match self.is_command(name) {
+            true => 1 + name.chars().count(),
+            false => 0,
+        }
+    }
+
+    /// Fills in the highlighted completion, ready for its arguments.
+    fn complete(&mut self) {
+        if let Some((name, _)) = self.suggestions().get(self.suggested) {
+            self.input.set(&format!("/{name} "));
+        }
+        self.suggested = 0;
+    }
+
+    /// Shows the prompt sent before (`-1`) or after (`1`) the one shown; past
+    /// the latest, what was being typed.
+    fn recall(&mut self, step: isize) {
+        let at = match (self.recalled, step) {
+            (None, 1) => return,
+            (None, _) => {
+                self.draft = self.input.text.clone();
+                self.sent.len().checked_sub(1)
+            }
+            (Some(at), -1) => Some(at.saturating_sub(1)),
+            (Some(at), _) => Some(at + 1).filter(|&next| next < self.sent.len()),
+        };
+        self.recalled = at;
+        match at {
+            Some(at) => self.input.set(&self.sent[at].clone()),
+            None => self.input.set(&std::mem::take(&mut self.draft)),
+        }
+    }
+
+    /// Every command and key, in the thread.
+    fn help(&mut self) -> Option<Action> {
+        self.input.clear();
+        let mut lines = vec!["commands".to_string()];
+        lines.extend(COMMANDS.iter().map(|(n, d)| format!("  /{n:<12}{d}")));
+        if let Some(options) = self.options.clone().filter(|o| !o.commands.is_empty()) {
+            lines.push("the agent's commands and skills".into());
+            let agent = options.commands.iter();
+            lines.extend(
+                agent.map(|c| format!("  /{:<12}{}", c.name, or(&c.description, &c.source))),
+            );
+        }
+        lines.push("keys".into());
+        lines.extend(KEYS.iter().map(|(k, d)| format!("  {k:<13}{d}")));
+        self.info(&lines.join("\n"));
+        None
     }
 
     /// One of the app's commands, which clears the input like the others.
@@ -1164,6 +1329,12 @@ impl Input {
         self.text.clear();
         self.cursor = 0;
     }
+
+    /// Replaces the text, the cursor at its end.
+    fn set(&mut self, text: &str) {
+        self.text = text.to_string();
+        self.end();
+    }
 }
 
 #[cfg(test)]
@@ -1672,6 +1843,88 @@ pub(crate) mod tests {
         assert!(
             matches!(finish, auth_action::Action::OauthFinish(f) if f.index == 1 && f.code == "abc")
         );
+    }
+
+    #[test]
+    fn slash_commands_complete_as_they_are_typed() {
+        let mut app = with_options();
+        type_text(&mut app, "/re");
+        let names: Vec<_> = app.suggestions().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["review"], "the agent's own commands too");
+        // Tab fills it in, ready for arguments, rather than switching agent.
+        app.on_key(KeyEvent::from(KeyCode::Tab));
+        assert_eq!(
+            (app.input.text.as_str(), app.agent()),
+            ("/review ", "build")
+        );
+        assert!(
+            app.suggestions().is_empty(),
+            "nothing to complete past the name"
+        );
+
+        // Arrows pick among several; Enter on a partial name runs the one picked.
+        app.input.clear();
+        type_text(&mut app, "/s");
+        let names: Vec<_> = app.suggestions().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["skills", "sessions"]);
+        app.on_key(KeyEvent::from(KeyCode::Down));
+        assert_eq!(app.suggested, 1);
+        app.on_key(KeyEvent::from(KeyCode::Up));
+        app.on_key(KeyEvent::from(KeyCode::Up));
+        assert_eq!(app.suggested, 1, "wraps round");
+        assert!(matches!(
+            app.on_key(KeyEvent::from(KeyCode::Enter)),
+            Some(Action::ShowSessions)
+        ));
+
+        // Typing again starts from the top; no match, no list.
+        type_text(&mut app, "/zzz");
+        assert!(app.suggestions().is_empty());
+    }
+
+    #[test]
+    fn arrows_bring_back_what_was_sent_without_completing_it() {
+        let mut app = with_options();
+        command(&mut app, "first");
+        app.on_message(Message::Failed("stop".into()));
+        command(&mut app, "/mcp");
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        type_text(&mut app, "draft");
+
+        app.on_key(KeyEvent::from(KeyCode::Up));
+        assert_eq!(app.input.text, "/mcp");
+        assert!(
+            app.suggestions().is_empty(),
+            "no list for a recalled command"
+        );
+        app.on_key(KeyEvent::from(KeyCode::Up));
+        app.on_key(KeyEvent::from(KeyCode::Up));
+        assert_eq!(app.input.text, "first", "stops at the oldest");
+        app.on_key(KeyEvent::from(KeyCode::Down));
+        app.on_key(KeyEvent::from(KeyCode::Down));
+        assert_eq!(app.input.text, "draft", "past the latest, what was typed");
+        app.on_key(KeyEvent::from(KeyCode::Down));
+        assert_eq!(app.input.text, "draft");
+
+        // Editing a recalled command completes it again, and the arrows then
+        // move in the list instead.
+        app.on_key(KeyEvent::from(KeyCode::Up));
+        app.on_key(KeyEvent::from(KeyCode::Backspace));
+        assert_eq!(app.input.text, "/mc");
+        assert_eq!(app.suggestions()[0].0, "mcp");
+        app.on_key(KeyEvent::from(KeyCode::Up));
+        assert_eq!(app.input.text, "/mc");
+    }
+
+    #[test]
+    fn help_lists_every_command_and_key() {
+        let mut app = with_options();
+        assert!(command(&mut app, "/help").is_none());
+        let help = &app.thread.last().unwrap().text;
+        for needle in ["/providers", "/review", "Ctrl-T", "/quit"] {
+            assert!(help.contains(needle), "{needle} missing from {help}");
+        }
+        assert!(app.input.text.is_empty());
     }
 
     #[test]
