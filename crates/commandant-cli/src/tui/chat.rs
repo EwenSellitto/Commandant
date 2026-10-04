@@ -1128,6 +1128,63 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn odd_input_is_handled() {
+        let mut app = chat();
+        // Blank input, and a lone slash, send nothing useful.
+        assert!(command(&mut app, "   ").is_none());
+        let Some(Action::Send(_, request)) = command(&mut app, "/") else {
+            panic!("a lone slash is just text");
+        };
+        assert_eq!(
+            (request.prompt.as_str(), request.command.as_str()),
+            ("/", "")
+        );
+        app.on_message(Message::Failed("stop".into()));
+
+        // Before the node has listed its commands, a command is just text.
+        let Some(Action::Send(_, request)) = command(&mut app, "/review x") else {
+            panic!("sent as a prompt");
+        };
+        assert_eq!(
+            (request.prompt.as_str(), request.command.as_str()),
+            ("/review x", "")
+        );
+    }
+
+    #[test]
+    fn the_title_is_the_first_prompt_sent() {
+        let mut app = with_options();
+        command(&mut app, "/model");
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        assert_eq!(app.title, "", "commands aren't prompts");
+        command(&mut app, "first");
+        // Typed while it works: kept, not sent, not the title.
+        assert!(command(&mut app, "second").is_none());
+        app.on_message(Message::Failed("stop".into()));
+        app.input.clear();
+        command(&mut app, "third");
+        assert_eq!(app.title, "first");
+    }
+
+    #[test]
+    fn a_failed_stream_ends_the_turn_and_marks_it() {
+        let mut app = chat();
+        command(&mut app, "hi");
+        app.on_message(started("t1"));
+        app.on_message(output(OutputStream::Stdout, b"partial \xc3"));
+        app.on_message(Message::Failed("the stream ended".into()));
+        assert!(matches!(app.activity, Activity::Idle));
+        assert_eq!(app.unseen, Some(Unseen::Failed));
+        assert!(app.running_task().is_none());
+        // Esc after the turn ended does nothing.
+        assert!(app.on_key(KeyEvent::from(KeyCode::Esc)).is_none());
+        // The half character is dropped, not glued to the next reply.
+        command(&mut app, "again");
+        app.on_message(output(OutputStream::Stdout, b"ok"));
+        assert_eq!(app.thread.last().unwrap().text, "ok");
+    }
+
+    #[test]
     fn input_edits_by_character() {
         let mut input = Input::default();
         for c in "héllo".chars() {

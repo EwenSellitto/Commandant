@@ -705,4 +705,43 @@ mod tests {
         let buf = render(&mut app);
         assert_eq!(find(&buf, "2 open").1, find(&buf, "box-n1").1);
     }
+
+    #[test]
+    fn many_tabs_scroll_round_the_shown_one() {
+        let mut app = app();
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        for _ in 0..7 {
+            app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        }
+        // The last of eight is shown; earlier ones are out of sight to the left.
+        let buf = render(&mut app);
+        let (_, row) = find(&buf, " 8 new session");
+        assert_eq!(buf[find(&buf, " 8 new session")].bg, SELECTED);
+        assert_eq!(find(&buf, "‹").1, row);
+        assert!(absent(&buf, " 1 new session"));
+        assert!(absent(&buf, "›"));
+        assert!(absent(&buf, "ctrl-o"), "no room left for the hint");
+
+        // In the middle, both sides are cut.
+        for _ in 0..4 {
+            app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        }
+        let buf = render(&mut app);
+        assert_eq!(buf[find(&buf, " 4 new session")].bg, SELECTED);
+        assert_eq!(find(&buf, "‹").1, row);
+        assert_eq!(find(&buf, "›").1, row);
+
+        // A long title is cut short rather than pushing the others out.
+        let long = "a".repeat(80);
+        let id = app.chat().unwrap().id;
+        let chat = app.chats.iter_mut().find(|c| c.id == id).unwrap();
+        chat.title = long;
+        let buf = render(&mut app);
+        let (x, _) = find(&buf, " 4 aaaa");
+        let row_text: String = (0..buf.area.width)
+            .map(|c| buf[(c, row)].symbol())
+            .collect();
+        assert!(row_text.contains('…'), "{row_text}");
+        assert!(x < 30);
+    }
 }

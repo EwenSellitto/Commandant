@@ -25,6 +25,7 @@ pub async fn run(args: WorkerArgs) -> Result<()> {
         name: args.name,
         state_dir,
         harness: args.harness,
+        opencode_bin: args.opencode_bin,
     };
     tokio::select! {
         result = commandant_worker::run(config) => result,

@@ -87,4 +87,29 @@ mod tests {
         assert_eq!((new.updated, new.busy, new.cost), (5, true, 0.5));
         assert!(!sessions[1].busy);
     }
+
+    #[test]
+    fn copes_with_sparse_sessions() {
+        // Untitled, never prompted, and the nulls OpenCode sends for unset fields.
+        let saved: Vec<SavedSession> = serde_json::from_value(json!([
+            { "id": "ses_bare", "directory": "/a", "agent": null, "model": null, "time": { "created": 1, "updated": 999 } },
+            { "id": "ses_tied", "directory": "/b", "time": { "created": 1, "updated": 999 },
+              "model": { "id": "m", "providerID": "p" } },
+        ]))
+        .unwrap();
+        let sessions = sessions(saved, |_| false);
+        let bare = sessions.iter().find(|s| s.id == "ses_bare").unwrap();
+        assert_eq!(
+            (
+                bare.title.as_str(),
+                bare.agent.as_str(),
+                bare.model.as_str(),
+                bare.updated
+            ),
+            ("", "", "", 0)
+        );
+        let tied = sessions.iter().find(|s| s.id == "ses_tied").unwrap();
+        assert_eq!((tied.model.as_str(), tied.variant.as_str()), ("p/m", ""));
+        assert!(super::sessions(Vec::new(), |_| true).is_empty());
+    }
 }

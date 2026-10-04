@@ -88,6 +88,7 @@ fn spawn_worker(
         name: Some("w1".into()),
         state_dir: state_dir.to_path_buf(),
         harness: None,
+        opencode_bin: None,
     }))
 }
 
@@ -209,6 +210,11 @@ async fn worker_joins_runs_commands_and_reconnects() {
     };
     let err = client.prompt(prompt).await.unwrap_err();
     assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    let err = client
+        .list_agent_sessions(ListAgentSessionsRequest { node: "w1".into() })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
 
     // Output and exit code are streamed back.
     let (_, events) = start_task(&mut client, &["sh", "-c", "echo hi; echo err >&2; exit 3"]).await;
@@ -260,6 +266,7 @@ async fn worker_joins_runs_commands_and_reconnects() {
             name: Some("w2".into()),
             state_dir: other.path().to_path_buf(),
             harness: None,
+            opencode_bin: None,
         }),
     )
     .await
@@ -484,5 +491,477 @@ mod reset {
 
     fn read_trimmed(path: &Path) -> String {
         std::fs::read_to_string(path).unwrap().trim().to_string()
+    }
+}
+
+#[cfg(unix)]
+mod fake_opencode;
+
+/// A worker hosting a fake OpenCode, driven like the CLI and the TUI drive a
+/// real one.
+#[cfg(unix)]
+mod agents {
+    use commandant_worker::HarnessKind;
+
+    use super::fake_opencode::FakeOpencode;
+    use super::*;
+
+    struct Cluster {
+        client: ControlClient,
+        fake: FakeOpencode,
+        worker: JoinHandle<anyhow::Result<()>>,
+        _stop: oneshot::Sender<()>,
+        _tmp: tempfile::TempDir,
+    }
+
+    async fn cluster() -> Cluster {
+        cluster_with(FakeOpencode::start().await).await
+    }
+
+    async fn cluster_with(fake: FakeOpencode) -> Cluster {
+        let tmp = tempfile::tempdir().unwrap();
+        let (addr, admin_token, stop) = start_orchestrator(&tmp.path().join("server")).await;
+        let worker = tokio::spawn(commandant_worker::run(WorkerConfig {
+            server: addr.clone(),
+            join_token: Some(admin_token.clone()),
+            name: Some("w1".into()),
+            state_dir: tmp.path().join("worker"),
+            harness: Some(HarnessKind::Opencode),
+            opencode_bin: Some(fake.binary.clone()),
+        }));
+        let mut client = connect_control(&addr, &admin_token).await.unwrap();
+        let node = wait_for_node(&mut client, true).await;
+        assert_eq!(node.harnesses, ["opencode"]);
+        Cluster {
+            client,
+            fake,
+            worker,
+            _stop: stop,
+            _tmp: tmp,
+        }
+    }
+
+    fn ask(text: &str) -> PromptRequest {
+        PromptRequest {
+            node: "w1".into(),
+            prompt: text.into(),
+            ..Default::default()
+        }
+    }
+
+    fn resume(session_id: &str, text: &str) -> PromptRequest {
+        PromptRequest {
+            session_id: session_id.into(),
+            ..ask(text)
+        }
+    }
+
+    async fn start(
+        client: &mut ControlClient,
+        request: PromptRequest,
+    ) -> (String, tonic::Streaming<TaskEvent>) {
+        let mut events = client.prompt(request).await.unwrap().into_inner();
+        let Some(TaskEvent {
+            event: Some(task_event::Event::Started(started)),
+        }) = events.message().await.unwrap()
+        else {
+            panic!("first event must be Started");
+        };
+        (started.task_id, events)
+    }
+
+    async fn prompt(client: &mut ControlClient, request: PromptRequest) -> TaskResult {
+        let (_, events) = start(client, request).await;
+        collect(events).await
+    }
+
+    fn ok(result: &TaskResult) {
+        let finished = &result.finished;
+        assert_eq!(
+            (finished.exit_code, finished.error.as_str()),
+            (Some(0), ""),
+            "stderr: {}",
+            result.stderr
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prompts_run_side_by_side_without_mixing() {
+        let Cluster {
+            mut client,
+            fake,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        let (_, one) = start(&mut client, ask("hold one")).await;
+        let (_, two) = start(&mut client, ask("hold two")).await;
+        // Both turns are under way at once, each in its own session.
+        let held = fake.wait_held(2).await;
+        assert_ne!(held[0], held[1]);
+        for session in &held {
+            assert!(fake.release(session));
+        }
+        let (one, two) = tokio::join!(collect(one), collect(two));
+        ok(&one);
+        ok(&two);
+        assert_eq!(one.stdout.trim(), "echo: hold one");
+        assert_eq!(two.stdout.trim(), "echo: hold two");
+        assert_ne!(one.finished.session_id, two.finished.session_id);
+        assert_eq!(one.finished.model, "fake/echo");
+        let usage = one.finished.usage.unwrap();
+        assert_eq!((usage.input, usage.output, usage.cost), (10, 3, 0.01));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_session_answers_one_prompt_at_a_time() {
+        let Cluster {
+            mut client,
+            fake,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        let (_, first) = start(&mut client, ask("hold on")).await;
+        let session = fake.wait_held(1).await.remove(0);
+
+        // A second prompt in that session is refused; other sessions carry on.
+        let refused = prompt(&mut client, resume(&session, "me too")).await;
+        assert_eq!(refused.finished.exit_code, None);
+        assert!(
+            refused.finished.error.contains("already answering"),
+            "{}",
+            refused.finished.error
+        );
+        let elsewhere = prompt(&mut client, ask("meanwhile")).await;
+        ok(&elsewhere);
+        assert!(fake.holding(&session), "the refusal left the turn alone");
+
+        fake.release(&session);
+        ok(&collect(first).await);
+        // Once it's done, the session takes the next prompt.
+        let next = prompt(&mut client, resume(&session, "next")).await;
+        ok(&next);
+        assert_eq!(next.finished.session_id, session);
+        assert_eq!(next.stdout.trim(), "echo: next");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancelling_aborts_the_turn_and_frees_the_session() {
+        let Cluster {
+            mut client,
+            fake,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        let (task_id, events) = start(&mut client, ask("hold it")).await;
+        let session = fake.wait_held(1).await.remove(0);
+        client
+            .cancel_task(CancelTaskRequest {
+                task_id: task_id.clone(),
+            })
+            .await
+            .unwrap();
+        let cancelled = collect(events).await;
+        assert!(cancelled.finished.cancelled);
+        assert_eq!(cancelled.finished.session_id, session);
+        assert!(
+            fake.log()
+                .contains(&format!("POST /session/{session}/abort"))
+        );
+
+        // It is over: cancelling again finds nothing, and the session is free.
+        let again = client
+            .cancel_task(CancelTaskRequest { task_id })
+            .await
+            .unwrap_err();
+        assert_eq!(again.code(), tonic::Code::NotFound);
+        ok(&prompt(&mut client, resume(&session, "after")).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn saved_sessions_are_listed_latest_first_with_busy_ones_marked() {
+        let Cluster {
+            mut client,
+            fake,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        let list = |client: &mut ControlClient| {
+            let mut client = client.clone();
+            async move {
+                client
+                    .list_agent_sessions(ListAgentSessionsRequest { node: "w1".into() })
+                    .await
+                    .unwrap()
+                    .into_inner()
+                    .sessions
+            }
+        };
+        assert!(list(&mut client).await.is_empty());
+
+        let done = prompt(&mut client, ask("one")).await;
+        let (_, held) = start(&mut client, ask("hold two")).await;
+        let busy = fake.wait_held(1).await.remove(0);
+        let sessions = list(&mut client).await;
+        let ids: Vec<_> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, [busy.as_str(), done.finished.session_id.as_str()]);
+        assert_eq!(
+            sessions.iter().map(|s| s.busy).collect::<Vec<_>>(),
+            [true, false]
+        );
+        assert_eq!(
+            (sessions[0].agent.as_str(), sessions[0].model.as_str()),
+            ("build", "fake/echo")
+        );
+        assert!(!sessions[0].directory.is_empty());
+
+        fake.release(&busy);
+        ok(&collect(held).await);
+        assert!(list(&mut client).await.iter().all(|s| !s.busy));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn older_opencode_lists_its_sessions_too() {
+        let Cluster {
+            mut client,
+            _stop,
+            _tmp,
+            ..
+        } = cluster_with(FakeOpencode::start_legacy().await).await;
+        let done = prompt(&mut client, ask("one")).await;
+        let sessions = client
+            .list_agent_sessions(ListAgentSessionsRequest { node: "w1".into() })
+            .await
+            .unwrap()
+            .into_inner()
+            .sessions;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, done.finished.session_id);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn commands_are_checked_then_run_with_their_arguments() {
+        let Cluster {
+            mut client,
+            fake,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        let command = |name: &str, arguments: &str| PromptRequest {
+            command: name.into(),
+            ..ask(arguments)
+        };
+
+        let review = prompt(&mut client, command("review", "the parser")).await;
+        ok(&review);
+        assert_eq!(review.stdout.trim(), "echo: /review the parser");
+        let sent = fake
+            .log()
+            .into_iter()
+            .find(|l| l.starts_with("command "))
+            .unwrap();
+        assert!(sent.contains(r#""arguments":"the parser""#), "{sent}");
+
+        // Arguments are optional.
+        ok(&prompt(&mut client, command("pdf", "")).await);
+
+        // An unknown one is refused before OpenCode hears of it.
+        let before = fake
+            .log()
+            .iter()
+            .filter(|l| l.starts_with("POST") && l.ends_with("/command"))
+            .count();
+        let unknown = prompt(&mut client, command("nope", "x")).await;
+        assert!(
+            unknown.finished.error.contains("no /nope command"),
+            "{}",
+            unknown.finished.error
+        );
+        let after = fake
+            .log()
+            .iter()
+            .filter(|l| l.starts_with("POST") && l.ends_with("/command"))
+            .count();
+        assert_eq!(before, after);
+
+        // Neither a prompt nor a command: nothing to send.
+        let err = client.prompt(ask("  ")).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn options_list_what_the_agent_offers_and_switch_mcp_servers() {
+        let Cluster {
+            mut client,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        let options = client
+            .get_agent_options(GetAgentOptionsRequest { node: "w1".into() })
+            .await
+            .unwrap()
+            .into_inner();
+        let agents: Vec<_> = options.agents.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(agents, ["build", "plan"], "no subagents");
+        assert_eq!(
+            (
+                options.default_agent.as_str(),
+                options.default_model.as_str()
+            ),
+            ("build", "fake/echo")
+        );
+        assert_eq!(options.models.len(), 1, "no deprecated models");
+        assert_eq!(options.models[0].variants, ["low", "high"]);
+        assert_eq!(options.models[0].context, 1000);
+        let commands: Vec<_> = options
+            .commands
+            .iter()
+            .map(|c| (c.name.as_str(), c.source.as_str()))
+            .collect();
+        assert_eq!(commands, [("review", "command"), ("pdf", "skill")]);
+        let servers: Vec<_> = options
+            .mcp_servers
+            .iter()
+            .map(|m| (m.name.as_str(), m.status.as_str(), m.error.as_str()))
+            .collect();
+        assert_eq!(
+            servers,
+            [
+                ("broken", "failed", "connection refused"),
+                ("docs", "disabled", "")
+            ]
+        );
+
+        let switch = |name: &str, connect| {
+            let mut client = client.clone();
+            let request = SwitchMcpServerRequest {
+                node: "w1".into(),
+                name: name.into(),
+                connect,
+            };
+            async move { client.switch_mcp_server(request).await }
+        };
+        let status = |options: AgentOptions, name: &str| {
+            let server = options.mcp_servers.into_iter().find(|m| m.name == name);
+            server.unwrap().status
+        };
+        let connected = switch("docs", true).await.unwrap().into_inner();
+        assert_eq!(status(connected, "docs"), "connected");
+        let disconnected = switch("docs", false).await.unwrap().into_inner();
+        assert_eq!(status(disconnected, "docs"), "disabled");
+
+        let unknown = switch("nope", true).await.unwrap_err();
+        assert_eq!(unknown.code(), tonic::Code::Unavailable);
+        assert!(
+            unknown.message().contains("no MCP server named nope"),
+            "{}",
+            unknown.message()
+        );
+        let unnamed = switch("", true).await.unwrap_err();
+        assert_eq!(unnamed.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn turns_that_fail_or_need_permission() {
+        let Cluster {
+            mut client,
+            fake,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        let failed = prompt(&mut client, ask("fail please")).await;
+        assert_eq!(failed.finished.exit_code, Some(1));
+        assert_eq!(failed.finished.error, "APIError: boom");
+
+        // Nobody is there to answer, so the worker allows it once and says so.
+        let asked = prompt(&mut client, ask("permission to build")).await;
+        ok(&asked);
+        assert!(
+            asked.stderr.contains("allowed bash make"),
+            "{}",
+            asked.stderr
+        );
+        assert!(fake.log().contains(&"permission once".to_string()));
+
+        // The choices reach OpenCode; a malformed model never leaves the worker.
+        let chosen = PromptRequest {
+            model: "fake/echo".into(),
+            agent: "plan".into(),
+            variant: "high".into(),
+            ..ask("with choices")
+        };
+        ok(&prompt(&mut client, chosen).await);
+        let sent = fake
+            .log()
+            .into_iter()
+            .rfind(|l| l.starts_with("prompt "))
+            .unwrap();
+        for part in [
+            r#""agent":"plan""#,
+            r#""variant":"high""#,
+            r#""providerID":"fake""#,
+            r#""modelID":"echo""#,
+        ] {
+            assert!(sent.contains(part), "{part} missing from {sent}");
+        }
+        let bad = PromptRequest {
+            model: "echo".into(),
+            ..ask("bad model")
+        };
+        let bad = prompt(&mut client, bad).await;
+        assert!(
+            bad.finished.error.contains("provider/model"),
+            "{}",
+            bad.finished.error
+        );
+
+        // A session the agent doesn't know.
+        let missing = prompt(&mut client, resume("ses_missing", "hello?")).await;
+        assert!(
+            missing.finished.error.contains("404"),
+            "{}",
+            missing.finished.error
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_worker_that_stops_aborts_its_turns() {
+        let Cluster {
+            mut client,
+            fake,
+            worker,
+            _stop,
+            _tmp,
+        } = cluster().await;
+        let (_, one) = start(&mut client, ask("hold one")).await;
+        let (_, two) = start(&mut client, ask("hold two")).await;
+        let held = fake.wait_held(2).await;
+        worker.abort();
+        // Whether its last words arrive or not, both turns end...
+        let (one, two) = tokio::join!(collect(one), collect(two));
+        for ended in [one, two] {
+            let finished = ended.finished;
+            assert!(
+                finished.cancelled || finished.error == "node disconnected",
+                "{finished:?}"
+            );
+        }
+        // ...and the agent isn't left working for nobody.
+        let log = fake.log();
+        for session in &held {
+            assert!(log.contains(&format!("POST /session/{session}/abort")));
+        }
+        wait_for_node(&mut client, false).await;
+        let err = client
+            .list_agent_sessions(ListAgentSessionsRequest { node: "w1".into() })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unavailable);
     }
 }

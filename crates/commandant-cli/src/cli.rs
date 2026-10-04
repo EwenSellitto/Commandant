@@ -77,6 +77,9 @@ pub struct ServerArgs {
     /// Coding agent for the local worker to host (with --local-worker).
     #[arg(long, env = "COMMANDANT_HARNESS", requires = "local_worker")]
     pub harness: Option<HarnessKind>,
+    /// The opencode binary for the local worker, instead of the one on PATH.
+    #[arg(long, env = "COMMANDANT_OPENCODE_BIN", requires = "harness")]
+    pub opencode_bin: Option<PathBuf>,
     /// Delete the database (nodes, tokens, task history) and start afresh
     /// with a new admin token. Asks twice first.
     #[arg(long)]
@@ -104,6 +107,9 @@ pub struct WorkerArgs {
     /// Coding agent to host (installed if missing): opencode.
     #[arg(long, env = "COMMANDANT_HARNESS")]
     pub harness: Option<HarnessKind>,
+    /// The opencode binary to run, instead of the one on PATH (or installed).
+    #[arg(long, env = "COMMANDANT_OPENCODE_BIN", requires = "harness")]
+    pub opencode_bin: Option<PathBuf>,
 }
 
 #[derive(Args)]

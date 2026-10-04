@@ -53,9 +53,13 @@ struct Server {
 }
 
 impl Opencode {
-    /// Installs opencode if it is missing and starts its server.
-    pub async fn start() -> Result<Self> {
-        let binary = ensure_installed().await?;
+    /// Starts the server of `binary`, else of the `opencode` found or
+    /// installed.
+    pub async fn start(binary: Option<PathBuf>) -> Result<Self> {
+        let binary = match binary {
+            Some(binary) => binary,
+            None => ensure_installed().await?,
+        };
         let opencode = Self {
             binary,
             server: Mutex::new(None),

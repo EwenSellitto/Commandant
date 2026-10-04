@@ -1,7 +1,7 @@
 //! The whole UI's state: the nodes, and every chat open on them. Chats on
 //! any node run side by side; one is shown at a time.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use commandant_common::time::ago;
@@ -64,6 +64,8 @@ pub struct App {
     pub chats: Vec<Chat>,
     /// What a node's agent offers, once it has said; shared by its chats.
     options: HashMap<String, Arc<AgentOptions>>,
+    /// Nodes asked for their options and yet to answer: one question each.
+    fetching: HashSet<String>,
     /// The sessions each node has saved, as last listed.
     pub saved: HashMap<String, Vec<AgentSession>>,
     /// The chat last shown on each node.
@@ -90,6 +92,7 @@ impl App {
             selected,
             chats: Vec::new(),
             options: HashMap::new(),
+            fetching: HashSet::new(),
             saved: HashMap::new(),
             last: HashMap::new(),
             picker: None,
@@ -206,7 +209,15 @@ impl App {
                 self.close_chat();
                 Vec::new()
             }
-            action => vec![action],
+            action => self.ask_once(action).into_iter().collect(),
+        }
+    }
+
+    /// Drops a request for options a node is already answering.
+    fn ask_once(&mut self, action: Action) -> Option<Action> {
+        match &action {
+            Action::FetchOptions(node) if !self.fetching.insert(node.clone()) => None,
+            _ => Some(action),
         }
     }
 
@@ -266,7 +277,7 @@ impl App {
             .then(|| Action::FetchOptions(node.id.clone()));
         self.chats.push(Chat::new(id, node, settings, options));
         self.show(id);
-        fetch.into_iter().collect()
+        fetch.into_iter().filter_map(|a| self.ask_once(a)).collect()
     }
 
     fn show(&mut self, id: ChatId) {
@@ -426,6 +437,7 @@ impl App {
                 action.into_iter().collect()
             }
             Update::Options(node, options) => {
+                self.fetching.remove(&node);
                 if let Ok(options) = &options {
                     self.options.insert(node.clone(), Arc::new(options.clone()));
                 }
@@ -667,5 +679,239 @@ pub(crate) mod tests {
         // A later chat starts with them, without asking again.
         assert!(app.on_key(ctrl('n')).is_empty());
         assert_eq!(app.chat().unwrap().agent(), "build");
+    }
+
+    fn started(task_id: &str) -> Message {
+        Message::Task(task_event::Event::Started(TaskStarted {
+            task_id: task_id.into(),
+            ..Default::default()
+        }))
+    }
+
+    fn shown(app: &App) -> ChatId {
+        app.chat().expect("a chat is shown").id
+    }
+
+    #[test]
+    fn closing_a_chat_shows_its_neighbour() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Enter));
+        let first = shown(&app);
+        app.on_key(ctrl('n'));
+        let middle = shown(&app);
+        app.on_key(ctrl('n'));
+        let last = shown(&app);
+
+        // The middle one gives way to the one after it...
+        app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(shown(&app), middle);
+        app.on_key(ctrl('w'));
+        assert_eq!(shown(&app), last);
+        // ...the last one to the one before.
+        app.on_key(ctrl('w'));
+        assert_eq!(shown(&app), first);
+        // Updates for closed chats are dropped.
+        assert!(
+            app.on_update(Update::Chat(middle, started("t1")))
+                .is_empty()
+        );
+        assert!(app.running_tasks().is_empty());
+    }
+
+    #[test]
+    fn switching_wraps_round_and_stays_on_the_node() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Enter));
+        let first = shown(&app);
+        // Alone, it stays put.
+        app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(shown(&app), first);
+
+        // A chat on another node isn't among them.
+        app.on_key(ctrl('g'));
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Enter));
+        let elsewhere = shown(&app);
+        app.on_key(ctrl('g'));
+        app.on_key(key(KeyCode::Up));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(shown(&app), first, "the node's last chat comes back");
+        app.on_key(ctrl('n'));
+        let second = shown(&app);
+        for expected in [first, second, first] {
+            app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+            assert_eq!(shown(&app), expected);
+            assert_ne!(shown(&app), elsewhere);
+        }
+    }
+
+    #[test]
+    fn quitting_cancels_the_tasks_on_every_node() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Enter));
+        let (first, _) = send(&mut app, "one");
+        app.on_key(ctrl('g'));
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Enter));
+        let (second, _) = send(&mut app, "two");
+        app.on_update(Update::Chat(first, started("t1")));
+        app.on_update(Update::Chat(second, started("t2")));
+        let mut running = app.running_tasks();
+        running.sort();
+        assert_eq!(running, ["t1", "t2"]);
+        assert!(matches!(app.on_key(ctrl('c'))[..], [Action::Quit]));
+        app.on_key(ctrl('g'));
+        assert!(matches!(
+            app.on_key(key(KeyCode::Char('q')))[..],
+            [Action::Quit]
+        ));
+    }
+
+    #[test]
+    fn esc_before_a_background_task_starts_still_cancels_it() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Enter));
+        let (id, _) = send(&mut app, "hi");
+        assert!(app.on_key(key(KeyCode::Esc)).is_empty());
+        // Even if the chat is no longer shown when the task starts.
+        app.on_key(ctrl('n'));
+        let actions = app.on_update(Update::Chat(id, started("t1")));
+        assert!(matches!(&actions[..], [Action::Cancel(t)] if t == "t1"));
+    }
+
+    #[test]
+    fn the_node_list_follows_the_nodes() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Enter));
+        let id = shown(&app);
+        app.on_key(ctrl('g'));
+        app.on_key(key(KeyCode::Down));
+        // Reordered, n2 stays highlighted; n1 going offline reaches its chat.
+        let mut offline = node("n1", false);
+        offline.version = "0.2.0".into();
+        app.on_update(Update::Nodes(vec![node("n2", true), offline]));
+        assert_eq!(app.nodes[app.selected].id, "n2");
+        let chat = app.chats.iter().find(|c| c.id == id).unwrap();
+        assert!(!chat.node.online);
+        assert_eq!(chat.node.version, "0.2.0");
+
+        // A shrinking list keeps the highlight on it, and an empty one is inert.
+        app.on_key(key(KeyCode::Down));
+        app.on_update(Update::Nodes(vec![node("n2", true)]));
+        assert_eq!(app.selected, 0);
+        app.on_update(Update::Nodes(Vec::new()));
+        assert!(app.on_key(key(KeyCode::Enter)).is_empty());
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.selected, 0);
+
+        // Its chat is still there, offline, when the node comes back.
+        app.on_update(Update::Nodes(vec![node("n1", true)]));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(shown(&app), id);
+    }
+
+    #[test]
+    fn a_node_without_an_agent_isnt_opened() {
+        let mut bare = node("n9", true);
+        bare.harnesses.clear();
+        let mut app = App::new(vec![bare], Settings::default());
+        assert!(app.on_key(key(KeyCode::Enter)).is_empty());
+        assert_eq!(app.screen, Screen::Nodes);
+        assert!(app.notice.contains("no agent harness"), "{}", app.notice);
+        // Pasting on the node list does nothing.
+        assert!(app.on_input(Event::Paste("x".into())).is_empty());
+    }
+
+    #[test]
+    fn the_session_picker_keeps_up_with_the_node() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Enter));
+        let saved = |id: &str| AgentSession {
+            id: id.into(),
+            title: format!("about {id}"),
+            ..Default::default()
+        };
+        // Failing to list sessions isn't news unless someone is looking.
+        app.on_update(Update::Sessions("n1".into(), Err("offline".into())));
+        assert!(app.chat().unwrap().thread.is_empty());
+
+        app.on_key(ctrl('o'));
+        type_text(&mut app, "about");
+        assert_eq!(app.picker.as_ref().unwrap().shown_len(), 0);
+        app.on_update(Update::Sessions(
+            "n1".into(),
+            Ok(vec![saved("a"), saved("b")]),
+        ));
+        let picker = app.picker.as_ref().unwrap();
+        assert_eq!((picker.filter.as_str(), picker.shown_len()), ("about", 2));
+        // Another node's sessions don't land in it.
+        app.on_update(Update::Sessions("n2".into(), Ok(vec![saved("z")])));
+        assert_eq!(app.picker.as_ref().unwrap().total(), 4);
+
+        app.on_update(Update::Sessions("n1".into(), Err("offline".into())));
+        let last = &app.chat().unwrap().thread.last().unwrap().text;
+        assert!(last.contains("couldn't list the node's sessions"), "{last}");
+
+        // "+ New session" is a new chat.
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        app.on_key(key(KeyCode::Up));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.chats.len(), 2);
+    }
+
+    #[test]
+    fn app_keys_wait_while_a_chat_picker_is_open() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Enter));
+        app.on_update(Update::Options(
+            "n1".into(),
+            Ok(AgentOptions {
+                agents: vec![AgentChoice {
+                    name: "build".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+        ));
+        type_text(&mut app, "/agent");
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.chat().unwrap().picker.is_some());
+        for keys in [ctrl('n'), ctrl('o'), ctrl('g'), ctrl('w')] {
+            app.on_key(keys);
+        }
+        assert_eq!(app.chats.len(), 1);
+        assert!(app.picker.is_none());
+        assert!(matches!(app.screen, Screen::Chat(_)));
+    }
+
+    #[test]
+    fn a_node_is_asked_for_its_options_once_at_a_time() {
+        let mut app = app();
+        let fetches = |actions: Vec<Action>| {
+            actions
+                .iter()
+                .filter(|a| matches!(a, Action::FetchOptions(_)))
+                .count()
+        };
+        assert_eq!(fetches(app.on_key(key(KeyCode::Enter))), 1);
+        let first = shown(&app);
+        // A second chat waits for the same answer.
+        assert_eq!(fetches(app.on_key(ctrl('n'))), 0);
+        let second = shown(&app);
+        app.on_update(Update::Options("n1".into(), Err("timed out".into())));
+
+        // Both were waiting, so both hear it failed, once each.
+        let errors = |app: &App, id| {
+            let chat = app.chats.iter().find(|c| c.id == id).unwrap();
+            chat.thread
+                .iter()
+                .filter(|e| e.text.contains("timed out"))
+                .count()
+        };
+        assert_eq!((errors(&app, first), errors(&app, second)), (1, 1));
+        // Once answered, it can be asked again, but not twice at once.
+        assert_eq!(fetches(app.on_key(key(KeyCode::Tab))), 1);
+        app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(fetches(app.on_key(key(KeyCode::Tab))), 0);
     }
 }

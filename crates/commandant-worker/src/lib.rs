@@ -45,6 +45,8 @@ pub struct WorkerConfig {
     pub state_dir: PathBuf,
     /// The coding agent to host, if any.
     pub harness: Option<HarnessKind>,
+    /// The `opencode` to run; when unset it is looked for, or installed.
+    pub opencode_bin: Option<PathBuf>,
 }
 
 /// Why a session ended.
@@ -69,7 +71,9 @@ impl From<tonic::Status> for Stop {
 pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
     let harness = match config.harness {
         Some(HarnessKind::Opencode) => Some(Arc::new(
-            Opencode::start().await.context("setting up opencode")?,
+            Opencode::start(config.opencode_bin.clone())
+                .await
+                .context("setting up opencode")?,
         )),
         None => None,
     };

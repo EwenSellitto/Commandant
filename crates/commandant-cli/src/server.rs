@@ -44,6 +44,7 @@ pub async fn run(args: ServerArgs) -> Result<()> {
             name: None,
             state_dir: data_dir.join(LOCAL_WORKER_DIR),
             harness: args.harness,
+            opencode_bin: args.opencode_bin.clone(),
         })
     });
 
