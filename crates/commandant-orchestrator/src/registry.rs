@@ -92,10 +92,6 @@ impl Registry {
         self.get(node_id).is_some_and(|c| c.id == conn_id)
     }
 
-    pub fn is_online(&self, node_id: &str) -> bool {
-        self.nodes.lock().unwrap().contains_key(node_id)
-    }
-
     /// Records a harness the connection's worker started.
     pub fn set_harnesses(&self, node_id: &str, conn_id: ConnId, harnesses: Vec<String>) {
         let mut nodes = self.nodes.lock().unwrap();

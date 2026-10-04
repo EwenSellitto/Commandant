@@ -4,6 +4,8 @@
 //! of projects.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -19,6 +21,8 @@ pub struct Api {
     http: reqwest::Client,
     base: String,
     password: String,
+    /// Set once the server turns out to predate `/experimental/session`.
+    legacy_sessions: Arc<AtomicBool>,
 }
 
 /// A message to send to an agent.
@@ -211,6 +215,7 @@ impl Api {
             http: reqwest::Client::new(),
             base,
             password,
+            legacy_sessions: Arc::default(),
         }
     }
 
@@ -252,20 +257,19 @@ impl Api {
     pub async fn sessions(&self, limit: usize) -> Result<Vec<SavedSession>> {
         let limit = limit.to_string();
         let query = [("roots", "true"), ("limit", limit.as_str())];
+        let list = |path| self.request(Method::GET, path, None).query(&query);
         // Across projects; servers without it list the current project's.
-        let request = self.request(Method::GET, "/experimental/session", None);
-        let response = request
-            .query(&query)
-            .send()
-            .await
-            .context("reaching the opencode server")?;
-        let response = match response.status() {
-            StatusCode::NOT_FOUND => {
-                send(self.request(Method::GET, "/session", None).query(&query)).await?
+        if !self.legacy_sessions.load(Ordering::Relaxed) {
+            let response = list("/experimental/session")
+                .send()
+                .await
+                .context("reaching the opencode server")?;
+            if response.status() != StatusCode::NOT_FOUND {
+                return Ok(check(response).await?.json().await?);
             }
-            _ => check(response).await?,
-        };
-        Ok(response.json().await?)
+            self.legacy_sessions.store(true, Ordering::Relaxed);
+        }
+        Ok(send(list("/session")).await?.json().await?)
     }
 
     pub async fn agents(&self) -> Result<Vec<Agent>> {

@@ -14,6 +14,36 @@ use tokio::task::JoinHandle;
 
 const WAIT: Duration = Duration::from_secs(15);
 
+/// Polls `check` until it has an answer, failing with `what` after `WAIT`.
+async fn eventually<T, F>(what: &str, mut check: impl FnMut() -> F) -> T
+where
+    F: Future<Output = Option<T>>,
+{
+    tokio::time::timeout(WAIT, async {
+        loop {
+            if let Some(found) = check().await {
+                return found;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{what}"))
+}
+
+/// A worker named `w1` on `addr`, from `state_dir`; tests change the rest.
+fn worker_config(addr: &str, join_token: Option<String>, state_dir: &Path) -> WorkerConfig {
+    WorkerConfig {
+        server: Some(addr.to_string()),
+        join_token,
+        name: Some("w1".into()),
+        state_dir: state_dir.to_path_buf(),
+        pick_free_state_dir: false,
+        harness: None,
+        opencode_bin: None,
+    }
+}
+
 struct TaskResult {
     stdout: String,
     stderr: String,
@@ -49,16 +79,10 @@ impl Running {
 /// Binds `port` again once a stopped orchestrator has let go of it, which can
 /// take a moment after it stops.
 async fn rebind(port: u16) -> TcpListener {
-    tokio::time::timeout(WAIT, async {
-        loop {
-            match TcpListener::bind(("127.0.0.1", port)).await {
-                Ok(listener) => return listener,
-                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
-            }
-        }
+    eventually("the port was never released", || async move {
+        TcpListener::bind(("127.0.0.1", port)).await.ok()
     })
     .await
-    .expect("the port was never released")
 }
 
 async fn serve_on(data_dir: &Path, listener: TcpListener) -> Running {
@@ -82,15 +106,9 @@ fn spawn_worker(
     join_token: Option<String>,
     state_dir: &Path,
 ) -> JoinHandle<anyhow::Result<()>> {
-    tokio::spawn(commandant_worker::run(WorkerConfig {
-        server: Some(addr.to_string()),
-        join_token,
-        name: Some("w1".into()),
-        state_dir: state_dir.to_path_buf(),
-        pick_free_state_dir: false,
-        harness: None,
-        opencode_bin: None,
-    }))
+    tokio::spawn(commandant_worker::run(worker_config(
+        addr, join_token, state_dir,
+    )))
 }
 
 async fn wait_for_node(client: &mut ControlClient, online: bool) -> NodeInfo {
@@ -98,40 +116,25 @@ async fn wait_for_node(client: &mut ControlClient, online: bool) -> NodeInfo {
 }
 
 async fn wait_for_named(client: &mut ControlClient, name: &str, online: bool) -> NodeInfo {
-    tokio::time::timeout(WAIT, async {
-        loop {
-            let nodes = client
-                .list_nodes(ListNodesRequest {})
-                .await
-                .unwrap()
-                .into_inner()
-                .nodes;
-            if let Some(node) = nodes
-                .into_iter()
-                .find(|n| n.name == name && n.online == online)
-            {
-                return node;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+    let what = format!("node {name} never became online={online}");
+    eventually(&what, || {
+        let mut client = client.clone();
+        async move {
+            let nodes = client.list_nodes(ListNodesRequest {}).await.unwrap();
+            let mut nodes = nodes.into_inner().nodes.into_iter();
+            nodes.find(|n| n.name == name && n.online == online)
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("node {name} never became online={online}"))
 }
 
 /// The credentials a worker saved. It saves them after the orchestrator
 /// already lists it as online, so they may take a moment.
 async fn saved_credentials(state_dir: &Path) -> commandant_worker::state::Credentials {
-    tokio::time::timeout(WAIT, async {
-        loop {
-            if let Some(creds) = commandant_worker::state::load(state_dir).unwrap() {
-                return creds;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+    eventually("the worker never saved its credentials", || async {
+        commandant_worker::state::load(state_dir).unwrap()
     })
     .await
-    .expect("the worker never saved its credentials")
 }
 
 async fn start_task(
@@ -143,7 +146,11 @@ async fn start_task(
         argv: argv.iter().map(|s| s.to_string()).collect(),
         ..Default::default()
     };
-    let mut events = client.run_command(request).await.unwrap().into_inner();
+    started(client.run_command(request).await.unwrap().into_inner()).await
+}
+
+/// The task's id, from the event that opens its stream.
+async fn started(mut events: tonic::Streaming<TaskEvent>) -> (String, tonic::Streaming<TaskEvent>) {
     let Some(TaskEvent {
         event: Some(task_event::Event::Started(started)),
     }) = events.message().await.unwrap()
@@ -262,13 +269,8 @@ async fn worker_joins_runs_commands_and_reconnects() {
     let res = tokio::time::timeout(
         WAIT,
         commandant_worker::run(WorkerConfig {
-            server: Some(addr.clone()),
-            join_token: Some(join),
             name: Some("w2".into()),
-            state_dir: other.path().to_path_buf(),
-            pick_free_state_dir: false,
-            harness: None,
-            opencode_bin: None,
+            ..worker_config(&addr, Some(join), other.path())
         }),
     )
     .await
@@ -451,18 +453,12 @@ mod reset {
         let mut pty = pty();
         let mut child = server(&data_dir, port, pty.terminal.into());
         pty.keyboard.write_all(b"y\nreset\n").unwrap();
-        let new_token = tokio::time::timeout(WAIT, async {
-            loop {
-                match std::fs::read_to_string(&token_file) {
-                    Ok(token) if !token.trim().is_empty() && token.trim() != old_token => {
-                        return token.trim().to_string();
-                    }
-                    _ => tokio::time::sleep(Duration::from_millis(50)).await,
-                }
-            }
+        let new_token = eventually("the reset server never wrote a new token", || async {
+            let token = std::fs::read_to_string(&token_file).ok()?;
+            let token = token.trim();
+            (!token.is_empty() && token != old_token).then(|| token.to_string())
         })
-        .await
-        .expect("the reset server never wrote a new token");
+        .await;
         assert!(
             connect_control(&addr, &old_token)
                 .await
@@ -508,7 +504,9 @@ async fn stale_credentials_give_way_to_a_fresh_token() {
     let worker = spawn_worker(&old_addr, Some(old_token), &state_dir);
     wait_for_node(&mut old, true).await;
     let stale = saved_credentials(&state_dir).await;
+    // Gone for good, its state directory free.
     worker.abort();
+    let _ = worker.await;
 
     // A fresh orchestrator: without a token, the stale credentials are fatal.
     let (addr, token, _stop) = start_orchestrator(&tmp.path().join("new")).await;
@@ -523,17 +521,11 @@ async fn stale_credentials_give_way_to_a_fresh_token() {
     // With one, it joins afresh and keeps the new credentials.
     let worker = spawn_worker(&addr, Some(token.clone()), &state_dir);
     let node = wait_for_node(&mut client, true).await;
-    let fresh = tokio::time::timeout(WAIT, async {
-        loop {
-            let creds = commandant_worker::state::load(&state_dir).unwrap().unwrap();
-            if creds.node_id != stale.node_id {
-                return creds;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+    let fresh = eventually("the new credentials were never saved", || async {
+        let creds = commandant_worker::state::load(&state_dir).unwrap()?;
+        (creds.node_id != stale.node_id).then_some(creds)
     })
-    .await
-    .expect("the new credentials were never saved");
+    .await;
     assert_eq!(fresh.node_id, node.id);
 
     // A second worker can't take its name, and is told what to do.
@@ -568,6 +560,46 @@ async fn stale_credentials_give_way_to_a_fresh_token() {
     assert!(nodes.is_empty(), "it didn't come back");
 }
 
+/// Having joined afresh, a worker reconnects as its new node from then on:
+/// its old credentials are gone, not merely set aside for one connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejoined_worker_reconnects_as_its_new_node() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("worker");
+    let (old_addr, old_token, _old_stop) = start_orchestrator(&tmp.path().join("old")).await;
+    let mut old = connect_control(&old_addr, &old_token).await.unwrap();
+    let worker = spawn_worker(&old_addr, Some(old_token), &state_dir);
+    wait_for_node(&mut old, true).await;
+    let stale = saved_credentials(&state_dir).await;
+    // Gone for good, its state directory free.
+    worker.abort();
+    let _ = worker.await;
+
+    let data_dir = tmp.path().join("new");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = serve_on(&data_dir, listener).await;
+    let (addr, token) = (server.addr.clone(), server.token.clone());
+    let mut client = connect_control(&addr, &token).await.unwrap();
+    let _worker = spawn_worker(&addr, Some(token.clone()), &state_dir);
+    let node = wait_for_node(&mut client, true).await;
+    assert_ne!(node.id, stale.node_id);
+
+    // The orchestrator restarts; the worker comes back as the same node.
+    server.stop().await;
+    let server = serve_on(&data_dir, rebind(port).await).await;
+    let mut client = connect_control(&server.addr, &server.token).await.unwrap();
+    let back = wait_for_node(&mut client, true).await;
+    assert_eq!(back.id, node.id);
+    let nodes = client
+        .list_nodes(ListNodesRequest {})
+        .await
+        .unwrap()
+        .into_inner()
+        .nodes;
+    assert_eq!(nodes.len(), 1);
+}
+
 /// Workers started together on one machine, from the default state
 /// directory, become separate nodes and stay connected side by side.
 #[tokio::test(flavor = "multi_thread")]
@@ -580,13 +612,9 @@ async fn workers_on_one_machine_are_separate_nodes() {
     let workers: Vec<_> = (0..WORKERS)
         .map(|_| {
             tokio::spawn(commandant_worker::run(WorkerConfig {
-                server: Some(addr.clone()),
-                join_token: Some(token.clone()),
                 name: None,
-                state_dir: state_dir.clone(),
                 pick_free_state_dir: true,
-                harness: None,
-                opencode_bin: None,
+                ..worker_config(&addr, Some(token.clone()), &state_dir)
             }))
         })
         .collect();
@@ -605,17 +633,14 @@ async fn workers_on_one_machine_are_separate_nodes() {
             online
         }
     };
-    let nodes = tokio::time::timeout(WAIT, async {
-        loop {
-            let nodes = online(&mut client).await;
-            if nodes.len() == WORKERS {
-                return nodes;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+    let nodes = eventually("every worker should come online", || {
+        let online = online(&mut client.clone());
+        async move {
+            let nodes = online.await;
+            (nodes.len() == WORKERS).then_some(nodes)
         }
     })
-    .await
-    .expect("every worker should come online");
+    .await;
     // Each its own node, name and state directory.
     let mut ids: Vec<_> = nodes.iter().map(|n| n.id.clone()).collect();
     ids.dedup();
@@ -644,13 +669,8 @@ async fn workers_on_one_machine_are_separate_nodes() {
     let err = tokio::time::timeout(
         WAIT,
         commandant_worker::run(WorkerConfig {
-            server: Some(addr.clone()),
-            join_token: Some(token.clone()),
             name: Some("intruder".into()),
-            state_dir: state_dir.clone(),
-            pick_free_state_dir: false,
-            harness: None,
-            opencode_bin: None,
+            ..worker_config(&addr, Some(token.clone()), &state_dir)
         }),
     )
     .await
@@ -672,12 +692,9 @@ async fn workers_on_one_machine_are_separate_nodes() {
     }
     let _back = tokio::spawn(commandant_worker::run(WorkerConfig {
         server: None,
-        join_token: None,
         name: None,
-        state_dir,
         pick_free_state_dir: true,
-        harness: None,
-        opencode_bin: None,
+        ..worker_config(&addr, None, &state_dir)
     }));
     wait_for_named(&mut client, host, true).await;
 }
@@ -742,13 +759,9 @@ mod agents {
         let tmp = tempfile::tempdir().unwrap();
         let (addr, admin_token, stop) = start_orchestrator(&tmp.path().join("server")).await;
         let worker = tokio::spawn(commandant_worker::run(WorkerConfig {
-            server: Some(addr.clone()),
-            join_token: Some(admin_token.clone()),
-            name: Some("w1".into()),
-            state_dir: tmp.path().join("worker"),
-            pick_free_state_dir: false,
             harness: Some(HarnessKind::Opencode),
             opencode_bin: Some(fake.binary.clone()),
+            ..worker_config(&addr, Some(admin_token.clone()), &tmp.path().join("worker"))
         }));
         let mut client = connect_control(&addr, &admin_token).await.unwrap();
         let node = wait_for_node(&mut client, true).await;
@@ -770,6 +783,21 @@ mod agents {
         }
     }
 
+    async fn get_options(client: &mut ControlClient) -> AgentOptions {
+        let request = GetAgentOptionsRequest { node: "w1".into() };
+        client
+            .get_agent_options(request)
+            .await
+            .unwrap()
+            .into_inner()
+    }
+
+    async fn list_sessions(client: &mut ControlClient) -> Vec<AgentSession> {
+        let request = ListAgentSessionsRequest { node: "w1".into() };
+        let sessions = client.list_agent_sessions(request).await.unwrap();
+        sessions.into_inner().sessions
+    }
+
     fn resume(session_id: &str, text: &str) -> PromptRequest {
         PromptRequest {
             session_id: session_id.into(),
@@ -781,14 +809,7 @@ mod agents {
         client: &mut ControlClient,
         request: PromptRequest,
     ) -> (String, tonic::Streaming<TaskEvent>) {
-        let mut events = client.prompt(request).await.unwrap().into_inner();
-        let Some(TaskEvent {
-            event: Some(task_event::Event::Started(started)),
-        }) = events.message().await.unwrap()
-        else {
-            panic!("first event must be Started");
-        };
-        (started.task_id, events)
+        super::started(client.prompt(request).await.unwrap().into_inner()).await
     }
 
     async fn prompt(client: &mut ControlClient, request: PromptRequest) -> TaskResult {
@@ -910,23 +931,12 @@ mod agents {
             _tmp,
             ..
         } = cluster().await;
-        let list = |client: &mut ControlClient| {
-            let mut client = client.clone();
-            async move {
-                client
-                    .list_agent_sessions(ListAgentSessionsRequest { node: "w1".into() })
-                    .await
-                    .unwrap()
-                    .into_inner()
-                    .sessions
-            }
-        };
-        assert!(list(&mut client).await.is_empty());
+        assert!(list_sessions(&mut client).await.is_empty());
 
         let done = prompt(&mut client, ask("one")).await;
         let (_, held) = start(&mut client, ask("hold two")).await;
         let busy = fake.wait_held(1).await.remove(0);
-        let sessions = list(&mut client).await;
+        let sessions = list_sessions(&mut client).await;
         let ids: Vec<_> = sessions.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, [busy.as_str(), done.finished.session_id.as_str()]);
         assert_eq!(
@@ -941,26 +951,27 @@ mod agents {
 
         fake.release(&busy);
         ok(&collect(held).await);
-        assert!(list(&mut client).await.iter().all(|s| !s.busy));
+        assert!(list_sessions(&mut client).await.iter().all(|s| !s.busy));
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn older_opencode_lists_its_sessions_too() {
         let Cluster {
             mut client,
+            fake,
             _stop,
             _tmp,
             ..
         } = cluster_with(FakeOpencode::start_legacy().await).await;
         let done = prompt(&mut client, ask("one")).await;
-        let sessions = client
-            .list_agent_sessions(ListAgentSessionsRequest { node: "w1".into() })
-            .await
-            .unwrap()
-            .into_inner()
-            .sessions;
+        let sessions = list_sessions(&mut client).await;
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, done.finished.session_id);
+        // It asks the newer way once, then goes straight to the older one.
+        assert_eq!(list_sessions(&mut client).await.len(), 1);
+        let tries = |path: &str| fake.log().iter().filter(|l| *l == path).count();
+        assert_eq!(tries("GET /experimental/session"), 1);
+        assert_eq!(tries("GET /session"), 2);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1022,11 +1033,7 @@ mod agents {
             _tmp,
             ..
         } = cluster().await;
-        let options = client
-            .get_agent_options(GetAgentOptionsRequest { node: "w1".into() })
-            .await
-            .unwrap()
-            .into_inner();
+        let options = get_options(&mut client).await;
         let agents: Vec<_> = options.agents.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(agents, ["build", "plan"], "no subagents");
         assert_eq!(
@@ -1193,13 +1200,8 @@ mod agents {
         let fake = FakeOpencode::start().await;
         let worker = |token: Option<String>| {
             tokio::spawn(commandant_worker::run(WorkerConfig {
-                server: Some(addr.clone()),
-                join_token: token,
-                name: Some("w1".into()),
-                state_dir: tmp.path().join("worker"),
-                pick_free_state_dir: false,
-                harness: None,
                 opencode_bin: Some(fake.binary.clone()),
+                ..worker_config(&addr, token, &tmp.path().join("worker"))
             }))
         };
         let first = worker(Some(token.clone()));
@@ -1270,11 +1272,7 @@ mod agents {
         } = cluster().await;
         fake.delay_commands(Duration::from_secs(10));
         let asked = std::time::Instant::now();
-        let options = client
-            .get_agent_options(GetAgentOptionsRequest { node: "w1".into() })
-            .await
-            .unwrap()
-            .into_inner();
+        let options = get_options(&mut client).await;
         assert!(
             asked.elapsed() < Duration::from_secs(5),
             "{:?}",
@@ -1286,11 +1284,7 @@ mod agents {
         assert_eq!(options.default_agent, "build");
 
         fake.delay_commands(Duration::ZERO);
-        let options = client
-            .get_agent_options(GetAgentOptionsRequest { node: "w1".into() })
-            .await
-            .unwrap()
-            .into_inner();
+        let options = get_options(&mut client).await;
         assert!(!options.commands_loading);
         assert_eq!(options.commands.len(), 2);
     }

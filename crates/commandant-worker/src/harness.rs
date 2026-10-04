@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, bail};
 use commandant_proto::{
-    AgentOptions, AgentPrompt, AgentSession, McpSwitch, TaskFinished, WorkerMsg,
+    AgentOptions, AgentPrompt, AgentSession, CAN_HOST, HOSTS, McpSwitch, TaskFinished, WorkerMsg,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -42,12 +42,12 @@ impl HarnessKind {
 
     /// How the worker announces the harness it hosts in its hello.
     pub fn capability(self) -> String {
-        format!("harness:{}", self.name())
+        format!("{HOSTS}{}", self.name())
     }
 
     /// How the worker announces a harness it could start.
     pub fn hostable(self) -> String {
-        format!("can-host:{}", self.name())
+        format!("{CAN_HOST}{}", self.name())
     }
 }
 
@@ -97,53 +97,77 @@ pub trait Harness: Send + Sync {
 }
 
 /// Starts a harness, installing it first if need be.
-pub async fn start(kind: HarnessKind, opencode_bin: Option<PathBuf>) -> Result<Arc<dyn Harness>> {
+async fn start(kind: HarnessKind, opencode_bin: Option<PathBuf>) -> Result<Arc<dyn Harness>> {
     Ok(match kind {
         HarnessKind::Opencode => Arc::new(Opencode::start(opencode_bin).await?),
     })
 }
 
-/// The harness the worker hosts, if any. It outlives connections, and can be
-/// started while the worker runs.
+/// What the worker hosts. It outlives connections.
+#[derive(Default)]
+enum Hosting {
+    #[default]
+    Nothing,
+    /// Being started, which may take a while.
+    Starting(HarnessKind),
+    Running(Arc<dyn Harness>),
+}
+
+/// The harness the worker hosts, if any: started with `--harness`, or later
+/// when a client asks.
 #[derive(Default)]
 pub struct Host {
-    current: Mutex<Option<Arc<dyn Harness>>>,
-    /// One being started, which may take a while.
-    starting: Mutex<Option<HarnessKind>>,
+    hosting: Mutex<Hosting>,
+    opencode_bin: Option<PathBuf>,
 }
 
 impl Host {
-    pub fn new(current: Option<Arc<dyn Harness>>) -> Self {
+    pub fn new(opencode_bin: Option<PathBuf>) -> Self {
         Self {
-            current: Mutex::new(current),
-            starting: Mutex::new(None),
+            hosting: Mutex::default(),
+            opencode_bin,
         }
     }
 
     pub fn current(&self) -> Option<Arc<dyn Harness>> {
-        self.current.lock().unwrap().clone()
+        match &*self.hosting.lock().unwrap() {
+            Hosting::Running(harness) => Some(harness.clone()),
+            _ => None,
+        }
+    }
+
+    /// The names of what it hosts, as clients see them.
+    pub fn hosted(&self) -> Vec<String> {
+        self.current()
+            .map(|h| h.kind().name().to_string())
+            .into_iter()
+            .collect()
     }
 
     /// Starts `kind` unless it is already hosted. A worker hosts one
     /// harness, so another one is refused, as is a second start at once.
-    pub async fn start(&self, kind: HarnessKind, opencode_bin: Option<PathBuf>) -> Result<()> {
-        if let Some(current) = self.current() {
-            if current.kind() == kind {
-                return Ok(());
-            }
-            bail!("this node already hosts {}", current.kind());
-        }
+    pub async fn start(&self, kind: HarnessKind) -> Result<()> {
         {
-            let mut starting = self.starting.lock().unwrap();
-            if let Some(other) = *starting {
-                bail!("this node is already starting {other}");
+            let mut hosting = self.hosting.lock().unwrap();
+            match &*hosting {
+                Hosting::Running(current) if current.kind() == kind => return Ok(()),
+                Hosting::Running(current) => bail!("this node already hosts {}", current.kind()),
+                Hosting::Starting(other) => bail!("this node is already starting {other}"),
+                Hosting::Nothing => *hosting = Hosting::Starting(kind),
             }
-            *starting = Some(kind);
         }
-        let started = start(kind, opencode_bin).await;
-        *self.starting.lock().unwrap() = None;
-        *self.current.lock().unwrap() = Some(started?);
-        Ok(())
+        let started = start(kind, self.opencode_bin.clone()).await;
+        let mut hosting = self.hosting.lock().unwrap();
+        match started {
+            Ok(harness) => {
+                *hosting = Hosting::Running(harness);
+                Ok(())
+            }
+            Err(e) => {
+                *hosting = Hosting::Nothing;
+                Err(e)
+            }
+        }
     }
 }
 
@@ -163,22 +187,16 @@ mod tests {
 
     #[tokio::test]
     async fn a_host_refuses_a_second_start_and_keeps_none_on_failure() {
-        let host = Host::default();
-        let missing = Some(PathBuf::from("/nonexistent/opencode"));
-        assert!(
-            host.start(HarnessKind::Opencode, missing.clone())
-                .await
-                .is_err()
-        );
+        let host = Host::new(Some(PathBuf::from("/nonexistent/opencode")));
+        assert!(host.start(HarnessKind::Opencode).await.is_err());
         assert!(host.current().is_none());
-        // A failed start doesn't block the next one.
-        assert!(host.starting.lock().unwrap().is_none());
+        assert!(host.hosted().is_empty());
+        // A failed start doesn't block the next one...
+        assert!(matches!(*host.hosting.lock().unwrap(), Hosting::Nothing));
 
-        *host.starting.lock().unwrap() = Some(HarnessKind::Opencode);
-        let err = host
-            .start(HarnessKind::Opencode, missing)
-            .await
-            .unwrap_err();
+        // ...but one under way does.
+        *host.hosting.lock().unwrap() = Hosting::Starting(HarnessKind::Opencode);
+        let err = host.start(HarnessKind::Opencode).await.unwrap_err();
         assert!(err.to_string().contains("already starting"), "{err}");
     }
 }

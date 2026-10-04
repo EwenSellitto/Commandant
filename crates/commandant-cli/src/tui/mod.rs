@@ -32,8 +32,6 @@ use crate::config::Client;
 const TICK: Duration = Duration::from_millis(100);
 /// How often the nodes' details are refreshed.
 const NODE_REFRESH: Duration = Duration::from_secs(5);
-/// How long to wait before asking again for commands that were loading.
-const OPTIONS_RETRY: Duration = Duration::from_secs(3);
 
 pub async fn run(client: &Client, args: TuiArgs) -> Result<()> {
     let mut control = client.connect().await?;
@@ -97,25 +95,45 @@ async fn event_loop(
     let mut tick = tokio::time::interval(TICK);
     loop {
         terminal.draw(|frame| ui::draw(frame, app))?;
-        let actions = tokio::select! {
+        let mut actions = tokio::select! {
             event = input.next() => match event {
                 Some(event) => app.on_input(event?),
                 None => vec![Action::Quit],
             },
             Some(update) = rx.recv() => app.on_update(update),
-            _ = tick.tick() => Vec::new(),
+            // Only the spinners need redrawing on their own.
+            _ = tick.tick(), if app.busy() => Vec::new(),
         };
+        // A reply streams in many small pieces: take what has come before
+        // drawing again.
+        while let Ok(update) = rx.try_recv() {
+            actions.extend(app.on_update(update));
+        }
         for action in actions {
             if let Action::Quit = action {
                 // Don't leave agents working for nobody.
-                for task_id in app.running_tasks() {
-                    let _ = control.cancel_task(CancelTaskRequest { task_id }).await;
-                }
+                let cancels = app.running_tasks().into_iter().map(|task_id| {
+                    let mut control = control.clone();
+                    async move { control.cancel_task(CancelTaskRequest { task_id }).await }
+                });
+                futures_join_all(cancels).await;
                 return Ok(());
             }
             perform(action, app, control, &tx).await;
         }
     }
+}
+
+/// Runs the futures at once and waits for them all.
+async fn futures_join_all<F: Future + Send + 'static>(futures: impl Iterator<Item = F>)
+where
+    F::Output: Send,
+{
+    let mut set = tokio::task::JoinSet::new();
+    for future in futures {
+        set.spawn(future);
+    }
+    while set.join_next().await.is_some() {}
 }
 
 /// Starts what an action asks for; answers come back as updates.
@@ -125,28 +143,22 @@ async fn perform(
     control: &mut ControlClient,
     tx: &mpsc::UnboundedSender<Update>,
 ) {
-    let control_ = control.clone();
+    let mut control_ = control.clone();
     let tx_ = tx.clone();
-    let later = matches!(action, Action::FetchOptionsLater(_));
     match action {
         Action::Send(chat, request) => {
             tokio::spawn(stream_prompt(control_, chat, request, tx_));
         }
-        Action::FetchOptions(node) | Action::FetchOptionsLater(node) => {
-            let wait = match later {
-                true => OPTIONS_RETRY,
-                false => Duration::ZERO,
-            };
+        Action::FetchOptions { node, after } => {
             tokio::spawn(async move {
-                tokio::time::sleep(wait).await;
-                let options = ask(control_
-                    .clone()
-                    .get_agent_options(GetAgentOptionsRequest { node: node.clone() }))
-                .await;
+                tokio::time::sleep(after).await;
+                let request = GetAgentOptionsRequest { node: node.clone() };
+                let options = ask(control_.get_agent_options(request)).await;
                 let _ = tx_.send(Update::Options(node, options));
             });
         }
         Action::SwitchMcp {
+            chat,
             node,
             name,
             connect,
@@ -154,25 +166,35 @@ async fn perform(
             tokio::spawn(async move {
                 let request = SwitchMcpServerRequest {
                     node: node.clone(),
-                    name,
+                    name: name.clone(),
                     connect,
                 };
-                let options = ask(control_.clone().switch_mcp_server(request)).await;
-                let _ = tx_.send(Update::Options(node, options));
+                let options = ask(control_.switch_mcp_server(request)).await;
+                let _ = tx_.send(Update::McpSwitched {
+                    chat,
+                    node,
+                    name,
+                    options,
+                });
             });
         }
         Action::FetchSessions(node) => {
             tokio::spawn(async move {
                 let request = ListAgentSessionsRequest { node: node.clone() };
-                let sessions = ask(control_.clone().list_agent_sessions(request))
+                let sessions = ask(control_.list_agent_sessions(request))
                     .await
                     .map(|s| s.sessions);
                 let _ = tx_.send(Update::Sessions(node, sessions));
             });
         }
         Action::Cancel(task_id) => {
+            let chat = app
+                .chats
+                .iter()
+                .find(|c| c.running_task().as_deref() == Some(task_id.as_str()))
+                .map(|c| c.id);
             if let Err(status) = control.cancel_task(CancelTaskRequest { task_id }).await
-                && let Some(chat) = app.chat().map(|c| c.id)
+                && let Some(chat) = chat
             {
                 let failed = Message::Failed(status.message().to_string());
                 app.on_update(Update::Chat(chat, failed));
@@ -184,7 +206,7 @@ async fn perform(
                     node: node.clone(),
                     harness,
                 };
-                let started = ask(control_.clone().start_harness(request)).await;
+                let started = ask(control_.start_harness(request)).await;
                 let _ = tx_.send(Update::HarnessStarted(node, started));
             });
         }

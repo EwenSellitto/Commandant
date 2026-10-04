@@ -1,92 +1,58 @@
-//! The floating window for choosing an agent, a model or an effort: a list
-//! narrowed down by typing.
+//! The floating window for choosing something from a list narrowed down by
+//! typing. What choosing does is the value each choice carries.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Rows moved by PageUp / PageDown.
 const PAGE: usize = 10;
 
-/// What is being chosen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Pick {
-    Agent,
-    Model,
-    Effort,
-    /// One of the agent's commands or skills, to fill in.
-    Command,
-    /// An MCP server, to connect or disconnect.
-    Mcp,
-    /// One of the node's chats or saved sessions.
-    Session,
-    /// A harness for a node that has none.
-    Harness,
-}
-
-impl Pick {
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Agent => "Agent",
-            Self::Model => "Model",
-            Self::Effort => "Thinking effort",
-            Self::Command => "Commands and skills",
-            Self::Mcp => "MCP servers (Enter connects or disconnects)",
-            Self::Session => "Sessions on this node",
-            Self::Harness => "Start an agent on this node",
-        }
-    }
-}
-
-pub struct Choice {
-    /// What the setting becomes; empty means the default.
-    pub value: String,
+pub struct Choice<T> {
+    /// What choosing it means.
+    pub value: T,
     pub label: String,
     /// Shown dimmed after the label.
     pub detail: String,
+    /// The label and detail in lowercase, which the filter searches.
+    haystack: String,
 }
 
-impl Choice {
-    pub fn new(
-        value: impl Into<String>,
-        label: impl Into<String>,
-        detail: impl Into<String>,
-    ) -> Self {
+impl<T> Choice<T> {
+    pub fn new(value: T, label: impl Into<String>, detail: impl Into<String>) -> Self {
+        let (label, detail) = (label.into(), detail.into());
         Self {
-            value: value.into(),
-            label: label.into(),
-            detail: detail.into(),
+            haystack: format!("{label} {detail}").to_lowercase(),
+            value,
+            label,
+            detail,
         }
-    }
-
-    /// Whether every word of the filter appears somewhere in the choice.
-    fn matches(&self, words: &[String]) -> bool {
-        let text = format!("{} {} {}", self.value, self.label, self.detail).to_lowercase();
-        words.iter().all(|word| text.contains(word))
     }
 }
 
 /// What a key did to the picker.
-pub enum Outcome {
+pub enum Outcome<T> {
     Open,
     Closed,
-    Chosen(String),
+    Chosen(T),
 }
 
-pub struct Picker {
-    pub pick: Pick,
+pub struct Picker<T> {
+    pub title: &'static str,
     pub filter: String,
-    choices: Vec<Choice>,
+    choices: Vec<Choice<T>>,
     /// Indexes into `choices` that match the filter.
     shown: Vec<usize>,
     /// Position in `shown`.
     pub selected: usize,
 }
 
-impl Picker {
-    /// Opens with `current` selected.
-    pub fn new(pick: Pick, choices: Vec<Choice>, current: &str) -> Self {
-        let selected = choices.iter().position(|c| c.value == current).unwrap_or(0);
+impl<T: Clone + PartialEq> Picker<T> {
+    /// Opens with `current`, if there, selected.
+    pub fn new(title: &'static str, choices: Vec<Choice<T>>, current: Option<&T>) -> Self {
+        let selected = current
+            .and_then(|current| choices.iter().position(|c| &c.value == current))
+            .unwrap_or(0);
         Self {
-            pick,
+            title,
             filter: String::new(),
             shown: (0..choices.len()).collect(),
             choices,
@@ -94,8 +60,17 @@ impl Picker {
         }
     }
 
+    /// Narrowed down to what matches `filter`, as if it had been typed.
+    pub fn with_filter(mut self, filter: &str) -> Self {
+        if !filter.is_empty() {
+            self.filter = filter.to_string();
+            self.refilter();
+        }
+        self
+    }
+
     /// The choices that match the filter, in order.
-    pub fn shown(&self) -> impl Iterator<Item = &Choice> {
+    pub fn shown(&self) -> impl Iterator<Item = &Choice<T>> {
         self.shown.iter().map(|&i| &self.choices[i])
     }
 
@@ -107,7 +82,7 @@ impl Picker {
         self.choices.len()
     }
 
-    pub fn on_key(&mut self, key: KeyEvent) -> Outcome {
+    pub fn on_key(&mut self, key: KeyEvent) -> Outcome<T> {
         match key.code {
             KeyCode::Esc => return Outcome::Closed,
             KeyCode::Enter => {
@@ -142,6 +117,7 @@ impl Picker {
         self.selected = (self.selected + rows).min(last);
     }
 
+    /// Keeps the choices in which every word of the filter appears.
     fn refilter(&mut self) {
         let words: Vec<String> = self
             .filter
@@ -149,7 +125,10 @@ impl Picker {
             .map(str::to_lowercase)
             .collect();
         self.shown = (0..self.choices.len())
-            .filter(|&i| self.choices[i].matches(&words))
+            .filter(|&i| {
+                let haystack = &self.choices[i].haystack;
+                words.iter().all(|word| haystack.contains(word))
+            })
             .collect();
         self.selected = 0;
     }
@@ -175,7 +154,7 @@ mod tests {
             ),
             Choice::new("openai/gpt-6", "GPT-6", "OpenAI"),
         ];
-        let mut picker = Picker::new(Pick::Model, choices, "openai/gpt-6");
+        let mut picker = Picker::new("Model", choices, Some(&"openai/gpt-6"));
         assert_eq!(picker.selected, 3);
 
         for c in "anth son".chars() {
@@ -200,5 +179,17 @@ mod tests {
         assert_eq!(picker.shown_len(), 0);
         assert!(matches!(picker.on_key(key(KeyCode::Enter)), Outcome::Open));
         assert!(matches!(picker.on_key(key(KeyCode::Esc)), Outcome::Closed));
+    }
+
+    #[test]
+    fn a_filter_given_up_front_narrows_like_typing() {
+        let choices = vec![
+            Choice::new(1, "one", "first"),
+            Choice::new(2, "two", "second"),
+        ];
+        let picker = Picker::new("Numbers", choices, Some(&2)).with_filter("SEC");
+        assert_eq!((picker.filter.as_str(), picker.shown_len()), ("SEC", 1));
+        let unfiltered = Picker::new("Numbers", Vec::<Choice<u8>>::new(), None).with_filter("");
+        assert_eq!(unfiltered.selected, 0);
     }
 }

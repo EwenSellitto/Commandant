@@ -206,7 +206,7 @@ pub enum NodeCommand {
     /// Forget a node; it must rejoin with a new token.
     Rm { node: String },
     /// Start a coding agent on a node that has none (installed if missing);
-    /// the node keeps it across restarts.
+    /// it runs until the worker stops.
     StartAgent {
         node: String,
         /// The harness, e.g. opencode.

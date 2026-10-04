@@ -3,34 +3,17 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use commandant_proto::{AgentOptions, AgentSessions, HarnessStarted};
+use commandant_proto::worker_msg::Msg;
 use tokio::sync::oneshot;
-
-/// What a worker answers a question with.
-pub enum Answer {
-    Options(AgentOptions),
-    Sessions(AgentSessions),
-    Harness(HarnessStarted),
-}
-
-impl Answer {
-    fn request_id(&self) -> &str {
-        match self {
-            Self::Options(options) => &options.request_id,
-            Self::Sessions(sessions) => &sessions.request_id,
-            Self::Harness(started) => &started.request_id,
-        }
-    }
-}
 
 #[derive(Default)]
 pub struct Queries {
-    pending: Mutex<HashMap<String, oneshot::Sender<Answer>>>,
+    pending: Mutex<HashMap<String, oneshot::Sender<Msg>>>,
 }
 
 impl Queries {
     /// Opens a question; the answer arrives on the receiver.
-    pub fn open(&self) -> (String, oneshot::Receiver<Answer>) {
+    pub fn open(&self) -> (String, oneshot::Receiver<Msg>) {
         let request_id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(request_id.clone(), tx);
@@ -38,8 +21,11 @@ impl Queries {
     }
 
     /// Hands a worker's answer to whoever asked, if they are still waiting.
-    pub fn answer(&self, answer: Answer) {
-        let asker = self.pending.lock().unwrap().remove(answer.request_id());
+    pub fn answer(&self, answer: Msg) {
+        let Some(request_id) = answer.request_id() else {
+            return;
+        };
+        let asker = self.pending.lock().unwrap().remove(request_id);
         if let Some(asker) = asker {
             let _ = asker.send(answer);
         }
@@ -53,10 +39,12 @@ impl Queries {
 
 #[cfg(test)]
 mod tests {
+    use commandant_proto::{AgentOptions, AgentSessions};
+
     use super::*;
 
-    fn options(request_id: &str) -> Answer {
-        Answer::Options(AgentOptions {
+    fn options(request_id: &str) -> Msg {
+        Msg::Options(AgentOptions {
             request_id: request_id.into(),
             ..Default::default()
         })
@@ -76,17 +64,15 @@ mod tests {
         queries.answer(options(&closed_id));
         assert!(closed_rx.try_recv().is_err());
 
-        queries.answer(Answer::Sessions(AgentSessions {
+        queries.answer(Msg::Sessions(AgentSessions {
             request_id: sessions_id.clone(),
             ..Default::default()
         }));
         queries.answer(options(&options_id));
         assert!(
-            matches!(sessions_rx.try_recv(), Ok(Answer::Sessions(s)) if s.request_id == sessions_id)
+            matches!(sessions_rx.try_recv(), Ok(Msg::Sessions(s)) if s.request_id == sessions_id)
         );
-        assert!(
-            matches!(options_rx.try_recv(), Ok(Answer::Options(o)) if o.request_id == options_id)
-        );
+        assert!(matches!(options_rx.try_recv(), Ok(Msg::Options(o)) if o.request_id == options_id));
 
         // Each question takes one answer.
         queries.answer(options(&options_id));

@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 
 use super::app::{self, App, Screen};
-use super::chat::{self, Activity, Chat, Role, Unseen};
+use super::chat::{self, Activity, Chat, Role, Unseen, or};
 use super::picker::Picker;
 use super::text::{self, MUTED};
 
@@ -104,15 +104,11 @@ fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
         .nodes
         .iter()
         .map(|node| {
-            let dot = match node.online {
-                true => "● ".green(),
-                false => "● ".red(),
-            };
-            let harness = node
-                .harnesses
-                .first()
-                .map_or("no agent harness", String::as_str);
-            let mut facts = vec![harness.to_string(), format!("{}/{}", node.os, node.arch)];
+            let dot = status_dot(node.online);
+            let mut facts = vec![
+                harness(node).to_string(),
+                format!("{}/{}", node.os, node.arch),
+            ];
             if !node.online {
                 facts.push(format!(
                     "seen {}",
@@ -151,14 +147,7 @@ fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list_widget, list, &mut state);
     frame.render_widget(Line::from(app.notice.clone()).yellow(), notice);
     frame.render_widget(
-        Line::from(vec![
-            "↑↓".bold().fg(MUTED),
-            " move  ".fg(MUTED),
-            "enter".bold().fg(MUTED),
-            " open  ".fg(MUTED),
-            "q".bold().fg(MUTED),
-            " quit".fg(MUTED),
-        ]),
+        hints(&[("↑↓", "move"), ("enter", "open"), ("q", "quit")]),
         footer,
     );
 }
@@ -175,12 +164,7 @@ fn draw_tabs(frame: &mut Frame, app: &App, shown: app::ChatId, area: Rect) {
         .map(|(i, chat)| tab(i + 1, chat, chat.id == shown))
         .collect();
     let at = app.chats_on(&node).position(|c| c.id == shown).unwrap_or(0);
-    let hint = Line::from(vec![
-        "ctrl-n".bold().fg(MUTED),
-        " new  ".fg(MUTED),
-        "ctrl-o".bold().fg(MUTED),
-        " sessions".fg(MUTED),
-    ]);
+    let hint = hints(&[("ctrl-n", "new"), ("ctrl-o", "sessions")]);
     let width = |spans: &[Span]| spans.iter().map(Span::width).sum::<usize>();
     // Room for the tabs, and the arrows that say some are out of sight.
     let room = (area.width as usize).saturating_sub(4);
@@ -222,7 +206,7 @@ fn draw_tabs(frame: &mut Frame, app: &App, shown: app::ChatId, area: Rect) {
 
 /// ` 2 fix the parser ⠋ `
 fn tab(number: usize, chat: &Chat, shown: bool) -> Vec<Span<'static>> {
-    let title: String = shorten(&app::title(chat), 22);
+    let title: String = shorten(&chat.title(), 22);
     let style = match shown {
         true => Style::new().bg(SELECTED).bold(),
         false => Style::new().fg(MUTED),
@@ -230,8 +214,7 @@ fn tab(number: usize, chat: &Chat, shown: bool) -> Vec<Span<'static>> {
     let mut spans = vec![Span::styled(format!(" {number} {title}"), style)];
     let mark = match (&chat.activity, chat.unseen) {
         (Activity::Working { since, .. }, _) => {
-            let frame = (since.elapsed().as_millis() / 100) as usize % SPINNER.len();
-            Some(Span::raw(format!(" {}", SPINNER[frame])).cyan())
+            Some(Span::raw(format!(" {}", spinner(*since))).cyan())
         }
         (Activity::Idle, Some(Unseen::Done)) => Some(" ●".green()),
         (Activity::Idle, Some(Unseen::Failed)) => Some(" ✗".red()),
@@ -246,13 +229,13 @@ fn tab(number: usize, chat: &Chat, shown: bool) -> Vec<Span<'static>> {
 /// `● my-box  opencode · linux/x86_64 · 0.1.0          ses_1f3a… · ~/src/app`
 fn draw_header(frame: &mut Frame, chat: &Chat, area: Rect) {
     let node = &chat.node;
-    let dot = match node.online {
-        true => "● ".green(),
-        false => "● ".red(),
-    };
-    let mut left = vec![dot, Span::raw(node.name.clone()).bold(), Span::raw("  ")];
+    let mut left = vec![
+        status_dot(node.online),
+        Span::raw(node.name.clone()).bold(),
+        Span::raw("  "),
+    ];
     let facts = [
-        chat.harness().unwrap_or("no agent harness").to_string(),
+        harness(node).to_string(),
         format!("{}/{}", node.os, node.arch),
         format!("v{}", node.version),
     ];
@@ -404,9 +387,8 @@ fn draw_status(frame: &mut Frame, chat: &Chat, area: Rect) {
         } => Line::from("  cancelling…").yellow(),
         Activity::Working { since, .. } => {
             let elapsed = since.elapsed();
-            let frame = (elapsed.as_millis() / 100) as usize % SPINNER.len();
             Line::from(vec![
-                Span::raw(format!("{} ", SPINNER[frame])).cyan(),
+                Span::raw(format!("{} ", spinner(*since))).cyan(),
                 Span::raw(chat.doing()).cyan(),
                 format!(" {}s", elapsed.as_secs()).fg(MUTED),
                 "  esc to cancel".fg(MUTED),
@@ -490,14 +472,7 @@ fn draw_footer(frame: &mut Frame, chat: &Chat, area: Rect) {
         usage.push(chat::dollars(chat.spent));
     }
     let usage = Line::from(dotted(usage.into_iter().map(|u| u.fg(MUTED))));
-    let keys = Line::from(vec![
-        "tab".bold().fg(MUTED),
-        " agent  ".fg(MUTED),
-        "/model".bold().fg(MUTED),
-        "  ".into(),
-        "ctrl-t".bold().fg(MUTED),
-        " effort".fg(MUTED),
-    ]);
+    let keys = hints(&[("tab", "agent"), ("/model", ""), ("ctrl-t", "effort")]);
 
     // Drop the keys, then the usage, when there's no room.
     let room = (area.width as usize).saturating_sub(left.width() + 2);
@@ -519,7 +494,7 @@ fn draw_footer(frame: &mut Frame, chat: &Chat, area: Rect) {
 }
 
 /// The picker: a solid panel centred over everything else.
-fn draw_picker(frame: &mut Frame, accent: Color, picker: &Picker) {
+fn draw_picker<T: Clone + PartialEq>(frame: &mut Frame, accent: Color, picker: &Picker<T>) {
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(80);
     // Title, filter, gap, the list, gap, hints; plus a padding row each end.
@@ -540,7 +515,7 @@ fn draw_picker(frame: &mut Frame, accent: Color, picker: &Picker) {
     ])
     .areas(inner);
 
-    frame.render_widget(Span::raw(picker.pick.title()).bold(), title);
+    frame.render_widget(Span::raw(picker.title).bold(), title);
     frame.render_widget(
         Line::from(format!("{} of {}", picker.shown_len(), picker.total()))
             .fg(MUTED)
@@ -555,14 +530,7 @@ fn draw_picker(frame: &mut Frame, accent: Color, picker: &Picker) {
     let x = filter.x + 2 + picker.filter.chars().count() as u16;
     frame.set_cursor_position((x.min(filter.right().saturating_sub(1)), filter.y));
     frame.render_widget(
-        Line::from(vec![
-            "↑↓".bold().fg(MUTED),
-            " move  ".fg(MUTED),
-            "enter".bold().fg(MUTED),
-            " choose  ".fg(MUTED),
-            "esc".bold().fg(MUTED),
-            " close".fg(MUTED),
-        ]),
+        self::hints(&[("↑↓", "move"), ("enter", "choose"), ("esc", "close")]),
         hints,
     );
 
@@ -596,6 +564,38 @@ fn agent_color(chat: &Chat, name: &str) -> Color {
     AGENT_COLORS[at % AGENT_COLORS.len()]
 }
 
+/// `● `: green when the node is online, red when not.
+fn status_dot(online: bool) -> Span<'static> {
+    if online { "● ".green() } else { "● ".red() }
+}
+
+/// The harness a node hosts, for showing.
+fn harness(node: &commandant_proto::NodeInfo) -> &str {
+    node.harnesses
+        .first()
+        .map_or("no agent harness", String::as_str)
+}
+
+/// The spinner's frame for something under way since `since`.
+fn spinner(since: std::time::Instant) -> &'static str {
+    SPINNER[(since.elapsed().as_millis() / 100) as usize % SPINNER.len()]
+}
+
+/// `key does  key does`: the keys in bold, all of it dimmed.
+fn hints(keys: &[(&'static str, &'static str)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (key, does) in keys {
+        if !spans.is_empty() {
+            spans.push("  ".into());
+        }
+        spans.push(key.bold().fg(MUTED));
+        if !does.is_empty() {
+            spans.push(format!(" {does}").fg(MUTED));
+        }
+    }
+    Line::from(spans)
+}
+
 /// Spans separated by dim dots.
 fn dotted(spans: impl IntoIterator<Item = Span<'static>>) -> Vec<Span<'static>> {
     let mut out = Vec::new();
@@ -606,10 +606,6 @@ fn dotted(spans: impl IntoIterator<Item = Span<'static>>) -> Vec<Span<'static>> 
         out.push(span);
     }
     out
-}
-
-fn or<'a>(value: &'a str, default: &'a str) -> &'a str {
-    if value.is_empty() { default } else { value }
 }
 
 /// `ses_f15c0068…`: the start of an id.
@@ -756,11 +752,7 @@ mod tests {
 
     #[test]
     fn the_harness_picker_floats_over_the_nodes() {
-        let bare = commandant_proto::NodeInfo {
-            harnesses: Vec::new(),
-            can_host: vec!["opencode".into()],
-            ..crate::tui::app::tests::node("n1", true)
-        };
+        let bare = crate::tui::app::tests::bare("n1");
         let mut app = App::new(vec![bare], Default::default());
         let buf = render(&mut app);
         find(&buf, "enter to start an agent");

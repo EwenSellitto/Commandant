@@ -15,9 +15,9 @@ use anyhow::{Context, anyhow, bail};
 use commandant_proto::hello::Auth;
 use commandant_proto::node_link_client::NodeLinkClient;
 use commandant_proto::{
-    AgentOptions, AgentPrompt, AgentSessions, CancelTask, HarnessStarted, Heartbeat, Hello,
-    ListAgentOptions, ListAgentSessions, McpSwitch, NodeCredential, OrchestratorMsg, StartHarness,
-    TaskFinished, Welcome, WorkerMsg, orchestrator_msg,
+    AgentPrompt, AgentSessions, CancelTask, HarnessStarted, Heartbeat, Hello, ListAgentOptions,
+    ListAgentSessions, NodeCredential, OrchestratorMsg, Reply, StartHarness, TaskFinished, Welcome,
+    WorkerMsg, orchestrator_msg,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -53,11 +53,12 @@ pub struct WorkerConfig {
     pub opencode_bin: Option<PathBuf>,
 }
 
-impl WorkerConfig {
-    /// The orchestrator, once `run` has settled which.
-    fn server(&self) -> &str {
-        self.server.as_deref().unwrap_or_default()
-    }
+/// Who the worker is, once `run` has claimed a state directory.
+struct Node {
+    server: String,
+    join_token: Option<String>,
+    name: Option<String>,
+    state_dir: PathBuf,
 }
 
 /// Why a session ended.
@@ -93,52 +94,46 @@ pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
         );
     }
     let remembered = state::load(&claim.dir)?.and_then(|c| c.server);
-    let Some(server) = config.server.clone().or(remembered) else {
+    let Some(server) = config.server.or(remembered) else {
         bail!(
             "pass the connection link printed by `commandant server`: commandant worker commandant://..."
         );
     };
-    // Side by side on one machine, each takes its own name.
-    let name = config
-        .name
-        .clone()
-        .or_else(|| (claim.instance > 1).then(|| format!("{}-{}", hostname(), claim.instance)));
-    let config = WorkerConfig {
-        server: Some(server),
-        name,
+    let node = Node {
+        server,
+        join_token: config.join_token,
+        // Side by side on one machine, each takes its own name.
+        name: config
+            .name
+            .or_else(|| (claim.instance > 1).then(|| format!("{}-{}", hostname(), claim.instance))),
         state_dir: claim.dir.clone(),
-        ..config
     };
-    let harness = match config.harness {
-        Some(kind) => Some(
-            harness::start(kind, config.opencode_bin.clone())
-                .await
-                .with_context(|| format!("setting up {kind}"))?,
-        ),
-        // Started when a client asks for one.
-        None => None,
-    };
-    let host = Arc::new(Host::new(harness));
+    let host = Arc::new(Host::new(config.opencode_bin));
+    // Otherwise one is started when a client asks for it.
+    if let Some(kind) = config.harness {
+        host.start(kind)
+            .await
+            .with_context(|| format!("setting up {kind}"))?;
+    }
     let mut backoff = MIN_BACKOFF;
     // Saved credentials the orchestrator rejects are given up only on the
     // first connection, when the token was just given (say after the
     // orchestrator was reset). A node removed later stays removed.
     let mut first = true;
-    let mut use_saved = true;
     loop {
         let started = Instant::now();
-        let Err(stop) = session(&config, &host, use_saved, first).await;
+        let Err(stop) = session(&node, &host, first).await;
         match stop {
             Stop::Fatal(e) => return Err(e),
             Stop::Stale(e) => {
                 warn!(
                     "{e:#}: the orchestrator doesn't know the node saved in {}; joining again with the token",
-                    config.state_dir.display()
+                    node.state_dir.display()
                 );
-                use_saved = false;
+                state::forget(&node.state_dir)?;
                 continue;
             }
-            Stop::Retry(e) => warn!("connection to {} lost: {e:#}", config.server()),
+            Stop::Retry(e) => warn!("connection to {} lost: {e:#}", node.server),
         }
         first = false;
         let was_healthy = started.elapsed() > MAX_BACKOFF;
@@ -152,19 +147,12 @@ pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
 }
 
 /// One connection to the orchestrator, from handshake until it breaks.
-async fn session(
-    config: &WorkerConfig,
-    host: &Arc<Host>,
-    use_saved: bool,
-    first: bool,
-) -> Result<Infallible, Stop> {
-    let saved = state::load(&config.state_dir)
-        .map_err(Stop::Fatal)?
-        .filter(|_| use_saved);
+async fn session(node: &Node, host: &Arc<Host>, first: bool) -> Result<Infallible, Stop> {
+    let saved = state::load(&node.state_dir).map_err(Stop::Fatal)?;
     let hosted = host.current().map(|h| h.kind());
-    let hello = hello(config, saved.as_ref(), hosted)?;
-    let channel = connect(config.server()).await?;
-    let can_rejoin = first && saved.is_some() && config.join_token.is_some();
+    let hello = hello(node, saved.as_ref(), hosted)?;
+    let channel = connect(&node.server).await?;
+    let can_rejoin = first && saved.is_some() && node.join_token.is_some();
     let rejected = |status: tonic::Status| match status.code() {
         Code::Unauthenticated if can_rejoin => {
             Stop::Stale(anyhow!("{}: {}", status.code(), status.message()))
@@ -189,20 +177,20 @@ async fn session(
         }) => welcome,
         other => return Err(Stop::Retry(anyhow!("expected welcome, got {other:?}"))),
     };
-    if let Some(updated) = credentials_to_save(config, saved, &welcome) {
-        state::save(&config.state_dir, &updated).map_err(Stop::Fatal)?;
+    if let Some(updated) = credentials_to_save(node, saved, &welcome) {
+        state::save(&node.state_dir, &updated).map_err(Stop::Fatal)?;
     }
-    info!(node_id = %welcome.node_id, server = %config.server(), "connected to orchestrator");
+    info!(node_id = %welcome.node_id, server = %node.server, "connected to orchestrator");
 
-    serve(&mut inbound, &outbound, config, host).await
+    serve(&mut inbound, &outbound, host).await
 }
 
 fn hello(
-    config: &WorkerConfig,
+    node: &Node,
     saved: Option<&Credentials>,
     hosted: Option<HarnessKind>,
 ) -> Result<Hello, Stop> {
-    let auth = match (saved, &config.join_token) {
+    let auth = match (saved, &node.join_token) {
         (Some(creds), _) => Auth::Credential(NodeCredential {
             node_id: creds.node_id.clone(),
             secret: creds.secret.clone(),
@@ -211,14 +199,14 @@ fn hello(
         (None, None) => {
             return Err(Stop::Fatal(anyhow!(
                 "no credentials in {} and no join token given",
-                config.state_dir.display()
+                node.state_dir.display()
             )));
         }
     };
     let hostname = hostname();
     Ok(Hello {
         auth: Some(auth),
-        name: config.name.clone().unwrap_or_else(|| hostname.clone()),
+        name: node.name.clone().unwrap_or_else(|| hostname.clone()),
         hostname,
         os: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),
@@ -246,11 +234,11 @@ async fn connect(server: &str) -> Result<Channel, Stop> {
 /// New credentials on first join; otherwise the saved ones, if the
 /// orchestrator URL they remember is out of date.
 fn credentials_to_save(
-    config: &WorkerConfig,
+    node: &Node,
     saved: Option<Credentials>,
     welcome: &Welcome,
 ) -> Option<Credentials> {
-    let server = config.server.clone();
+    let server = Some(node.server.clone());
     if !welcome.node_secret.is_empty() {
         return Some(Credentials {
             node_id: welcome.node_id.clone(),
@@ -267,7 +255,6 @@ fn credentials_to_save(
 async fn serve(
     inbound: &mut Streaming<OrchestratorMsg>,
     outbound: &mpsc::Sender<WorkerMsg>,
-    config: &WorkerConfig,
     host: &Arc<Host>,
 ) -> Result<Infallible, Stop> {
     // Dropping a cancel sender kills its task, so ending the session kills them all.
@@ -294,18 +281,28 @@ async fn serve(
                         }
                     }
                     Some(orchestrator_msg::Msg::ListOptions(ListAgentOptions { request_id, mcp })) => {
-                        tokio::spawn(answer_options(host.current(), request_id, mcp, outbound.clone()));
+                        let (host, outbound) = (host.clone(), outbound.clone());
+                        tokio::spawn(async move {
+                            let options = async { harness(&host)?.options(mcp).await };
+                            reply(&outbound, request_id, options.await).await;
+                        });
                     }
                     Some(orchestrator_msg::Msg::ListSessions(ListAgentSessions { request_id })) => {
-                        tokio::spawn(answer_sessions(host.current(), request_id, outbound.clone()));
+                        let (host, outbound) = (host.clone(), outbound.clone());
+                        tokio::spawn(async move {
+                            let sessions = async { harness(&host)?.sessions().await };
+                            let sessions = sessions.await.map(|sessions| AgentSessions {
+                                sessions,
+                                ..Default::default()
+                            });
+                            reply(&outbound, request_id, sessions).await;
+                        });
                     }
                     Some(orchestrator_msg::Msg::StartHarness(StartHarness { request_id, harness })) => {
-                        let host = host.clone();
-                        let opencode_bin = config.opencode_bin.clone();
-                        let outbound = outbound.clone();
+                        let (host, outbound) = (host.clone(), outbound.clone());
                         tokio::spawn(async move {
-                            let started = start_harness(&host, &harness, opencode_bin).await;
-                            let _ = outbound.send(HarnessStarted { request_id, ..started }.into()).await;
+                            let started = start_harness(&host, &harness).await;
+                            reply(&outbound, request_id, started).await;
                         });
                     }
                     Some(orchestrator_msg::Msg::Cancel(CancelTask { task_id })) => {
@@ -365,83 +362,39 @@ async fn prompt(
     let _ = outbound.send(finished.into()).await;
 }
 
-/// Tells the orchestrator which agents, models and efforts the harness offers.
-async fn answer_options(
-    harness: Option<Arc<dyn Harness>>,
-    request_id: String,
-    mcp: Option<McpSwitch>,
-    outbound: mpsc::Sender<WorkerMsg>,
-) {
-    let options = match harness {
-        Some(harness) => harness.options(mcp).await,
-        None => Err(anyhow!(NO_HARNESS)),
-    };
-    let options = options.unwrap_or_else(|e| AgentOptions {
-        error: format!("{e:#}"),
-        ..Default::default()
-    });
-    let _ = outbound
-        .send(
-            AgentOptions {
-                request_id,
-                ..options
-            }
-            .into(),
-        )
-        .await;
+/// The harness the worker hosts, for a question that needs one.
+fn harness(host: &Host) -> anyhow::Result<Arc<dyn Harness>> {
+    host.current().ok_or_else(|| anyhow!(NO_HARNESS))
 }
 
-/// Tells the orchestrator which sessions the harness has saved.
-async fn answer_sessions(
-    harness: Option<Arc<dyn Harness>>,
+/// Answers the orchestrator's question `request_id`: with `answer`, or with
+/// why there is none.
+async fn reply<T: Reply>(
+    outbound: &mpsc::Sender<WorkerMsg>,
     request_id: String,
-    outbound: mpsc::Sender<WorkerMsg>,
+    answer: anyhow::Result<T>,
 ) {
-    let sessions = match harness {
-        Some(harness) => harness.sessions().await,
-        None => Err(anyhow!(NO_HARNESS)),
-    };
-    let answer = match sessions {
-        Ok(sessions) => AgentSessions {
-            request_id,
-            sessions,
-            ..Default::default()
-        },
-        Err(e) => AgentSessions {
-            request_id,
-            error: format!("{e:#}"),
-            ..Default::default()
-        },
-    };
+    let mut answer = answer.unwrap_or_else(|e| {
+        let mut failed = T::default();
+        *failed.fields().1 = format!("{e:#}");
+        failed
+    });
+    *answer.fields().0 = request_id;
     let _ = outbound.send(answer.into()).await;
 }
 
 /// Starts the harness a client asked for, until the worker stops.
-async fn start_harness(host: &Host, name: &str, opencode_bin: Option<PathBuf>) -> HarnessStarted {
-    let started = async {
-        let kind: HarnessKind = name.parse().map_err(|e: String| anyhow!(e))?;
-        info!(harness = %kind, "starting a harness");
-        host.start(kind, opencode_bin).await?;
-        anyhow::Ok(kind)
-    };
-    match started.await {
-        Ok(kind) => HarnessStarted {
-            harnesses: vec![kind.name().into()],
-            ..Default::default()
-        },
-        Err(e) => {
-            warn!("couldn't start {name}: {e:#}");
-            HarnessStarted {
-                harnesses: host
-                    .current()
-                    .map(|h| h.kind().name().into())
-                    .into_iter()
-                    .collect(),
-                error: format!("{e:#}"),
-                ..Default::default()
-            }
-        }
+async fn start_harness(host: &Host, name: &str) -> anyhow::Result<HarnessStarted> {
+    let kind: HarnessKind = name.parse().map_err(|e: String| anyhow!(e))?;
+    info!(harness = %kind, "starting a harness");
+    if let Err(e) = host.start(kind).await {
+        warn!("couldn't start {kind}: {e:#}");
+        return Err(e);
     }
+    Ok(HarnessStarted {
+        harnesses: host.hosted(),
+        ..Default::default()
+    })
 }
 
 fn hostname() -> String {

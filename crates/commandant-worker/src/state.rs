@@ -93,6 +93,18 @@ pub fn load(state_dir: &Path) -> Result<Option<Credentials>> {
         .with_context(|| format!("parsing {}", path.display()))
 }
 
+/// Drops credentials the orchestrator no longer knows, so the next
+/// connection joins afresh.
+pub fn forget(state_dir: &Path) -> Result<()> {
+    let path = path(state_dir);
+    match std::fs::remove_file(&path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).with_context(|| format!("removing {}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
 pub fn save(state_dir: &Path, creds: &Credentials) -> Result<()> {
     write_private(&path(state_dir), &serde_json::to_string_pretty(creds)?)
 }
@@ -103,7 +115,8 @@ mod tests {
 
     #[test]
     fn a_state_dir_holds_one_worker_at_a_time() {
-        let base = tempfile_dir().join("worker");
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("worker");
         let first = claim(&base, true).unwrap();
         assert_eq!((first.dir.as_path(), first.instance), (base.as_path(), 1));
         let err = claim(&base, false).unwrap_err();
@@ -122,14 +135,19 @@ mod tests {
         drop(first);
         assert_eq!(claim(&base, false).unwrap().instance, 1);
         drop(third);
-        std::fs::remove_dir_all(base.parent().unwrap()).unwrap();
     }
 
-    fn tempfile_dir() -> PathBuf {
-        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("commandant-state-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    #[test]
+    fn forgetting_drops_the_credentials_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let creds = Credentials {
+            node_id: "n1".into(),
+            secret: "s".into(),
+            server: None,
+        };
+        save(tmp.path(), &creds).unwrap();
+        forget(tmp.path()).unwrap();
+        assert!(load(tmp.path()).unwrap().is_none());
+        forget(tmp.path()).expect("nothing to forget is fine");
     }
 }

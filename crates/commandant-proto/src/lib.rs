@@ -46,6 +46,60 @@ envelope!(OrchestratorMsg.msg, orchestrator_msg::Msg {
     StartHarness(StartHarness),
 });
 
+/// The capability a worker lists for the harness it hosts: `harness:opencode`.
+pub const HOSTS: &str = "harness:";
+/// The capability a worker lists for each harness it could start.
+pub const CAN_HOST: &str = "can-host:";
+
+/// A worker's answer to one of the orchestrator's questions, matched to it by
+/// `request_id`; a non-empty `error` means the question failed.
+pub trait Reply: Default + Into<WorkerMsg> + TryFrom<worker_msg::Msg> {
+    fn request_id(&self) -> &str;
+    fn error(&self) -> &str;
+    /// `request_id` and `error`, to fill in.
+    fn fields(&mut self) -> (&mut String, &mut String);
+}
+
+macro_rules! reply {
+    ($($payload:ident => $variant:ident),* $(,)?) => {
+        $(
+            impl Reply for $payload {
+                fn request_id(&self) -> &str {
+                    &self.request_id
+                }
+                fn error(&self) -> &str {
+                    &self.error
+                }
+                fn fields(&mut self) -> (&mut String, &mut String) {
+                    (&mut self.request_id, &mut self.error)
+                }
+            }
+
+            impl TryFrom<worker_msg::Msg> for $payload {
+                type Error = worker_msg::Msg;
+                fn try_from(msg: worker_msg::Msg) -> Result<Self, Self::Error> {
+                    match msg {
+                        worker_msg::Msg::$variant(payload) => Ok(payload),
+                        other => Err(other),
+                    }
+                }
+            }
+        )*
+
+        impl worker_msg::Msg {
+            /// The question this answers, if it is an answer.
+            pub fn request_id(&self) -> Option<&str> {
+                match self {
+                    $(Self::$variant(payload) => Some(&payload.request_id),)*
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+reply!(AgentOptions => Options, AgentSessions => Sessions, HarnessStarted => HarnessStarted);
+
 envelope!(TaskEvent.event, task_event::Event {
     Started(TaskStarted),
     Output(TaskOutput),

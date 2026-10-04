@@ -6,7 +6,8 @@ use std::time::Duration;
 use commandant_proto::hello::Auth;
 use commandant_proto::node_link_server::NodeLink;
 use commandant_proto::{
-    Hello, NodeCredential, OrchestratorMsg, TaskFinished, Welcome, WorkerMsg, worker_msg,
+    CAN_HOST, HOSTS, Hello, NodeCredential, OrchestratorMsg, TaskFinished, Welcome, WorkerMsg,
+    worker_msg,
 };
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -15,7 +16,6 @@ use tonic::{Request, Response, Status, Streaming};
 use tracing::{info, warn};
 
 use crate::auth::{NODE_PREFIX, generate_token, hash_token, hashes_match};
-use crate::queries::Answer;
 use crate::registry::ConnId;
 use crate::store::{InsertNodeError, NODE_DISCONNECTED, NodeFacts, TaskStatus};
 use crate::{Shared, internal};
@@ -124,7 +124,7 @@ fn node_name(hello: &Hello) -> Result<&str, Status> {
     Ok(name)
 }
 
-/// With `prefix` `harness:`, `harness:opencode` in the hello's capabilities
+/// With `prefix` [`HOSTS`], `harness:opencode` in the hello's capabilities
 /// becomes `opencode`.
 fn capabilities(hello: &Hello, prefix: &str) -> Vec<String> {
     hello
@@ -159,8 +159,8 @@ impl NodeLink for LinkService {
         let conn_id = self.shared.registry.connect(
             &node_id,
             tx,
-            capabilities(&hello, "harness:"),
-            capabilities(&hello, "can-host:"),
+            capabilities(&hello, HOSTS),
+            capabilities(&hello, CAN_HOST),
         );
         info!(%node_id, conn_id, hostname = %hello.hostname, "node connected");
 
@@ -210,16 +210,17 @@ async fn handle_messages(
             }
             worker_msg::Msg::Output(output) => shared.hub.output(conn_id, output),
             worker_msg::Msg::Finished(finished) => record_finished(shared, conn_id, finished).await,
-            worker_msg::Msg::Options(options) => shared.queries.answer(Answer::Options(options)),
             worker_msg::Msg::HarnessStarted(started) => {
                 if started.error.is_empty() {
                     let harnesses = started.harnesses.clone();
                     shared.registry.set_harnesses(node_id, conn_id, harnesses);
                 }
-                shared.queries.answer(Answer::Harness(started))
+                shared
+                    .queries
+                    .answer(worker_msg::Msg::HarnessStarted(started))
             }
-            worker_msg::Msg::Sessions(sessions) => {
-                shared.queries.answer(Answer::Sessions(sessions))
+            answer @ (worker_msg::Msg::Options(_) | worker_msg::Msg::Sessions(_)) => {
+                shared.queries.answer(answer)
             }
             worker_msg::Msg::Hello(_) => warn!(%node_id, "ignoring duplicate hello"),
         }

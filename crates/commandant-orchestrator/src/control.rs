@@ -14,7 +14,6 @@ use tracing::info;
 use commandant_common::lookup::{self, Match};
 
 use crate::auth::{JOIN_PREFIX, generate_token, hash_token};
-use crate::queries::Answer;
 use crate::registry::Connection;
 use crate::store::{NodeRecord, now};
 use crate::tasks::Owner;
@@ -115,31 +114,21 @@ impl ControlService {
         let (node, conn) = self.connected_node(needle).await?;
         harness(&node, &conn)?;
         let ask = |request_id| ListAgentOptions { request_id, mcp }.into();
-        match self
-            .ask(
-                &node,
-                &conn,
-                ask,
-                "say what its agent offers",
-                QUERY_TIMEOUT,
-            )
-            .await?
-        {
-            Answer::Options(options) if options.error.is_empty() => Ok(Response::new(options)),
-            Answer::Options(options) => Err(Status::unavailable(options.error)),
-            _ => Err(other_answer()),
-        }
+        let doing = "say what its agent offers";
+        let options = self.ask(&node, &conn, ask, doing, QUERY_TIMEOUT).await?;
+        Ok(Response::new(options))
     }
 
-    /// Puts a question to a node's worker and waits up to `wait` for its answer.
-    async fn ask(
+    /// Puts a question to a node's worker and waits up to `wait` for its
+    /// answer, which fails if it carries an error.
+    async fn ask<T: Reply>(
         &self,
         node: &NodeRecord,
         conn: &Connection,
         question: impl FnOnce(String) -> OrchestratorMsg,
         doing: &str,
         wait: Duration,
-    ) -> Result<Answer, Status> {
+    ) -> Result<T, Status> {
         let queries = &self.shared.queries;
         let (request_id, answer) = queries.open();
         if conn
@@ -153,23 +142,29 @@ impl ControlService {
         }
         let answer = tokio::time::timeout(wait, answer).await;
         queries.close(&request_id);
-        match answer {
-            Ok(Ok(answer)) => Ok(answer),
-            Ok(Err(_)) | Err(_) => Err(Status::deadline_exceeded(format!(
+        let Ok(Ok(answer)) = answer else {
+            return Err(Status::deadline_exceeded(format!(
                 "node {} didn't {doing}",
                 node.name
-            ))),
+            )));
+        };
+        let answer = T::try_from(answer)
+            .map_err(|_| Status::internal("the node answered another question"))?;
+        match answer.error() {
+            "" => Ok(answer),
+            error => Err(Status::unavailable(error)),
         }
     }
 
     /// A node as clients see it.
     fn node_info(&self, node: NodeRecord) -> NodeInfo {
         let connection = self.shared.registry.get(&node.id);
+        let online = connection.is_some();
         let (harnesses, can_host) = connection
             .map(|c| (c.harnesses, c.can_host))
             .unwrap_or_default();
         NodeInfo {
-            online: self.shared.registry.is_online(&node.id),
+            online,
             harnesses,
             can_host,
             id: node.id,
@@ -182,10 +177,6 @@ impl ControlService {
             created_at: node.created_at,
         }
     }
-}
-
-fn other_answer() -> Status {
-    Status::internal("the node answered another question")
 }
 
 /// The node's agent harness; a prompt needs one.
@@ -329,14 +320,10 @@ impl Control for ControlService {
         let (node, conn) = self.connected_node(&request.into_inner().node).await?;
         harness(&node, &conn)?;
         let ask = |request_id| ListAgentSessions { request_id }.into();
-        match self
+        let sessions = self
             .ask(&node, &conn, ask, "list its sessions", QUERY_TIMEOUT)
-            .await?
-        {
-            Answer::Sessions(sessions) if sessions.error.is_empty() => Ok(Response::new(sessions)),
-            Answer::Sessions(sessions) => Err(Status::unavailable(sessions.error)),
-            _ => Err(other_answer()),
-        }
+            .await?;
+        Ok(Response::new(sessions))
     }
 
     async fn start_harness(
@@ -347,15 +334,6 @@ impl Control for ControlService {
         let (node, conn) = self.connected_node(&req.node).await?;
         if req.harness.is_empty() {
             return Err(Status::invalid_argument("harness is required"));
-        }
-        if conn.harnesses.contains(&req.harness) {
-            return Ok(Response::new(self.node_info(node)));
-        }
-        if let Some(hosted) = conn.harnesses.first() {
-            return Err(Status::failed_precondition(format!(
-                "node {} already hosts {hosted}",
-                node.name
-            )));
         }
         if conn.can_host.is_empty() {
             return Err(Status::failed_precondition(format!(
@@ -381,14 +359,10 @@ impl Control for ControlService {
             .into()
         };
         let doing = "start its harness in time (it may still be installing it)";
-        match self.ask(&node, &conn, ask, doing, START_TIMEOUT).await? {
-            Answer::Harness(started) if started.error.is_empty() => {
-                let node = self.resolve_node(&node.id).await?;
-                Ok(Response::new(self.node_info(node)))
-            }
-            Answer::Harness(started) => Err(Status::unavailable(started.error)),
-            _ => Err(other_answer()),
-        }
+        // The worker refuses another harness than the one it hosts, if any.
+        self.ask::<HarnessStarted>(&node, &conn, ask, doing, START_TIMEOUT)
+            .await?;
+        Ok(Response::new(self.node_info(node)))
     }
 
     async fn list_tasks(

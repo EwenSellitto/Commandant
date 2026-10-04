@@ -3,32 +3,36 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use commandant_common::time::ago;
 use commandant_proto::*;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::chat::{self, Activity, Chat, Message, Settings};
-use super::picker::{Choice, Outcome, Pick, Picker};
+use super::picker::{Choice, Outcome, Picker};
 
 /// Tells chats apart for as long as the UI runs.
 pub type ChatId = u64;
 
-/// What the session picker offers besides the chats and saved sessions.
-const NEW_SESSION: &str = "new";
+/// How long to wait before asking again for commands that were loading.
+const OPTIONS_RETRY: Duration = Duration::from_secs(3);
+const SESSIONS: &str = "Sessions on this node";
 
 /// Something for the event loop to do, or (the chat-level ones) for the app.
 pub enum Action {
     Send(ChatId, PromptRequest),
     Cancel(String),
-    /// Ask a node what its agent offers.
-    FetchOptions(String),
-    /// Ask again in a moment: its commands were still loading.
-    FetchOptionsLater(String),
+    /// Ask a node what its agent offers, after a pause.
+    FetchOptions {
+        node: String,
+        after: Duration,
+    },
     /// Ask a node which sessions its agent has saved.
     FetchSessions(String),
-    /// Connect (or disconnect) one of a node's MCP servers.
+    /// Connect (or disconnect) one of a node's MCP servers, for a chat.
     SwitchMcp {
+        chat: ChatId,
         node: String,
         name: String,
         connect: bool,
@@ -47,11 +51,27 @@ pub enum Action {
     Quit,
 }
 
+impl Action {
+    pub fn fetch_options(node: &str) -> Self {
+        Self::FetchOptions {
+            node: node.to_string(),
+            after: Duration::ZERO,
+        }
+    }
+}
+
 /// What background tasks report to the UI.
 pub enum Update {
     Chat(ChatId, Message),
     /// For every chat on the node.
     Options(String, Result<AgentOptions, String>),
+    /// How the chat's MCP switch went: the node's options after it.
+    McpSwitched {
+        chat: ChatId,
+        node: String,
+        name: String,
+        options: Result<AgentOptions, String>,
+    },
     Nodes(Vec<NodeInfo>),
     Sessions(String, Result<Vec<AgentSession>, String>),
     /// The node, once it hosts the harness it was asked to start.
@@ -62,6 +82,15 @@ pub enum Update {
 pub enum Screen {
     Nodes,
     Chat(ChatId),
+}
+
+/// A choice in the app's own pickers.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppChoice {
+    NewSession,
+    Chat(ChatId),
+    Saved(AgentSession),
+    Harness { node: String, harness: String },
 }
 
 pub struct App {
@@ -79,14 +108,13 @@ pub struct App {
     pub saved: HashMap<String, Vec<AgentSession>>,
     /// The chat last shown on each node.
     last: HashMap<String, ChatId>,
-    /// The session picker, when open; a chat's own pickers live in the chat.
-    pub picker: Option<Picker>,
+    /// The session or harness picker, when open; a chat's own pickers live
+    /// in the chat.
+    pub picker: Option<Picker<AppChoice>>,
     /// A remark on the node screen.
     pub notice: String,
     /// Nodes starting a harness, which can take minutes.
     pub starting: HashSet<String>,
-    /// The node the harness picker is for.
-    harness_for: Option<NodeInfo>,
     /// What new chats start with; `--session` only goes to the first.
     defaults: Settings,
     next_id: ChatId,
@@ -111,7 +139,6 @@ impl App {
             picker: None,
             notice: String::new(),
             starting: HashSet::new(),
-            harness_for: None,
             defaults,
             next_id: 1,
         }
@@ -135,6 +162,16 @@ impl App {
     /// The chats on a node, oldest first.
     pub fn chats_on<'a>(&'a self, node_id: &'a str) -> impl Iterator<Item = &'a Chat> {
         self.chats.iter().filter(move |c| c.node.id == node_id)
+    }
+
+    /// Whether anything on screen moves on its own: a working chat's
+    /// spinner, or a node starting its agent.
+    pub fn busy(&self) -> bool {
+        !self.starting.is_empty()
+            || self
+                .chats
+                .iter()
+                .any(|c| matches!(c.activity, Activity::Working { .. }))
     }
 
     /// Tasks still running, for quitting.
@@ -169,17 +206,10 @@ impl App {
         if let Some(picker) = &mut self.picker {
             match picker.on_key(key) {
                 Outcome::Open => {}
-                Outcome::Closed => {
+                Outcome::Closed => self.picker = None,
+                Outcome::Chosen(choice) => {
                     self.picker = None;
-                    self.harness_for = None;
-                }
-                Outcome::Chosen(value) => {
-                    let pick = picker.pick;
-                    self.picker = None;
-                    return match pick {
-                        Pick::Harness => self.start_harness(value),
-                        _ => self.choose_session(&value),
-                    };
+                    return self.choose(choice);
                 }
             }
             return Vec::new();
@@ -238,7 +268,7 @@ impl App {
     /// Drops a request for options a node is already answering.
     fn ask_once(&mut self, action: Action) -> Option<Action> {
         match &action {
-            Action::FetchOptions(node) if !self.fetching.insert(node.clone()) => None,
+            Action::FetchOptions { node, .. } if !self.fetching.insert(node.clone()) => None,
             _ => Some(action),
         }
     }
@@ -305,26 +335,28 @@ impl App {
             .map(|name| {
                 let kind = name.parse::<commandant_worker::HarnessKind>();
                 let detail = kind.map_or("", |k| k.description());
-                Choice::new(name, name, detail)
+                let choice = AppChoice::Harness {
+                    node: node.id.clone(),
+                    harness: name.clone(),
+                };
+                Choice::new(choice, name, detail)
             })
             .collect();
-        self.picker = Some(Picker::new(Pick::Harness, choices, ""));
-        self.harness_for = Some(node);
+        self.picker = Some(Picker::new("Start an agent on this node", choices, None));
     }
 
-    fn start_harness(&mut self, harness: String) -> Vec<Action> {
-        let Some(node) = self.harness_for.take() else {
-            return Vec::new();
-        };
-        self.starting.insert(node.id.clone());
-        self.notice = format!(
-            "starting {harness} on {}; installing it first can take a few minutes…",
-            node.name
-        );
-        vec![Action::StartHarness {
-            node: node.id,
-            harness,
-        }]
+    fn start_harness(&mut self, node: String, harness: String) -> Vec<Action> {
+        let name = self.node_name(&node);
+        self.notice =
+            format!("starting {harness} on {name}; installing it first can take a few minutes…");
+        self.starting.insert(node.clone());
+        vec![Action::StartHarness { node, harness }]
+    }
+
+    /// A node's name, else its id.
+    fn node_name(&self, id: &str) -> String {
+        let node = self.nodes.iter().find(|n| n.id == id);
+        node.map_or_else(|| id.to_string(), |n| n.name.clone())
     }
 
     /// Starts a chat and shows it; it asks for the options the node hasn't given.
@@ -332,9 +364,7 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         let options = self.options.get(&node.id).cloned();
-        let fetch = options
-            .is_none()
-            .then(|| Action::FetchOptions(node.id.clone()));
+        let fetch = options.is_none().then(|| Action::fetch_options(&node.id));
         self.chats.push(Chat::new(id, node, settings, options));
         self.show(id);
         fetch.into_iter().filter_map(|a| self.ask_once(a)).collect()
@@ -387,13 +417,8 @@ impl App {
         let Some(chat) = self.chat() else {
             return Vec::new();
         };
-        let ids: Vec<String> = self
-            .chats_on(&chat.node.id)
-            .map(|c| c.id.to_string())
-            .collect();
-        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-        if let Some(next) = chat::cycle(&ids, &chat.id.to_string(), step) {
-            let next = next.parse().expect("an id");
+        let ids: Vec<ChatId> = self.chats_on(&chat.node.id).map(|c| c.id).collect();
+        if let Some(next) = chat::cycle(&ids, chat.id, step) {
             self.show(next);
         }
         Vec::new()
@@ -402,8 +427,12 @@ impl App {
     /// The node's open chats, then the sessions it saved that aren't open.
     fn open_session_picker(&mut self, node_id: &str) {
         let filter = self.picker.take().map(|p| p.filter).unwrap_or_default();
-        let current = self.chat().map(|c| c.id.to_string()).unwrap_or_default();
-        let mut choices = vec![Choice::new(NEW_SESSION, "+ New session", "ctrl-n")];
+        let current = self.chat().map(|c| AppChoice::Chat(c.id));
+        let mut choices = vec![Choice::new(
+            AppChoice::NewSession,
+            "+ New session",
+            "ctrl-n",
+        )];
         for chat in self.chats_on(node_id) {
             let state = match &chat.activity {
                 Activity::Working { .. } => "open · working",
@@ -413,7 +442,7 @@ impl App {
                 "" => state.to_string(),
                 id => format!("{state} · {id}"),
             };
-            choices.push(Choice::new(chat.id.to_string(), title(chat), detail));
+            choices.push(Choice::new(AppChoice::Chat(chat.id), chat.title(), detail));
         }
         let open: Vec<&str> = self
             .chats_on(node_id)
@@ -428,46 +457,38 @@ impl App {
                 detail.push("working".into());
             }
             detail.push(session.directory.clone());
-            let label = match session.title.as_str() {
-                "" => session.id.clone(),
-                title => title.to_string(),
-            };
+            let label = chat::or(&session.title, &session.id).to_string();
             choices.push(Choice::new(
-                format!("ses:{}", session.id),
+                AppChoice::Saved(session.clone()),
                 label,
                 detail.join(" · "),
             ));
         }
-        let mut picker = Picker::new(Pick::Session, choices, &current);
-        for c in filter.chars() {
-            picker.on_key(KeyEvent::from(KeyCode::Char(c)));
-        }
-        self.picker = Some(picker);
+        let picker = Picker::new(SESSIONS, choices, current.as_ref());
+        self.picker = Some(picker.with_filter(&filter));
     }
 
-    /// Shows an open chat, starts a new one, or resumes a saved session.
-    fn choose_session(&mut self, value: &str) -> Vec<Action> {
+    /// Does what the app's picker offered.
+    fn choose(&mut self, choice: AppChoice) -> Vec<Action> {
+        match choice {
+            AppChoice::NewSession => self.handle(Action::NewChat),
+            AppChoice::Chat(id) => {
+                self.show(id);
+                Vec::new()
+            }
+            AppChoice::Saved(saved) => self.resume(saved),
+            AppChoice::Harness { node, harness } => self.start_harness(node, harness),
+        }
+    }
+
+    /// Opens a chat on a session the node saved, as it was last used.
+    fn resume(&mut self, saved: AgentSession) -> Vec<Action> {
         let Some(chat) = self.chat() else {
             return Vec::new();
         };
         let node = chat.node.clone();
-        if value == NEW_SESSION {
-            return self.handle(Action::NewChat);
-        }
-        let Some(session_id) = value.strip_prefix("ses:") else {
-            if let Ok(id) = value.parse() {
-                self.show(id);
-            }
-            return Vec::new();
-        };
-        let saved = self
-            .saved
-            .get(&node.id)
-            .and_then(|all| all.iter().find(|s| s.id == session_id))
-            .cloned()
-            .unwrap_or_default();
         let settings = Settings {
-            session_id: session_id.to_string(),
+            session_id: saved.id,
             cwd: saved.directory,
             model: saved.model,
             agent: saved.agent,
@@ -480,6 +501,22 @@ impl App {
             chat.info("continuing this session; its earlier messages aren't shown here");
         }
         actions
+    }
+
+    /// Records a node's options and hands them to its chats.
+    fn set_options(
+        &mut self,
+        node: &str,
+        options: Result<AgentOptions, String>,
+    ) -> Option<Arc<AgentOptions>> {
+        let options = options.map(Arc::new);
+        if let Ok(options) = &options {
+            self.options.insert(node.to_string(), options.clone());
+        }
+        for chat in self.chats.iter_mut().filter(|c| c.node.id == node) {
+            chat.on_message(Message::Options(options.clone()));
+        }
+        options.ok()
     }
 
     /// Takes in what a background task reports, which may call for actions.
@@ -497,21 +534,34 @@ impl App {
                 action.into_iter().collect()
             }
             Update::Options(node, options) => {
+                let options = self.set_options(&node, options);
+                // The rest is in; the commands follow once they've loaded,
+                // and the request stays open until then.
+                if options.is_some_and(|o| o.commands_loading) {
+                    return vec![Action::FetchOptions {
+                        node,
+                        after: OPTIONS_RETRY,
+                    }];
+                }
                 self.fetching.remove(&node);
-                if let Ok(options) = &options {
-                    self.options.insert(node.clone(), Arc::new(options.clone()));
+                Vec::new()
+            }
+            Update::McpSwitched {
+                chat,
+                node,
+                name,
+                options,
+            } => {
+                let switched = options.clone().map(Arc::new);
+                if options.is_ok() {
+                    self.set_options(&node, options);
                 }
-                let loading = options.as_ref().is_ok_and(|o| o.commands_loading);
-                for chat in self.chats.iter_mut().filter(|c| c.node.id == node) {
-                    chat.on_message(Message::Options(options.clone()));
-                }
-                // The rest is in; the commands follow once they've loaded.
-                if loading {
-                    self.fetching.insert(node.clone());
-                    return vec![Action::FetchOptionsLater(node)];
+                if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat) {
+                    chat.mcp_switched(&name, &switched);
                 }
                 Vec::new()
             }
+            Update::Nodes(nodes) if nodes == self.nodes => Vec::new(),
             Update::Nodes(nodes) => {
                 let selected = self.nodes.get(self.selected).map(|n| n.id.clone());
                 for chat in &mut self.chats {
@@ -530,12 +580,7 @@ impl App {
             }
             Update::HarnessStarted(id, started) => {
                 self.starting.remove(&id);
-                let name = self
-                    .nodes
-                    .iter()
-                    .find(|n| n.id == id)
-                    .map(|n| n.name.clone());
-                let name = name.unwrap_or_else(|| id.clone());
+                let name = self.node_name(&id);
                 match started {
                     Ok(node) => {
                         let hosts = node.harnesses.join(", ");
@@ -567,10 +612,7 @@ impl App {
                         }
                     }
                 }
-                let picking = self
-                    .picker
-                    .as_ref()
-                    .is_some_and(|p| p.pick == Pick::Session);
+                let picking = self.picker.as_ref().is_some_and(|p| p.title == SESSIONS);
                 if picking && self.chat().is_some_and(|c| c.node.id == node) {
                     self.open_session_picker(&node);
                 }
@@ -580,18 +622,11 @@ impl App {
     }
 }
 
-/// What a chat is called in its tab and the session picker.
-pub fn title(chat: &Chat) -> String {
-    match chat.title.as_str() {
-        "" => "new session".to_string(),
-        title => title.to_string(),
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::tui::chat::Unseen;
+    use crate::tui::chat::tests::started;
 
     pub(crate) fn node(id: &str, online: bool) -> NodeInfo {
         NodeInfo {
@@ -648,7 +683,7 @@ pub(crate) mod tests {
         let actions = app.on_key(key(KeyCode::Enter));
         // It asks the node for its sessions and options.
         assert!(
-            matches!(&actions[..], [Action::FetchSessions(a), Action::FetchOptions(b)] if a == "n2" && b == "n2")
+            matches!(&actions[..], [Action::FetchSessions(a), Action::FetchOptions { node: b, .. }] if a == "n2" && b == "n2")
         );
         assert_eq!(app.chat().unwrap().node.id, "n2");
 
@@ -770,13 +805,6 @@ pub(crate) mod tests {
         // A later chat starts with them, without asking again.
         assert!(app.on_key(ctrl('n')).is_empty());
         assert_eq!(app.chat().unwrap().agent(), "build");
-    }
-
-    fn started(task_id: &str) -> Message {
-        Message::Task(task_event::Event::Started(TaskStarted {
-            task_id: task_id.into(),
-            ..Default::default()
-        }))
     }
 
     fn shown(app: &App) -> ChatId {
@@ -986,7 +1014,7 @@ pub(crate) mod tests {
         let fetches = |actions: Vec<Action>| {
             actions
                 .iter()
-                .filter(|a| matches!(a, Action::FetchOptions(_)))
+                .filter(|a| matches!(a, Action::FetchOptions { .. }))
                 .count()
         };
         assert_eq!(fetches(app.on_key(key(KeyCode::Enter))), 1);
@@ -1011,7 +1039,7 @@ pub(crate) mod tests {
         assert_eq!(fetches(app.on_key(key(KeyCode::Tab))), 0);
     }
 
-    fn bare(id: &str) -> NodeInfo {
+    pub(crate) fn bare(id: &str) -> NodeInfo {
         NodeInfo {
             harnesses: Vec::new(),
             can_host: vec!["opencode".into()],
@@ -1024,8 +1052,13 @@ pub(crate) mod tests {
         let mut app = App::new(vec![bare("n1")], Settings::default());
         assert!(app.on_key(key(KeyCode::Enter)).is_empty());
         let picker = app.picker.as_ref().expect("a harness to choose");
-        assert_eq!(picker.pick, Pick::Harness);
-        assert_eq!(picker.shown().next().unwrap().value, "opencode");
+        assert_eq!(
+            picker.shown().next().unwrap().value,
+            AppChoice::Harness {
+                node: "n1".into(),
+                harness: "opencode".into()
+            }
+        );
         assert!(!picker.shown().next().unwrap().detail.is_empty());
 
         // Esc backs out, and nothing starts.
@@ -1052,7 +1085,7 @@ pub(crate) mod tests {
         let actions = app.on_update(Update::HarnessStarted("n1".into(), Ok(ready)));
         assert!(matches!(
             &actions[..],
-            [Action::FetchSessions(_), Action::FetchOptions(_)]
+            [Action::FetchSessions(_), Action::FetchOptions { .. }]
         ));
         assert!(app.starting.is_empty());
         assert_eq!(app.chat().unwrap().node.harnesses, ["opencode"]);
@@ -1100,7 +1133,8 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let actions = app.on_update(Update::Options("n1".into(), Ok(loading)));
-        assert!(matches!(&actions[..], [Action::FetchOptionsLater(n)] if n == "n1"));
+        assert!(matches!(&actions[..],
+            [Action::FetchOptions { node, after }] if node == "n1" && !after.is_zero()));
         // The rest is usable already.
         assert_eq!(app.chat().unwrap().agent(), "build");
 
@@ -1114,7 +1148,7 @@ pub(crate) mod tests {
         assert!(
             app.on_key(key(KeyCode::Tab))
                 .iter()
-                .all(|a| !matches!(a, Action::FetchOptions(_)))
+                .all(|a| !matches!(a, Action::FetchOptions { .. }))
         );
 
         let loaded = AgentOptions {
@@ -1137,5 +1171,59 @@ pub(crate) mod tests {
             (request.command.as_str(), request.prompt.as_str()),
             ("review", "the parser")
         );
+    }
+
+    #[test]
+    fn an_mcp_switch_answers_its_chat_and_leaves_other_requests_alone() {
+        let mut app = app();
+        // Opening the node asks for its options; that request is open.
+        app.on_key(key(KeyCode::Enter));
+        let asking = shown(&app);
+        app.on_key(ctrl('n'));
+        let switched = AgentOptions {
+            default_agent: "plan".into(),
+            ..Default::default()
+        };
+        let update = Update::McpSwitched {
+            chat: asking,
+            node: "n1".into(),
+            name: "docs".into(),
+            options: Ok(switched),
+        };
+        assert!(app.on_update(update).is_empty());
+        // Every chat on the node has the new options...
+        assert!(app.chats.iter().all(|c| c.agent() == "plan"));
+        // ...the open request is still open...
+        assert!(app.fetching.contains("n1"));
+        // ...and only the chat that switched hears how it went.
+        let failed = Update::McpSwitched {
+            chat: asking,
+            node: "n1".into(),
+            name: "docs".into(),
+            options: Err("timed out".into()),
+        };
+        app.on_update(failed);
+        let said = |app: &App, id| {
+            let chat = app.chats.iter().find(|c| c.id == id).unwrap();
+            chat.thread
+                .iter()
+                .any(|e| e.text.contains("couldn't switch docs"))
+        };
+        let other = app.chats.iter().find(|c| c.id != asking).unwrap().id;
+        assert!(said(&app, asking));
+        assert!(!said(&app, other));
+    }
+
+    #[test]
+    fn the_screen_only_ticks_while_something_moves() {
+        let mut app = app();
+        assert!(!app.busy());
+        app.on_key(key(KeyCode::Enter));
+        let (id, _) = send(&mut app, "hi");
+        assert!(app.busy(), "a working chat's spinner turns");
+        app.on_update(Update::Chat(id, finished("ses_a")));
+        assert!(!app.busy());
+        app.starting.insert("n2".into());
+        assert!(app.busy(), "so does a node starting its agent");
     }
 }

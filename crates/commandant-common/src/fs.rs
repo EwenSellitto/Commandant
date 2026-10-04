@@ -5,19 +5,25 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 /// Writes a file only the current user can read, creating parent directories.
+/// The new contents replace the old in one step, so a reader (or a crash)
+/// never meets a half-written file.
 pub fn write_private(path: &Path, contents: &str) -> Result<()> {
     use std::io::Write;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    let staging = path.with_file_name(name);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     options
-        .open(path)
+        .open(&staging)
         .and_then(|mut f| f.write_all(contents.as_bytes()))
+        .and_then(|()| std::fs::rename(&staging, path))
         .with_context(|| format!("writing {}", path.display()))
 }
 

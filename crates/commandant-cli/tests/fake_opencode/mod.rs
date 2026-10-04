@@ -126,17 +126,11 @@ impl FakeOpencode {
 
     /// Waits until `count` turns are held, and returns their sessions.
     pub async fn wait_held(&self, count: usize) -> Vec<String> {
-        tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            loop {
-                let held: Vec<String> = self.state.held.lock().unwrap().keys().cloned().collect();
-                if held.len() >= count {
-                    return held;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
+        crate::eventually(&format!("{count} turns were never held"), || async {
+            let held: Vec<String> = self.state.held.lock().unwrap().keys().cloned().collect();
+            (held.len() >= count).then_some(held)
         })
         .await
-        .unwrap_or_else(|_| panic!("{count} turns were never held"))
     }
 }
 

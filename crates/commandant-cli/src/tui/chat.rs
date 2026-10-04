@@ -9,7 +9,7 @@ use commandant_proto::*;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::app::{Action, ChatId};
-use super::picker::{Choice, Outcome, Pick, Picker};
+use super::picker::{Choice, Outcome, Picker};
 
 /// What the worker prefixes its notes with.
 const NOTE_PREFIX: &str = "[opencode] ";
@@ -26,13 +26,48 @@ pub struct Settings {
     pub effort: String,
 }
 
+/// What a chat's picker chooses from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pick {
+    Agent,
+    Model,
+    Effort,
+    /// One of the agent's commands or skills, to fill in.
+    Command,
+    /// An MCP server, to connect or disconnect.
+    Mcp,
+}
+
+impl Pick {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Agent => "Agent",
+            Self::Model => "Model",
+            Self::Effort => "Thinking effort",
+            Self::Command => "Commands and skills",
+            Self::Mcp => "MCP servers (Enter connects or disconnects)",
+        }
+    }
+}
+
+/// A choice in a chat's picker: the setting it becomes (empty for the
+/// default), the command to fill in, or the MCP server to switch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Choose {
+    Agent(String),
+    Model(String),
+    Effort(String),
+    Command(String),
+    Mcp(String),
+}
+
 /// What background tasks report to a chat.
 pub enum Message {
     Task(TaskEvent),
     /// The prompt couldn't be sent, or its stream broke.
     Failed(String),
     Node(NodeInfo),
-    Options(Result<AgentOptions, String>),
+    Options(Result<Arc<AgentOptions>, String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,12 +134,10 @@ pub struct Chat {
     /// The agents, models and efforts the node offers, once it has said.
     pub options: Option<Arc<AgentOptions>>,
     fetching_options: bool,
-    /// The MCP server being switched, to report on once the node answers.
-    switching_mcp: Option<String>,
     /// The model that last replied, which tells what "default" means.
     pub used_model: String,
     /// The floating window, when open.
-    pub picker: Option<Picker>,
+    pub picker: Option<Picker<Choose>>,
     /// What the session has cost so far, in US dollars.
     pub spent: f64,
     /// Tokens in the session's context after the last turn.
@@ -135,12 +168,16 @@ impl Chat {
             partial_note: String::new(),
             fetching_options: options.is_none(),
             options,
-            switching_mcp: None,
             used_model: String::new(),
             picker: None,
             spent: 0.0,
             context: 0,
         }
+    }
+
+    /// What it is called in its tab and the session picker.
+    pub fn title(&self) -> String {
+        or(&self.title, "new session").to_string()
     }
 
     /// The agent prompts go to: the chosen one, else the harness's default.
@@ -188,10 +225,6 @@ impl Chat {
         }
     }
 
-    pub fn harness(&self) -> Option<&str> {
-        self.node.harnesses.first().map(String::as_str)
-    }
-
     pub fn running_task(&self) -> Option<String> {
         match &self.activity {
             Activity::Working { task_id, .. } => task_id.clone(),
@@ -220,10 +253,9 @@ impl Chat {
             match picker.on_key(key) {
                 Outcome::Open => {}
                 Outcome::Closed => self.picker = None,
-                Outcome::Chosen(value) => {
-                    let pick = picker.pick;
+                Outcome::Chosen(choice) => {
                     self.picker = None;
-                    return self.choose(pick, value);
+                    return self.choose(choice);
                 }
             }
             return None;
@@ -259,16 +291,10 @@ impl Chat {
             let (command, filter) = command.split_once(' ').unwrap_or((command, ""));
             let pick = match command {
                 "quit" | "exit" => return Some(Action::Quit),
-                "new" | "sessions" | "nodes" | "close" => {
-                    let action = match command {
-                        "new" => Action::NewChat,
-                        "sessions" => Action::ShowSessions,
-                        "nodes" => Action::ShowNodes,
-                        _ => Action::CloseChat,
-                    };
-                    self.input.clear();
-                    return Some(action);
-                }
+                "new" => return self.app_command(Action::NewChat),
+                "sessions" => return self.app_command(Action::ShowSessions),
+                "nodes" => return self.app_command(Action::ShowNodes),
+                "close" => return self.app_command(Action::CloseChat),
                 "agent" => Pick::Agent,
                 "model" => Pick::Model,
                 "effort" => Pick::Effort,
@@ -291,6 +317,12 @@ impl Chat {
             return self.open_picker(pick, filter.trim());
         }
         self.send(text.clone(), String::new(), text)
+    }
+
+    /// One of the app's commands, which clears the input like the others.
+    fn app_command(&mut self, action: Action) -> Option<Action> {
+        self.input.clear();
+        Some(action)
     }
 
     fn commands_loading(&self) -> bool {
@@ -345,42 +377,49 @@ impl Chat {
         }
         self.fetching_options = true;
         self.info("asking the node what its agent offers…");
-        Some(Action::FetchOptions(self.node.id.clone()))
+        Some(Action::fetch_options(&self.node.id))
     }
 
     fn open_picker(&mut self, pick: Pick, filter: &str) -> Option<Action> {
         let Some(options) = self.options.clone() else {
             return self.ask_for_options();
         };
-        let (choices, current) = match pick {
+        let (choices, current): (Vec<_>, _) = match pick {
             Pick::Agent => {
                 let choices = options
                     .agents
                     .iter()
-                    .map(|a| Choice::new(&a.name, &a.name, &a.description))
+                    .map(|a| Choice::new(Choose::Agent(a.name.clone()), &a.name, &a.description))
                     .collect();
-                (choices, self.agent().to_string())
+                (choices, Some(Choose::Agent(self.agent().to_string())))
             }
             Pick::Model => {
-                let default = match options.default_model.as_str() {
-                    "" => "OpenCode picks".to_string(),
-                    model => model.to_string(),
-                };
-                let models = options
-                    .models
-                    .iter()
-                    .map(|m| Choice::new(&m.id, &m.name, format!("{} · {}", m.provider, m.id)));
-                let choices = std::iter::once(Choice::new("", "Default", default))
-                    .chain(models)
-                    .collect();
-                (choices, self.settings.model.clone())
+                let default = or(&options.default_model, "OpenCode picks");
+                let models = options.models.iter().map(|m| {
+                    let detail = format!("{} · {}", m.provider, m.id);
+                    Choice::new(Choose::Model(m.id.clone()), &m.name, detail)
+                });
+                let choices = std::iter::once(Choice::new(
+                    Choose::Model(String::new()),
+                    "Default",
+                    default,
+                ))
+                .chain(models)
+                .collect();
+                (choices, Some(Choose::Model(self.settings.model.clone())))
             }
             Pick::Effort => {
                 let efforts = self.efforts_or_explain()?;
-                let choices = std::iter::once(Choice::new("", "Default", "the model's own"))
-                    .chain(efforts.iter().map(|e| Choice::new(e, e, "")))
+                let default =
+                    Choice::new(Choose::Effort(String::new()), "Default", "the model's own");
+                let choices = std::iter::once(default)
+                    .chain(
+                        efforts
+                            .iter()
+                            .map(|e| Choice::new(Choose::Effort(e.clone()), e, "")),
+                    )
                     .collect();
-                (choices, self.settings.effort.clone())
+                (choices, Some(Choose::Effort(self.settings.effort.clone())))
             }
             Pick::Command => {
                 if options.commands_loading {
@@ -399,10 +438,14 @@ impl Chat {
                             "" => c.source.clone(),
                             text => format!("{} · {text}", c.source),
                         };
-                        Choice::new(&c.name, format!("/{}", c.name), detail)
+                        Choice::new(
+                            Choose::Command(c.name.clone()),
+                            format!("/{}", c.name),
+                            detail,
+                        )
                     })
                     .collect();
-                (choices, String::new())
+                (choices, None)
             }
             Pick::Mcp => {
                 if options.mcp_servers.is_empty() {
@@ -412,18 +455,13 @@ impl Chat {
                 let choices = options
                     .mcp_servers
                     .iter()
-                    .map(|m| Choice::new(&m.name, &m.name, mcp_status(m)))
+                    .map(|m| Choice::new(Choose::Mcp(m.name.clone()), &m.name, mcp_status(m)))
                     .collect();
-                (choices, String::new())
+                (choices, None)
             }
-            // The app's own.
-            Pick::Session | Pick::Harness => return None,
         };
-        let mut picker = Picker::new(pick, choices, &current);
-        for c in filter.chars() {
-            picker.on_key(KeyEvent::from(KeyCode::Char(c)));
-        }
-        self.picker = Some(picker);
+        let picker = Picker::new(pick.title(), choices, current.as_ref());
+        self.picker = Some(picker.with_filter(filter));
         None
     }
 
@@ -445,12 +483,12 @@ impl Chat {
         }
     }
 
-    fn choose(&mut self, pick: Pick, value: String) -> Option<Action> {
-        match pick {
-            Pick::Agent => self.settings.agent = value,
-            Pick::Effort => self.settings.effort = value,
-            Pick::Model => {
-                self.settings.model = value;
+    fn choose(&mut self, choice: Choose) -> Option<Action> {
+        match choice {
+            Choose::Agent(agent) => self.settings.agent = agent,
+            Choose::Effort(effort) => self.settings.effort = effort,
+            Choose::Model(model) => {
+                self.settings.model = model;
                 // An effort the new model doesn't know would be refused.
                 let effort = &self.settings.effort;
                 if !effort.is_empty() && self.efforts().is_some_and(|e| !e.contains(effort)) {
@@ -461,30 +499,41 @@ impl Chat {
                     ));
                 }
             }
-            Pick::Session | Pick::Harness => {}
             // Ready for its arguments.
-            Pick::Command => self.input.insert_str(&format!("/{value} ")),
-            Pick::Mcp => {
+            Choose::Command(name) => self.input.insert_str(&format!("/{name} ")),
+            Choose::Mcp(name) => {
                 let connect = self.options.as_ref().is_some_and(|o| {
                     o.mcp_servers
                         .iter()
-                        .any(|m| m.name == value && m.status != "connected")
+                        .any(|m| m.name == name && m.status != "connected")
                 });
                 let doing = if connect {
                     "connecting"
                 } else {
                     "disconnecting"
                 };
-                self.info(&format!("{doing} {value}…"));
-                self.switching_mcp = Some(value.clone());
+                self.info(&format!("{doing} {name}…"));
                 return Some(Action::SwitchMcp {
+                    chat: self.id,
                     node: self.node.id.clone(),
-                    name: value,
+                    name,
                     connect,
                 });
             }
         }
         None
+    }
+
+    /// How switching an MCP server went, which this chat asked for.
+    pub fn mcp_switched(&mut self, name: &str, switched: &Result<Arc<AgentOptions>, String>) {
+        match switched {
+            Ok(options) => {
+                if let Some(server) = options.mcp_servers.iter().find(|m| m.name == name) {
+                    self.info(&format!("{name}: {}", mcp_status(server)));
+                }
+            }
+            Err(e) => self.push(Role::Error, &format!("couldn't switch {name}: {e}")),
+        }
     }
 
     /// Switches to the next (or previous) agent.
@@ -536,26 +585,14 @@ impl Chat {
         match message {
             Message::Node(node) => self.node = node,
             Message::Options(options) => {
-                // Every chat on the node hears; the one that asked explains.
-                let asked = std::mem::take(&mut self.fetching_options);
-                let switched = self.switching_mcp.take();
+                // Every chat on the node hears; one that was waiting explains.
+                let waiting = std::mem::take(&mut self.fetching_options);
                 match options {
-                    Ok(options) => {
-                        let server = switched
-                            .and_then(|name| options.mcp_servers.iter().find(|m| m.name == name));
-                        if let Some(server) = server {
-                            let status = mcp_status(server);
-                            self.info(&format!("{}: {status}", server.name));
-                        }
-                        self.options = Some(Arc::new(options));
-                    }
-                    Err(e) if asked || switched.is_some() => {
-                        let what = match switched {
-                            Some(name) => format!("couldn't switch {name}"),
-                            None => "couldn't list the agent's options".to_string(),
-                        };
-                        self.push(Role::Error, &format!("{what}: {e}"));
-                    }
+                    Ok(options) => self.options = Some(options),
+                    Err(e) if waiting => self.push(
+                        Role::Error,
+                        &format!("couldn't list the agent's options: {e}"),
+                    ),
                     Err(_) => {}
                 }
             }
@@ -752,7 +789,7 @@ fn mcp_status(server: &McpServer) -> String {
 
 /// The item `step` places after `current`, wrapping round; the first item if
 /// `current` isn't there.
-pub fn cycle<'a>(items: &[&'a str], current: &str, step: isize) -> Option<&'a str> {
+pub fn cycle<T: PartialEq + Copy>(items: &[T], current: T, step: isize) -> Option<T> {
     let len = items.len() as isize;
     if len == 0 {
         return None;
@@ -762,6 +799,11 @@ pub fn cycle<'a>(items: &[&'a str], current: &str, step: isize) -> Option<&'a st
         None => 0,
     };
     Some(items[next as usize])
+}
+
+/// `value`, or `default` when it is empty.
+pub fn or<'a>(value: &'a str, default: &'a str) -> &'a str {
+    if value.is_empty() { default } else { value }
 }
 
 /// Decodes output, holding back a character split across chunks in `partial`.
@@ -950,7 +992,7 @@ pub(crate) mod tests {
         assert_eq!(request.session_id, "ses_1");
     }
 
-    fn started(task_id: &str) -> Message {
+    pub(crate) fn started(task_id: &str) -> Message {
         Message::Task(TaskEvent::Started(TaskStarted {
             task_id: task_id.into(),
             ..Default::default()
@@ -1001,7 +1043,7 @@ pub(crate) mod tests {
             name: name.into(),
             ..Default::default()
         };
-        app.on_message(Message::Options(Ok(AgentOptions {
+        app.on_message(Message::Options(Ok(Arc::new(AgentOptions {
             agents: vec![agent("build"), agent("plan"), agent("review")],
             models: vec![model("a/fast", &[]), model("a/smart", &["low", "high"])],
             default_agent: "build".into(),
@@ -1016,7 +1058,7 @@ pub(crate) mod tests {
                 ..Default::default()
             }],
             ..Default::default()
-        })));
+        }))));
         app
     }
 
@@ -1054,17 +1096,28 @@ pub(crate) mod tests {
     fn mcp_servers_are_switched_from_the_floating_window() {
         let mut app = with_options();
         command(&mut app, "/mcp");
-        let Some(Action::SwitchMcp { name, connect, .. }) =
-            app.on_key(KeyEvent::from(KeyCode::Enter))
+        let Some(Action::SwitchMcp {
+            chat,
+            name,
+            connect,
+            ..
+        }) = app.on_key(KeyEvent::from(KeyCode::Enter))
         else {
             panic!("choosing a server switches it");
         };
-        assert_eq!((name.as_str(), connect), ("docs", true));
+        assert_eq!((chat, name.as_str(), connect), (app.id, "docs", true));
 
         let mut options = (**app.options.as_ref().unwrap()).clone();
         options.mcp_servers[0].status = "connected".into();
-        app.on_message(Message::Options(Ok(options)));
+        let switched = Ok(Arc::new(options));
+        app.on_message(Message::Options(switched.clone()));
+        app.mcp_switched("docs", &switched);
         assert_eq!(app.thread.last().unwrap().text, "docs: connected");
+        app.mcp_switched("docs", &Err("timed out".into()));
+        assert_eq!(
+            app.thread.last().unwrap().text,
+            "couldn't switch docs: timed out"
+        );
 
         command(&mut app, "/mcp");
         assert!(matches!(
@@ -1097,7 +1150,7 @@ pub(crate) mod tests {
         failed.on_message(Message::Options(Err("offline".into())));
         assert!(matches!(
             failed.on_key(KeyEvent::from(KeyCode::Tab)),
-            Some(Action::FetchOptions(_))
+            Some(Action::FetchOptions { .. })
         ));
     }
 
