@@ -76,7 +76,9 @@ commandant task ls
 ```
 
 **5. Add a coding agent** (optional): start a worker with `--harness opencode`
-(or the server with `--local-worker --harness opencode`), then:
+(or the server with `--local-worker --harness opencode`). Or start one on a
+running node: `commandant node start-agent my-box opencode`, or open the node in
+`commandant tui`, which offers the agents it can host. Then:
 
 ```sh
 commandant prompt my-box --cwd ~/src/app "why does the build fail?"
@@ -125,6 +127,7 @@ Every command has `--help`. Client commands find the orchestrator from, in order
 | `--advertise` | `COMMANDANT_ADVERTISE` | primary IP | Host put in the link (remembered) |
 | `--local-worker` | `COMMANDANT_LOCAL_WORKER` | off | Also run a worker in-process |
 | `--harness` | `COMMANDANT_HARNESS` | none | Coding agent for the local worker (`opencode`) |
+| `--opencode-bin` | `COMMANDANT_OPENCODE_BIN` | on `PATH` | The `opencode` binary for the local worker |
 
 ### `commandant worker [LINK]`
 
@@ -135,8 +138,21 @@ Every command has `--help`. Client commands find the orchestrator from, in order
 | `--state-dir` | `COMMANDANT_STATE_DIR` | Where credentials live (default `~/.local/share/commandant/worker`) |
 | `--server` / `--join-token` | `COMMANDANT_SERVER` / `COMMANDANT_JOIN_TOKEN` | URL + token, as an alternative to a link |
 | `--harness` | `COMMANDANT_HARNESS` | Coding agent to host (`opencode`); installed if missing |
+| `--opencode-bin` | `COMMANDANT_OPENCODE_BIN` | The `opencode` binary to run, instead of the one on `PATH` (or installed) |
 
-To run several workers on one machine, give each its own `--state-dir` and `--name`.
+Several workers can run on one machine. Each locks its state directory while it
+runs, so no two are ever the same node. Started without `--state-dir`, a worker
+takes the first free one (`worker`, `worker-2`, …) and, without `--name`, the
+name `<hostname>`, `<hostname>-2`, …: just start as many as you like. An explicit
+`--state-dir` that another worker holds is refused. (A `server --local-worker`
+already uses this machine's hostname as its name.)
+
+A worker reconnects with the credentials it saved. If the orchestrator no longer
+knows them (it was reset, say) and a link is given, it joins again as a new node
+and saves the new credentials. A node removed with `node rm` while running is
+disconnected at once and stops. If the same credentials are used by two
+workers (a state directory copied to another machine, say), the one that
+connected first is told so and stops, rather than the two taking turns.
 The worker reconnects on its own (backoff up to 30 s) if the orchestrator restarts.
 
 ### Client commands
@@ -146,6 +162,8 @@ The worker reconnects on its own (backoff up to 30 s) if the orchestrator restar
 | `commandant login <LINK>` | Save address and admin token (`login <URL> --with-token cmda_…` also works) |
 | `commandant node ls` | List nodes with online status, hostname, platform, harness, last seen |
 | `commandant node rm <node>` | Forget a node (it must rejoin with a token) |
+| `commandant node start-agent <node> <harness>` | Start a coding agent on a node that has none, installing it if missing; it runs until the worker stops |
+| `commandant node sessions <node>` | The agent sessions saved on the node, latest first, and which are working |
 | `commandant node commands <node>` | The commands and skills of the node's coding agent |
 | `commandant node mcp <node> [--connect NAME \| --disconnect NAME]` | The agent's MCP servers and their status; connects or disconnects one first |
 | `commandant run <node> [--cwd DIR] [-e K=V]… -- <cmd> [args…]` | Run a command and stream its output |
@@ -172,7 +190,9 @@ Task statuses: `running`, `succeeded` (exit 0), `failed`, `cancelled`, and
 
 ## Coding agents
 
-A worker started with `--harness opencode`:
+A worker started with `--harness opencode`, or asked to start it later (by
+`node start-agent` or the TUI; a worker started without `--harness` hosts none
+until asked, even if it hosted one before it restarted):
 
 1. finds `opencode` on its `PATH` or in `~/.opencode/bin`. If it's missing, the
    worker installs it with the official script (`curl` and `bash` needed),
@@ -213,14 +233,27 @@ commandant prompt my-box -s ses_1f3a… "now make it pass"
 ### Chatting in the terminal
 
 `commandant tui` holds the same conversation in a terminal UI, keeping the
-session from one prompt to the next:
+session from one prompt to the next. It opens on the list of nodes; **Enter**
+opens one.
+
+```
+ Commandant  2 nodes · 2 online
+
+ ▌ ● my-box   opencode · linux/x86_64   2 open · 1 working
+   ● lab-box  opencode · linux/x86_64
+```
+
+Each node can have several chats, each its own session, and they all run at
+once, on one node or several: start a long refactor, open another chat for a
+question, and look at the nodes list to see what is still working.
 
 ```sh
-commandant tui my-box --cwd ~/src/app
+commandant tui my-box --cwd ~/src/app    # straight to a chat on my-box
 ```
 
 ```
  ● my-box  opencode · linux/x86_64 · v0.1.0    ses_1f3a… · ~/src/app
+  1 add a test for the parser   2 update the docs ⠋       ctrl-n new  ctrl-o sessions
 
  ▌ add a test for the parser
 
@@ -240,11 +273,14 @@ commandant tui my-box --cwd ~/src/app
   The model's thinking streams too, dimmed behind `┊`, and tool calls show
   as `⚙`.
 - `◆` closes each turn: the agent, model, effort, time, tokens and cost.
+- Opening a node with no agent offers the ones its worker can host. Choosing one
+  starts it there (installing it first, which can take a few minutes) and
+  opens a chat once it's ready.
+- The tabs are the node's chats. A spinner means that chat is working, a
+  green `●` that it finished out of sight, a red `✗` that it failed.
 - The prompt sits on a solid slab edged in the agent's color. Under it are the
   agent, model and effort the next prompt uses, how full the context window
   is, and what the session has cost (as OpenCode reckons it).
-
-The node defaults to the only online one with a harness.
 
 | Key or command | Does |
 |---|---|
@@ -257,10 +293,14 @@ The node defaults to the only online one with a harness.
 | `/<command> [args]` | Run one of the agent's commands or skills |
 | `/skills`, `/commands` | Choose a command or skill in a floating window, then type its arguments |
 | `/mcp` | The agent's MCP servers and their status; **Enter** connects or disconnects one |
-| `/new` | Start a new session |
 | **Esc** | Cancel the agent's turn (even before it has started) |
 | **PgUp** / **PgDn** | Scroll the thread |
-| **Ctrl-C**, `/quit` | Quit, cancelling a running turn, and print the session id for `prompt -s` or `tui -s` |
+| **Ctrl-N**, `/new` | Another chat on this node, in a new session, while the others keep working |
+| **Ctrl-O**, `/sessions` | Switch to one of the node's chats, or resume a session it saved (with its agent, model and cost; earlier messages aren't shown) |
+| **Alt-←** / **Alt-→** | Previous / next chat on this node |
+| **Ctrl-W**, `/close` | Close the chat (once its agent is idle) |
+| **Ctrl-G**, `/nodes` | Back to the nodes; chats keep working there |
+| **Ctrl-C**, `/quit` | Quit, cancelling every running turn, and print each session's `tui -s` command |
 
 In the floating window, typing narrows the list (every word must match),
 **↑/↓** move, **Enter** chooses and **Esc** closes. The agents, models and

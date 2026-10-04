@@ -112,7 +112,13 @@ client connects to `127.0.0.1` instead.
 |---|---|---|---|---|
 | `cmda_` | admin token | first server start | Control API; also valid as a join token | permanent |
 | `cmdj_` | join token | `commandant token create` | enrolling one (or, `--reusable`, many) workers | TTL, default 1 h |
-| `cmdn_` | node secret | orchestrator, at join | a worker reconnecting as itself | until `node rm` |
+| `cmdn_` | node secret | orchestrator, at join | a worker reconnecting as itself | until `node rm` (which disconnects it at once) or a reset; a worker started with a link joins afresh when its saved secret is refused |
+
+A node secret belongs to one worker at a time: the worker locks the state
+directory holding it, and a second worker on the machine takes another
+directory, hence another node. Should the same secret still turn up on two
+connections, the orchestrator keeps the newer one and tells the older worker
+why, which stops it instead of letting the two replace each other in turn.
 
 Only SHA-256 hashes of these are checked, and they are compared in constant time.
 The admin token is also kept in full, so the database alone brings the same link
@@ -201,9 +207,31 @@ itself isn't affected.
 
 A worker started with `--harness opencode` installs OpenCode if needed and keeps
 `opencode serve` running on loopback. It lists `harness:opencode` in its
-`Hello` capabilities, and the orchestrator keeps that with the live connection.
-A prompt is a task like any other: it goes through the same TaskHub, history
-and cancel path. Only its payload and the worker-side runner differ.
+`Hello` capabilities, and `can-host:<name>` for every harness it could start;
+the orchestrator keeps both with the live connection.
+
+**Harnesses.** In the worker, a harness is the `Harness` trait: `prompt` runs
+one prompt and streams its output, `options` lists what a prompt can choose
+(switching an MCP server first if asked), and `sessions` lists the saved ones.
+The worker's loop only sees the trait, and reports errors the same way for
+every harness. A new one is a `HarnessKind` variant, an implementation, and a
+line in `harness::start`; the orchestrator and the clients only see its name.
+
+**Starting one later.** A worker started without `--harness` hosts none.
+`StartHarness` asks it to start one it can host. It is a question like
+`ListAgentOptions`, with 10 minutes to answer since the harness may have to be
+installed. The worker starts it once (a second start, or another harness, is
+refused) and keeps it until it stops, then answers `HarnessStarted` with what
+it now hosts, which the orchestrator records on the connection. The TUI offers
+it when a node without an agent is opened.
+
+**MCP servers load late.** OpenCode lists its MCP servers, and its commands
+(MCP prompts among them), only once those servers have connected, which can
+take 5 to 15 s after it starts. So the options wait at most 2 s for them: past
+that they answer with the agents and models, `loading` set and no commands or
+MCP servers, and the TUI asks again 3 s later. A picker asked for meanwhile
+opens when the answer comes. The worker asks for the commands as soon as it
+starts OpenCode, to get the MCP servers connecting early.
 
 ```mermaid
 sequenceDiagram
@@ -251,6 +279,16 @@ the name against `/command` first (OpenCode answers an unknown one with a bare
 event stream, which drives the output and the end of the turn as for a plain
 prompt; cancelling still aborts the session.
 
+**Sessions side by side.** Each prompt is its own task, so a worker runs any
+number at once, in one OpenCode server: the orchestrator doesn't limit them,
+and each prompt follows only its own session's events. What a worker refuses
+is a second prompt to a session still answering one, which OpenCode would
+queue and whose replies would mix. `ListAgentSessions` is a question like
+`ListAgentOptions`: the worker lists OpenCode's top-level sessions in every
+directory (`GET /experimental/session`, else `/session`), latest first, and
+marks those it is running a prompt in. The TUI uses it to resume a session,
+and `node sessions` prints it.
+
 ## Task states
 
 ```mermaid
@@ -297,8 +335,9 @@ All traffic is plaintext today, so that address should be on a private network
 
 ## What's next
 
-- **More harnesses.** `HarnessKind` in the worker has one variant today. A
-  node may announce several; `Prompt` uses the first.
+- **More harnesses.** `HarnessKind` in the worker has one variant today, behind
+  the `Harness` trait. A worker hosts one at a time; hosting several would
+  need prompts to name theirs.
 - **Interactive agents.** Questions and permission requests are auto-answered
   today. Forwarding them to the CLI would use the remaining reserved fields
   (`WorkerMsg` 11–19, `OrchestratorMsg` 12–19).
