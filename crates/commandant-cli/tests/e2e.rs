@@ -1036,4 +1036,70 @@ mod agents {
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unavailable);
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_node_starts_the_agent_it_is_asked_for_and_keeps_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (addr, token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
+        let fake = FakeOpencode::start().await;
+        let worker = |token: Option<String>| {
+            tokio::spawn(commandant_worker::run(WorkerConfig {
+                server: addr.clone(),
+                join_token: token,
+                name: Some("w1".into()),
+                state_dir: tmp.path().join("worker"),
+                harness: None,
+                opencode_bin: Some(fake.binary.clone()),
+            }))
+        };
+        let first = worker(Some(token.clone()));
+        let mut client = connect_control(&addr, &token).await.unwrap();
+        let node = wait_for_node(&mut client, true).await;
+        assert!(node.harnesses.is_empty());
+        assert_eq!(node.can_host, ["opencode"]);
+        let starter = client.clone();
+        let start = |harness: &str| {
+            let mut client = starter.clone();
+            let request = StartHarnessRequest {
+                node: "w1".into(),
+                harness: harness.into(),
+            };
+            async move { client.start_harness(request).await }
+        };
+
+        // Nothing to prompt yet, and only what it can host can be started.
+        let err = client.prompt(ask("hi")).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(err.message().contains("start-agent"), "{}", err.message());
+        let unknown = start("claude").await.unwrap_err();
+        assert_eq!(unknown.code(), tonic::Code::InvalidArgument);
+        assert!(
+            unknown.message().contains("it can host opencode"),
+            "{}",
+            unknown.message()
+        );
+        assert_eq!(
+            start("").await.unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+
+        let started = start("opencode").await.unwrap().into_inner();
+        assert_eq!(started.harnesses, ["opencode"]);
+        let listed = wait_for_node(&mut client, true).await;
+        assert_eq!(listed.harnesses, ["opencode"]);
+        ok(&prompt(&mut client, ask("hello")).await);
+        // Starting it again is a no-op.
+        assert_eq!(
+            start("opencode").await.unwrap().into_inner().harnesses,
+            ["opencode"]
+        );
+
+        // Restarted with no --harness, it hosts it again.
+        first.abort();
+        wait_for_node(&mut client, false).await;
+        let _second = worker(None);
+        let back = wait_for_node(&mut client, true).await;
+        assert_eq!(back.harnesses, ["opencode"]);
+        ok(&prompt(&mut client, ask("again")).await);
+    }
 }

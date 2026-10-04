@@ -15,9 +15,9 @@ use anyhow::{Context, anyhow};
 use commandant_proto::hello::Auth;
 use commandant_proto::node_link_client::NodeLinkClient;
 use commandant_proto::{
-    AgentOptions, AgentPrompt, AgentSessions, CancelTask, Heartbeat, Hello, ListAgentOptions,
-    ListAgentSessions, McpSwitch, NodeCredential, OrchestratorMsg, TaskFinished, Welcome,
-    WorkerMsg, orchestrator_msg,
+    AgentOptions, AgentPrompt, AgentSessions, CancelTask, HarnessStarted, Heartbeat, Hello,
+    ListAgentOptions, ListAgentSessions, McpSwitch, NodeCredential, OrchestratorMsg, StartHarness,
+    TaskFinished, Welcome, WorkerMsg, orchestrator_msg,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -25,8 +25,8 @@ use tonic::transport::{Channel, Endpoint};
 use tonic::{Code, Streaming};
 use tracing::{info, warn};
 
-pub use crate::harness::HarnessKind;
-use crate::opencode::Opencode;
+use crate::harness::Host;
+pub use crate::harness::{Harness, HarnessKind};
 use crate::state::Credentials;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
@@ -73,13 +73,24 @@ impl From<tonic::Status> for Stop {
 /// reconnecting with backoff, until a fatal error occurs.
 pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
     let harness = match config.harness {
-        Some(HarnessKind::Opencode) => Some(Arc::new(
-            Opencode::start(config.opencode_bin.clone())
+        Some(kind) => Some(
+            harness::start(kind, config.opencode_bin.clone())
                 .await
-                .context("setting up opencode")?,
-        )),
-        None => None,
+                .with_context(|| format!("setting up {kind}"))?,
+        ),
+        // One started from a client before, which the worker keeps hosting.
+        None => match state::load_harness(&config.state_dir)? {
+            Some(kind) => match harness::start(kind, config.opencode_bin.clone()).await {
+                Ok(harness) => Some(harness),
+                Err(e) => {
+                    warn!("couldn't start {kind} again: {e:#}");
+                    None
+                }
+            },
+            None => None,
+        },
     };
+    let host = Arc::new(Host::new(harness));
     let mut backoff = MIN_BACKOFF;
     // Saved credentials the orchestrator rejects are given up only on the
     // first connection, when the token was just given (say after the
@@ -88,7 +99,7 @@ pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
     let mut use_saved = true;
     loop {
         let started = Instant::now();
-        let Err(stop) = session(&config, harness.as_ref(), use_saved, first).await;
+        let Err(stop) = session(&config, &host, use_saved, first).await;
         match stop {
             Stop::Fatal(e) => return Err(e),
             Stop::Stale(e) => {
@@ -115,14 +126,15 @@ pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
 /// One connection to the orchestrator, from handshake until it breaks.
 async fn session(
     config: &WorkerConfig,
-    harness: Option<&Arc<Opencode>>,
+    host: &Arc<Host>,
     use_saved: bool,
     first: bool,
 ) -> Result<Infallible, Stop> {
     let saved = state::load(&config.state_dir)
         .map_err(Stop::Fatal)?
         .filter(|_| use_saved);
-    let hello = hello(config, saved.as_ref())?;
+    let hosted = host.current().map(|h| h.kind());
+    let hello = hello(config, saved.as_ref(), hosted)?;
     let channel = connect(&config.server).await?;
     let can_rejoin = first && saved.is_some() && config.join_token.is_some();
     let rejected = |status: tonic::Status| match status.code() {
@@ -154,10 +166,14 @@ async fn session(
     }
     info!(node_id = %welcome.node_id, server = %config.server, "connected to orchestrator");
 
-    serve(&mut inbound, &outbound, harness).await
+    serve(&mut inbound, &outbound, config, host).await
 }
 
-fn hello(config: &WorkerConfig, saved: Option<&Credentials>) -> Result<Hello, Stop> {
+fn hello(
+    config: &WorkerConfig,
+    saved: Option<&Credentials>,
+    hosted: Option<HarnessKind>,
+) -> Result<Hello, Stop> {
     let auth = match (saved, &config.join_token) {
         (Some(creds), _) => Auth::Credential(NodeCredential {
             node_id: creds.node_id.clone(),
@@ -180,7 +196,8 @@ fn hello(config: &WorkerConfig, saved: Option<&Credentials>) -> Result<Hello, St
         arch: std::env::consts::ARCH.into(),
         version: commandant_common::VERSION.into(),
         capabilities: std::iter::once("exec".into())
-            .chain(config.harness.map(HarnessKind::capability))
+            .chain(hosted.map(HarnessKind::capability))
+            .chain(HarnessKind::ALL.map(HarnessKind::hostable))
             .collect(),
     })
 }
@@ -222,7 +239,8 @@ fn credentials_to_save(
 async fn serve(
     inbound: &mut Streaming<OrchestratorMsg>,
     outbound: &mpsc::Sender<WorkerMsg>,
-    harness: Option<&Arc<Opencode>>,
+    config: &WorkerConfig,
+    host: &Arc<Host>,
 ) -> Result<Infallible, Stop> {
     // Dropping a cancel sender kills its task, so ending the session kills them all.
     let mut cancels: HashMap<String, oneshot::Sender<()>> = HashMap::new();
@@ -240,18 +258,27 @@ async fn serve(
                     Some(orchestrator_msg::Msg::Prompt(task)) => {
                         info!(task_id = %task.task_id, "prompting the agent");
                         let cancelled = track(&mut cancels, &task.task_id);
-                        match harness {
-                            Some(opencode) => {
-                                tokio::spawn(opencode::run(opencode.clone(), task, outbound.clone(), cancelled));
+                        match host.current() {
+                            Some(harness) => {
+                                tokio::spawn(prompt(harness, task, outbound.clone(), cancelled));
                             }
                             None => refuse_prompt(task, outbound).await,
                         }
                     }
                     Some(orchestrator_msg::Msg::ListOptions(ListAgentOptions { request_id, mcp })) => {
-                        tokio::spawn(answer_options(harness.cloned(), request_id, mcp, outbound.clone()));
+                        tokio::spawn(answer_options(host.current(), request_id, mcp, outbound.clone()));
                     }
                     Some(orchestrator_msg::Msg::ListSessions(ListAgentSessions { request_id })) => {
-                        tokio::spawn(answer_sessions(harness.cloned(), request_id, outbound.clone()));
+                        tokio::spawn(answer_sessions(host.current(), request_id, outbound.clone()));
+                    }
+                    Some(orchestrator_msg::Msg::StartHarness(StartHarness { request_id, harness })) => {
+                        let (host, state_dir) = (host.clone(), config.state_dir.clone());
+                        let opencode_bin = config.opencode_bin.clone();
+                        let outbound = outbound.clone();
+                        tokio::spawn(async move {
+                            let started = start_harness(&host, &harness, opencode_bin, &state_dir).await;
+                            let _ = outbound.send(HarnessStarted { request_id, ..started }.into()).await;
+                        });
                     }
                     Some(orchestrator_msg::Msg::Cancel(CancelTask { task_id })) => {
                         if let Some(cancel) = cancels.remove(&task_id) {
@@ -291,39 +318,108 @@ async fn refuse_prompt(task: AgentPrompt, outbound: &mpsc::Sender<WorkerMsg>) {
     let _ = outbound.send(refused.into()).await;
 }
 
+/// Runs a prompt on the harness and reports how it ended.
+async fn prompt(
+    harness: Arc<dyn Harness>,
+    task: AgentPrompt,
+    outbound: mpsc::Sender<WorkerMsg>,
+    cancel: oneshot::Receiver<()>,
+) {
+    let task_id = task.task_id.clone();
+    let finished = harness
+        .prompt(task, &outbound, cancel)
+        .await
+        .unwrap_or_else(|e| TaskFinished {
+            task_id,
+            error: format!("{e:#}"),
+            ..Default::default()
+        });
+    let _ = outbound.send(finished.into()).await;
+}
+
 /// Tells the orchestrator which agents, models and efforts the harness offers.
 async fn answer_options(
-    harness: Option<Arc<Opencode>>,
+    harness: Option<Arc<dyn Harness>>,
     request_id: String,
     mcp: Option<McpSwitch>,
     outbound: mpsc::Sender<WorkerMsg>,
 ) {
     let options = match harness {
-        Some(opencode) => opencode::list_options(&opencode, request_id, mcp).await,
-        None => AgentOptions {
-            request_id,
-            error: NO_HARNESS.into(),
-            ..Default::default()
-        },
+        Some(harness) => harness.options(mcp).await,
+        None => Err(anyhow!(NO_HARNESS)),
     };
-    let _ = outbound.send(options.into()).await;
+    let options = options.unwrap_or_else(|e| AgentOptions {
+        error: format!("{e:#}"),
+        ..Default::default()
+    });
+    let _ = outbound
+        .send(
+            AgentOptions {
+                request_id,
+                ..options
+            }
+            .into(),
+        )
+        .await;
 }
 
 /// Tells the orchestrator which sessions the harness has saved.
 async fn answer_sessions(
-    harness: Option<Arc<Opencode>>,
+    harness: Option<Arc<dyn Harness>>,
     request_id: String,
     outbound: mpsc::Sender<WorkerMsg>,
 ) {
     let sessions = match harness {
-        Some(opencode) => opencode::list_sessions(&opencode, request_id).await,
-        None => AgentSessions {
+        Some(harness) => harness.sessions().await,
+        None => Err(anyhow!(NO_HARNESS)),
+    };
+    let answer = match sessions {
+        Ok(sessions) => AgentSessions {
             request_id,
-            error: NO_HARNESS.into(),
+            sessions,
+            ..Default::default()
+        },
+        Err(e) => AgentSessions {
+            request_id,
+            error: format!("{e:#}"),
             ..Default::default()
         },
     };
-    let _ = outbound.send(sessions.into()).await;
+    let _ = outbound.send(answer.into()).await;
+}
+
+/// Starts the harness a client asked for, and remembers it for restarts.
+async fn start_harness(
+    host: &Host,
+    name: &str,
+    opencode_bin: Option<PathBuf>,
+    state_dir: &std::path::Path,
+) -> HarnessStarted {
+    let started = async {
+        let kind: HarnessKind = name.parse().map_err(|e: String| anyhow!(e))?;
+        info!(harness = %kind, "starting a harness");
+        host.start(kind, opencode_bin).await?;
+        state::save_harness(state_dir, kind)?;
+        anyhow::Ok(kind)
+    };
+    match started.await {
+        Ok(kind) => HarnessStarted {
+            harnesses: vec![kind.name().into()],
+            ..Default::default()
+        },
+        Err(e) => {
+            warn!("couldn't start {name}: {e:#}");
+            HarnessStarted {
+                harnesses: host
+                    .current()
+                    .map(|h| h.kind().name().into())
+                    .into_iter()
+                    .collect(),
+                error: format!("{e:#}"),
+                ..Default::default()
+            }
+        }
+    }
 }
 
 fn hostname() -> String {

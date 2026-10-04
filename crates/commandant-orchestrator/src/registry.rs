@@ -18,8 +18,10 @@ pub type NodeTx = mpsc::Sender<Result<OrchestratorMsg, Status>>;
 pub struct Connection {
     pub id: ConnId,
     pub tx: NodeTx,
-    /// Agent harnesses the worker announced, e.g. `opencode`.
+    /// Agent harnesses the worker hosts, e.g. `opencode`.
     pub harnesses: Vec<String>,
+    /// Harnesses it could start when asked.
+    pub can_host: Vec<String>,
 }
 
 #[derive(Default)]
@@ -30,9 +32,20 @@ pub struct Registry {
 
 impl Registry {
     /// Registers a connection, replacing (and thereby closing) any previous one.
-    pub fn connect(&self, node_id: &str, tx: NodeTx, harnesses: Vec<String>) -> ConnId {
+    pub fn connect(
+        &self,
+        node_id: &str,
+        tx: NodeTx,
+        harnesses: Vec<String>,
+        can_host: Vec<String>,
+    ) -> ConnId {
         let id = self.last_id.fetch_add(1, Ordering::Relaxed) + 1;
-        let connection = Connection { id, tx, harnesses };
+        let connection = Connection {
+            id,
+            tx,
+            harnesses,
+            can_host,
+        };
         self.nodes
             .lock()
             .unwrap()
@@ -74,8 +87,11 @@ impl Registry {
         self.nodes.lock().unwrap().contains_key(node_id)
     }
 
-    /// The harnesses of the node's live connection; empty when offline.
-    pub fn harnesses(&self, node_id: &str) -> Vec<String> {
-        self.get(node_id).map(|c| c.harnesses).unwrap_or_default()
+    /// Records a harness the connection's worker started.
+    pub fn set_harnesses(&self, node_id: &str, conn_id: ConnId, harnesses: Vec<String>) {
+        let mut nodes = self.nodes.lock().unwrap();
+        if let Some(connection) = nodes.get_mut(node_id).filter(|c| c.id == conn_id) {
+            connection.harnesses = harnesses;
+        }
     }
 }

@@ -17,10 +17,14 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, info, warn};
 
+use commandant_proto::{
+    AgentOptions, AgentPrompt, AgentSession, McpSwitch, TaskFinished, WorkerMsg,
+};
+use tokio::sync::oneshot;
+
+use crate::harness::{Harness, HarnessKind};
+
 use self::api::Api;
-pub use self::options::list as list_options;
-pub use self::prompt::run;
-pub use self::sessions::list as list_sessions;
 
 const INSTALL_SCRIPT: &str = "https://opencode.ai/install";
 /// The first start can be slow: OpenCode fetches its plugins.
@@ -100,6 +104,30 @@ impl Opencode {
         let api = started.api.clone();
         *server = Some(started);
         Ok(api)
+    }
+}
+
+#[tonic::async_trait]
+impl Harness for Opencode {
+    fn kind(&self) -> HarnessKind {
+        HarnessKind::Opencode
+    }
+
+    async fn prompt(
+        &self,
+        task: AgentPrompt,
+        out: &mpsc::Sender<WorkerMsg>,
+        cancel: oneshot::Receiver<()>,
+    ) -> Result<TaskFinished> {
+        prompt::converse(self, task, out, cancel).await
+    }
+
+    async fn options(&self, mcp: Option<McpSwitch>) -> Result<AgentOptions> {
+        options::options(self, mcp).await
+    }
+
+    async fn sessions(&self) -> Result<Vec<AgentSession>> {
+        sessions::list(self).await
     }
 }
 

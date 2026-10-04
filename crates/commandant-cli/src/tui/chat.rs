@@ -404,7 +404,7 @@ impl Chat {
                 (choices, String::new())
             }
             // The app's own.
-            Pick::Session => return None,
+            Pick::Session | Pick::Harness => return None,
         };
         let mut picker = Picker::new(pick, choices, &current);
         for c in filter.chars() {
@@ -448,7 +448,7 @@ impl Chat {
                     ));
                 }
             }
-            Pick::Session => {}
+            Pick::Session | Pick::Harness => {}
             // Ready for its arguments.
             Pick::Command => self.input.insert_str(&format!("/{value} ")),
             Pick::Mcp => {

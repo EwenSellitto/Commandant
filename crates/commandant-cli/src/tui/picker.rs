@@ -18,6 +18,8 @@ pub enum Pick {
     Mcp,
     /// One of the node's chats or saved sessions.
     Session,
+    /// A harness for a node that has none.
+    Harness,
 }
 
 impl Pick {
@@ -29,6 +31,7 @@ impl Pick {
             Self::Command => "Commands and skills",
             Self::Mcp => "MCP servers (Enter connects or disconnects)",
             Self::Session => "Sessions on this node",
+            Self::Harness => "Start an agent on this node",
         }
     }
 }

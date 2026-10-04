@@ -170,6 +170,16 @@ async fn perform(
                 app.on_update(Update::Chat(chat, failed));
             }
         }
+        Action::StartHarness { node, harness } => {
+            tokio::spawn(async move {
+                let request = StartHarnessRequest {
+                    node: node.clone(),
+                    harness,
+                };
+                let started = ask(control_.clone().start_harness(request)).await;
+                let _ = tx_.send(Update::HarnessStarted(node, started));
+            });
+        }
         // The app's own, or quitting, which the loop does.
         Action::NewChat
         | Action::ShowSessions

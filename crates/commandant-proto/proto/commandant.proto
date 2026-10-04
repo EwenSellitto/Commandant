@@ -26,7 +26,7 @@ message Hello {
   string os = 5;
   string arch = 6;
   string version = 7;
-  repeated string capabilities = 8;  // "exec", "harness:<name>"
+  repeated string capabilities = 8;  // "exec", "harness:<name>" (hosted), "can-host:<name>"
 }
 
 message Heartbeat {}
@@ -112,8 +112,9 @@ message WorkerMsg {
     TaskFinished finished = 4;
     AgentOptions options = 10;
     AgentSessions sessions = 11;
+    HarnessStarted harness_started = 12;
   }
-  reserved 12 to 19; // agent events
+  reserved 13 to 19; // agent events
 }
 
 message Welcome {
@@ -157,6 +158,18 @@ message McpSwitch {
   bool connect = 2;
 }
 
+// Starts a harness on a node that hosts none, installing it if need be.
+message StartHarness {
+  string request_id = 1;
+  string harness = 2;                // one of the node's "can-host" names
+}
+
+message HarnessStarted {
+  string request_id = 1;
+  repeated string harnesses = 2;     // what the node hosts now
+  string error = 3;
+}
+
 // Asks the node's agent harness for its saved sessions.
 message ListAgentSessions {
   string request_id = 1;
@@ -189,8 +202,9 @@ message OrchestratorMsg {
     AgentPrompt prompt = 10;
     ListAgentOptions list_options = 11;
     ListAgentSessions list_sessions = 12;
+    StartHarness start_harness = 13;
   }
-  reserved 13 to 19; // agent control
+  reserved 14 to 19; // agent control
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +221,9 @@ service Control {
   // Connects or disconnects an MCP server; answers with the new options.
   rpc SwitchMcpServer(SwitchMcpServerRequest) returns (AgentOptions);
   rpc ListAgentSessions(ListAgentSessionsRequest) returns (AgentSessions);
+  // Starts a harness on a node that hosts none; answers once it is ready,
+  // which can take minutes if it has to be installed.
+  rpc StartHarness(StartHarnessRequest) returns (NodeInfo);
   rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
   rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
 }
@@ -232,6 +249,7 @@ message NodeInfo {
   int64 last_seen = 8;
   int64 created_at = 9;
   repeated string harnesses = 10;    // agent harnesses, while online
+  repeated string can_host = 11;     // harnesses it could start, while online
 }
 
 message ListNodesRequest {}
@@ -266,6 +284,11 @@ message PromptRequest {
 
 message GetAgentOptionsRequest {
   string node = 1;                   // id, id prefix or name
+}
+
+message StartHarnessRequest {
+  string node = 1;                   // id, id prefix or name
+  string harness = 2;
 }
 
 message ListAgentSessionsRequest {

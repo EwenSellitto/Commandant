@@ -1,7 +1,7 @@
 //! The agent's saved sessions, so a client can pick one up again.
 
 use anyhow::Result;
-use commandant_proto::{AgentSession, AgentSessions};
+use commandant_proto::AgentSession;
 
 use super::Opencode;
 use super::api::SavedSession;
@@ -9,23 +9,8 @@ use super::api::SavedSession;
 /// How many sessions a listing shows.
 const LIMIT: usize = 50;
 
-/// Answers a ListAgentSessions; failures go in the answer's `error`.
-pub async fn list(opencode: &Opencode, request_id: String) -> AgentSessions {
-    match gather(opencode).await {
-        Ok(sessions) => AgentSessions {
-            request_id,
-            sessions,
-            ..Default::default()
-        },
-        Err(e) => AgentSessions {
-            request_id,
-            error: format!("{e:#}"),
-            ..Default::default()
-        },
-    }
-}
-
-async fn gather(opencode: &Opencode) -> Result<Vec<AgentSession>> {
+/// The latest saved sessions.
+pub async fn list(opencode: &Opencode) -> Result<Vec<AgentSession>> {
     let saved = opencode.api().await?.sessions(LIMIT).await?;
     Ok(sessions(saved, |id| opencode.is_busy(id)))
 }

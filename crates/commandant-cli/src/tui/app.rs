@@ -37,6 +37,11 @@ pub enum Action {
     ShowSessions,
     ShowNodes,
     CloseChat,
+    /// Have a node with no agent start one.
+    StartHarness {
+        node: String,
+        harness: String,
+    },
     Quit,
 }
 
@@ -47,6 +52,8 @@ pub enum Update {
     Options(String, Result<AgentOptions, String>),
     Nodes(Vec<NodeInfo>),
     Sessions(String, Result<Vec<AgentSession>, String>),
+    /// The node, once it hosts the harness it was asked to start.
+    HarnessStarted(String, Result<NodeInfo, String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +81,10 @@ pub struct App {
     pub picker: Option<Picker>,
     /// A remark on the node screen.
     pub notice: String,
+    /// Nodes starting a harness, which can take minutes.
+    pub starting: HashSet<String>,
+    /// The node the harness picker is for.
+    harness_for: Option<NodeInfo>,
     /// What new chats start with; `--session` only goes to the first.
     defaults: Settings,
     next_id: ChatId,
@@ -97,6 +108,8 @@ impl App {
             last: HashMap::new(),
             picker: None,
             notice: String::new(),
+            starting: HashSet::new(),
+            harness_for: None,
             defaults,
             next_id: 1,
         }
@@ -151,19 +164,26 @@ impl App {
         if ctrl && matches!(key.code, KeyCode::Char('c' | 'd')) {
             return vec![Action::Quit];
         }
-        if self.screen == Screen::Nodes {
-            return self.on_node_key(key);
-        }
         if let Some(picker) = &mut self.picker {
             match picker.on_key(key) {
                 Outcome::Open => {}
-                Outcome::Closed => self.picker = None,
-                Outcome::Chosen(value) => {
+                Outcome::Closed => {
                     self.picker = None;
-                    return self.choose_session(&value);
+                    self.harness_for = None;
+                }
+                Outcome::Chosen(value) => {
+                    let pick = picker.pick;
+                    self.picker = None;
+                    return match pick {
+                        Pick::Harness => self.start_harness(value),
+                        _ => self.choose_session(&value),
+                    };
                 }
             }
             return Vec::new();
+        }
+        if self.screen == Screen::Nodes {
+            return self.on_node_key(key);
         }
         let chat_picking = self.chat().is_some_and(|c| c.picker.is_some());
         let action = match key.code {
@@ -251,20 +271,58 @@ impl App {
             self.show(id);
             return actions;
         }
-        if node.harnesses.is_empty() {
-            self.notice = format!(
-                "{} runs no agent harness; start its worker with --harness opencode",
-                node.name
-            );
-            return Vec::new();
-        }
         if !node.online {
             self.notice = format!("{} is offline", node.name);
+            return Vec::new();
+        }
+        if node.harnesses.is_empty() {
+            self.choose_harness(node);
             return Vec::new();
         }
         let settings = self.defaults.clone();
         actions.extend(self.new_chat(node, settings));
         actions
+    }
+
+    /// Offers the harnesses a node without one can start.
+    fn choose_harness(&mut self, node: NodeInfo) {
+        if self.starting.contains(&node.id) {
+            self.notice = format!("{} is still starting its agent…", node.name);
+            return;
+        }
+        if node.can_host.is_empty() {
+            self.notice = format!(
+                "{}'s worker can't start an agent when asked; update it, or restart it with --harness",
+                node.name
+            );
+            return;
+        }
+        let choices = node
+            .can_host
+            .iter()
+            .map(|name| {
+                let kind = name.parse::<commandant_worker::HarnessKind>();
+                let detail = kind.map_or("", |k| k.description());
+                Choice::new(name, name, detail)
+            })
+            .collect();
+        self.picker = Some(Picker::new(Pick::Harness, choices, ""));
+        self.harness_for = Some(node);
+    }
+
+    fn start_harness(&mut self, harness: String) -> Vec<Action> {
+        let Some(node) = self.harness_for.take() else {
+            return Vec::new();
+        };
+        self.starting.insert(node.id.clone());
+        self.notice = format!(
+            "starting {harness} on {}; installing it first can take a few minutes…",
+            node.name
+        );
+        vec![Action::StartHarness {
+            node: node.id,
+            harness,
+        }]
     }
 
     /// Starts a chat and shows it; it asks for the options the node hasn't given.
@@ -460,6 +518,31 @@ impl App {
                     self.selected = at;
                 }
                 self.selected = self.selected.min(self.nodes.len().saturating_sub(1));
+                Vec::new()
+            }
+            Update::HarnessStarted(id, started) => {
+                self.starting.remove(&id);
+                let name = self
+                    .nodes
+                    .iter()
+                    .find(|n| n.id == id)
+                    .map(|n| n.name.clone());
+                let name = name.unwrap_or_else(|| id.clone());
+                match started {
+                    Ok(node) => {
+                        let hosts = node.harnesses.join(", ");
+                        if let Some(known) = self.nodes.iter_mut().find(|n| n.id == id) {
+                            *known = node;
+                        }
+                        // Still looking at it: open it.
+                        let selected = self.nodes.get(self.selected).map(|n| n.id.as_str());
+                        if self.screen == Screen::Nodes && selected == Some(id.as_str()) {
+                            return self.open_selected_node();
+                        }
+                        self.notice = format!("{name} now hosts {hosts}");
+                    }
+                    Err(e) => self.notice = format!("couldn't start an agent on {name}: {e}"),
+                }
                 Vec::new()
             }
             Update::Sessions(node, sessions) => {
@@ -811,13 +894,18 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_node_without_an_agent_isnt_opened() {
+    fn an_old_worker_without_an_agent_isnt_opened() {
         let mut bare = node("n9", true);
         bare.harnesses.clear();
         let mut app = App::new(vec![bare], Settings::default());
         assert!(app.on_key(key(KeyCode::Enter)).is_empty());
         assert_eq!(app.screen, Screen::Nodes);
-        assert!(app.notice.contains("no agent harness"), "{}", app.notice);
+        assert!(app.picker.is_none());
+        assert!(
+            app.notice.contains("can't start an agent"),
+            "{}",
+            app.notice
+        );
         // Pasting on the node list does nothing.
         assert!(app.on_input(Event::Paste("x".into())).is_empty());
     }
@@ -913,5 +1001,84 @@ pub(crate) mod tests {
         assert_eq!(fetches(app.on_key(key(KeyCode::Tab))), 1);
         app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
         assert_eq!(fetches(app.on_key(key(KeyCode::Tab))), 0);
+    }
+
+    fn bare(id: &str) -> NodeInfo {
+        NodeInfo {
+            harnesses: Vec::new(),
+            can_host: vec!["opencode".into()],
+            ..node(id, true)
+        }
+    }
+
+    #[test]
+    fn a_node_without_an_agent_offers_to_start_one() {
+        let mut app = App::new(vec![bare("n1")], Settings::default());
+        assert!(app.on_key(key(KeyCode::Enter)).is_empty());
+        let picker = app.picker.as_ref().expect("a harness to choose");
+        assert_eq!(picker.pick, Pick::Harness);
+        assert_eq!(picker.shown().next().unwrap().value, "opencode");
+        assert!(!picker.shown().next().unwrap().detail.is_empty());
+
+        // Esc backs out, and nothing starts.
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.picker.is_none());
+        assert!(app.starting.is_empty());
+
+        app.on_key(key(KeyCode::Enter));
+        let actions = app.on_key(key(KeyCode::Enter));
+        assert!(matches!(&actions[..],
+            [Action::StartHarness { node, harness }] if node == "n1" && harness == "opencode"));
+        assert!(app.starting.contains("n1"));
+        assert!(app.notice.contains("starting opencode"), "{}", app.notice);
+        // Asking again while it starts doesn't start another.
+        assert!(app.on_key(key(KeyCode::Enter)).is_empty());
+        assert!(app.picker.is_none());
+        assert!(app.notice.contains("still starting"), "{}", app.notice);
+
+        // Once it hosts it, the node opens, as it is still the one in view.
+        let ready = NodeInfo {
+            harnesses: vec!["opencode".into()],
+            ..bare("n1")
+        };
+        let actions = app.on_update(Update::HarnessStarted("n1".into(), Ok(ready)));
+        assert!(matches!(
+            &actions[..],
+            [Action::FetchSessions(_), Action::FetchOptions(_)]
+        ));
+        assert!(app.starting.is_empty());
+        assert_eq!(app.chat().unwrap().node.harnesses, ["opencode"]);
+    }
+
+    #[test]
+    fn a_harness_that_fails_or_finishes_out_of_view_is_reported() {
+        let mut app = App::new(vec![bare("n1"), bare("n2")], Settings::default());
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Enter));
+        let failed = Update::HarnessStarted("n1".into(), Err("no curl on the node".into()));
+        assert!(app.on_update(failed).is_empty());
+        assert!(
+            app.notice
+                .contains("couldn't start an agent on box-n1: no curl"),
+            "{}",
+            app.notice
+        );
+        assert!(app.starting.is_empty(), "it can be tried again");
+
+        // Started while another node is highlighted: say so, don't jump.
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Down));
+        let ready = NodeInfo {
+            harnesses: vec!["opencode".into()],
+            ..bare("n1")
+        };
+        assert!(
+            app.on_update(Update::HarnessStarted("n1".into(), Ok(ready)))
+                .is_empty()
+        );
+        assert_eq!(app.screen, Screen::Nodes);
+        assert_eq!(app.notice, "box-n1 now hosts opencode");
+        assert_eq!(app.nodes[0].harnesses, ["opencode"]);
     }
 }

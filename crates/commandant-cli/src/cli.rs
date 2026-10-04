@@ -205,6 +205,13 @@ pub enum NodeCommand {
     Ls,
     /// Forget a node; it must rejoin with a new token.
     Rm { node: String },
+    /// Start a coding agent on a node that has none (installed if missing);
+    /// the node keeps it across restarts.
+    StartAgent {
+        node: String,
+        /// The harness, e.g. opencode.
+        harness: String,
+    },
     /// List the agent sessions saved on a node, latest first.
     Sessions { node: String },
     /// List the commands and skills of a node's agent.

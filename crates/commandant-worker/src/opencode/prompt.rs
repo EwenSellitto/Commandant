@@ -1,7 +1,6 @@
 //! Runs one prompt in an OpenCode session and streams the reply back.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use commandant_proto::{
@@ -14,25 +13,8 @@ use super::Opencode;
 use super::api::{Api, CommandRun, Event, Prompt};
 
 /// Runs `task` until the agent goes idle or `cancel` fires (or its sender is
-/// dropped), then reports a TaskFinished.
-pub async fn run(
-    opencode: Arc<Opencode>,
-    task: AgentPrompt,
-    out: mpsc::Sender<WorkerMsg>,
-    cancel: oneshot::Receiver<()>,
-) {
-    let task_id = task.task_id.clone();
-    let finished = converse(&opencode, task, &out, cancel)
-        .await
-        .unwrap_or_else(|e| TaskFinished {
-            task_id,
-            error: format!("{e:#}"),
-            ..Default::default()
-        });
-    let _ = out.send(finished.into()).await;
-}
-
-async fn converse(
+/// dropped).
+pub async fn converse(
     opencode: &Opencode,
     task: AgentPrompt,
     out: &mpsc::Sender<WorkerMsg>,

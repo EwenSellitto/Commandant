@@ -124,12 +124,13 @@ fn node_name(hello: &Hello) -> Result<&str, Status> {
     Ok(name)
 }
 
-/// `harness:opencode` in the hello's capabilities becomes `opencode`.
-fn harnesses(hello: &Hello) -> Vec<String> {
+/// With `prefix` `harness:`, `harness:opencode` in the hello's capabilities
+/// becomes `opencode`.
+fn capabilities(hello: &Hello, prefix: &str) -> Vec<String> {
     hello
         .capabilities
         .iter()
-        .filter_map(|c| c.strip_prefix("harness:"))
+        .filter_map(|c| c.strip_prefix(prefix))
         .map(String::from)
         .collect()
 }
@@ -155,10 +156,12 @@ impl NodeLink for LinkService {
 
         let (tx, rx) = mpsc::channel(256);
         tx.send(Ok(welcome.into())).await.map_err(internal)?;
-        let conn_id = self
-            .shared
-            .registry
-            .connect(&node_id, tx, harnesses(&hello));
+        let conn_id = self.shared.registry.connect(
+            &node_id,
+            tx,
+            capabilities(&hello, "harness:"),
+            capabilities(&hello, "can-host:"),
+        );
         info!(%node_id, conn_id, hostname = %hello.hostname, "node connected");
 
         let shared = self.shared.clone();
@@ -208,6 +211,13 @@ async fn handle_messages(
             worker_msg::Msg::Output(output) => shared.hub.output(conn_id, output),
             worker_msg::Msg::Finished(finished) => record_finished(shared, conn_id, finished).await,
             worker_msg::Msg::Options(options) => shared.queries.answer(Answer::Options(options)),
+            worker_msg::Msg::HarnessStarted(started) => {
+                if started.error.is_empty() {
+                    let harnesses = started.harnesses.clone();
+                    shared.registry.set_harnesses(node_id, conn_id, harnesses);
+                }
+                shared.queries.answer(Answer::Harness(started))
+            }
             worker_msg::Msg::Sessions(sessions) => {
                 shared.queries.answer(Answer::Sessions(sessions))
             }

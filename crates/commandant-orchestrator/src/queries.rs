@@ -3,13 +3,14 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use commandant_proto::{AgentOptions, AgentSessions};
+use commandant_proto::{AgentOptions, AgentSessions, HarnessStarted};
 use tokio::sync::oneshot;
 
 /// What a worker answers a question with.
 pub enum Answer {
     Options(AgentOptions),
     Sessions(AgentSessions),
+    Harness(HarnessStarted),
 }
 
 impl Answer {
@@ -17,6 +18,7 @@ impl Answer {
         match self {
             Self::Options(options) => &options.request_id,
             Self::Sessions(sessions) => &sessions.request_id,
+            Self::Harness(started) => &started.request_id,
         }
     }
 }

@@ -110,6 +110,18 @@ pub async fn remove_node(client: &Client, node: String) -> Result<()> {
     Ok(())
 }
 
+pub async fn start_agent(client: &Client, node: String, harness: String) -> Result<()> {
+    eprintln!("Starting {harness} on {node}; installing it first can take a few minutes…");
+    let node = client
+        .connect()
+        .await?
+        .start_harness(StartHarnessRequest { node, harness })
+        .await?
+        .into_inner();
+    println!("{} now hosts {}", node.name, node.harnesses.join(", "));
+    Ok(())
+}
+
 pub async fn list_sessions(client: &Client, node: String) -> Result<()> {
     let sessions = client
         .connect()

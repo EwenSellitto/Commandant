@@ -39,7 +39,11 @@ const INDENT: &str = "  ";
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area().inner(ratatui::layout::Margin::new(1, 0));
     let Screen::Chat(id) = app.screen else {
-        return draw_nodes(frame, app, area);
+        draw_nodes(frame, app, area);
+        if let Some(picker) = &app.picker {
+            draw_picker(frame, Color::Cyan, picker);
+        }
+        return;
     };
     let [header, tabs, thread, status, input, footer] = Layout::vertical([
         Constraint::Length(1),
@@ -120,6 +124,11 @@ fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
                 Span::raw(format!("{:<name_width$}  ", node.name)).bold(),
             ];
             spans.extend(dotted(facts.into_iter().map(|f| f.fg(MUTED))));
+            if app.starting.contains(&node.id) {
+                spans.push("   starting its agent…".yellow());
+            } else if node.online && node.harnesses.is_empty() && !node.can_host.is_empty() {
+                spans.push("   enter to start an agent".fg(MUTED));
+            }
             let chats = app.chats_on(&node.id).count();
             if chats > 0 {
                 let working = app
@@ -743,5 +752,25 @@ mod tests {
             .collect();
         assert!(row_text.contains('…'), "{row_text}");
         assert!(x < 30);
+    }
+
+    #[test]
+    fn the_harness_picker_floats_over_the_nodes() {
+        let bare = commandant_proto::NodeInfo {
+            harnesses: Vec::new(),
+            can_host: vec!["opencode".into()],
+            ..crate::tui::app::tests::node("n1", true)
+        };
+        let mut app = App::new(vec![bare], Default::default());
+        let buf = render(&mut app);
+        find(&buf, "enter to start an agent");
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        let buf = render(&mut app);
+        find(&buf, "Start an agent on this node");
+        find(&buf, "opencode");
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        let buf = render(&mut app);
+        assert!(absent(&buf, "Start an agent on this node"));
+        find(&buf, "starting its agent…");
     }
 }

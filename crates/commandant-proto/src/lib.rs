@@ -33,6 +33,7 @@ envelope!(WorkerMsg.msg, worker_msg::Msg {
     Finished(TaskFinished),
     Options(AgentOptions),
     Sessions(AgentSessions),
+    HarnessStarted(HarnessStarted),
 });
 
 envelope!(OrchestratorMsg.msg, orchestrator_msg::Msg {
@@ -42,6 +43,7 @@ envelope!(OrchestratorMsg.msg, orchestrator_msg::Msg {
     Prompt(AgentPrompt),
     ListOptions(ListAgentOptions),
     ListSessions(ListAgentSessions),
+    StartHarness(StartHarness),
 });
 
 envelope!(TaskEvent.event, task_event::Event {

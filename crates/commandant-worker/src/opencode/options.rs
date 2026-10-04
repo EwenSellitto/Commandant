@@ -14,33 +14,20 @@ use super::api::{Agent, Command, McpStatus, Providers};
 /// OpenCode's own default agent.
 const BUILD: &str = "build";
 
-/// Answers a ListAgentOptions, switching the MCP server first if asked;
-/// failures go in the answer's `error`.
-pub async fn list(opencode: &Opencode, request_id: String, mcp: Option<McpSwitch>) -> AgentOptions {
-    let options = async {
-        if let Some(McpSwitch { name, connect }) = mcp {
-            let api = opencode.api().await?;
-            let action = if connect {
-                "connecting"
-            } else {
-                "disconnecting"
-            };
-            api.switch_mcp_server(&name, connect)
-                .await
-                .with_context(|| format!("{action} MCP server {name}"))?;
-        }
-        gather(opencode).await
-    };
-    let options = options
-        .await
-        .unwrap_or_else(|e: anyhow::Error| AgentOptions {
-            error: format!("{e:#}"),
-            ..Default::default()
-        });
-    AgentOptions {
-        request_id,
-        ..options
+/// What a prompt can choose from, switching an MCP server first if asked.
+pub async fn options(opencode: &Opencode, mcp: Option<McpSwitch>) -> Result<AgentOptions> {
+    if let Some(McpSwitch { name, connect }) = mcp {
+        let api = opencode.api().await?;
+        let action = if connect {
+            "connecting"
+        } else {
+            "disconnecting"
+        };
+        api.switch_mcp_server(&name, connect)
+            .await
+            .with_context(|| format!("{action} MCP server {name}"))?;
     }
+    gather(opencode).await
 }
 
 async fn gather(opencode: &Opencode) -> Result<AgentOptions> {
