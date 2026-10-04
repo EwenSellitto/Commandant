@@ -199,6 +199,8 @@ pub enum NodeCommand {
     Ls,
     /// Forget a node; it must rejoin with a new token.
     Rm { node: String },
+    /// List the agent sessions saved on a node, latest first.
+    Sessions { node: String },
     /// List the commands and skills of a node's agent.
     Commands { node: String },
     /// List a node's MCP servers, or connect or disconnect one.

@@ -4,7 +4,9 @@
 mod api;
 mod options;
 mod prompt;
+mod sessions;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -18,6 +20,7 @@ use tracing::{debug, info, warn};
 use self::api::Api;
 pub use self::options::list as list_options;
 pub use self::prompt::run;
+pub use self::sessions::list as list_sessions;
 
 const INSTALL_SCRIPT: &str = "https://opencode.ai/install";
 /// The first start can be slow: OpenCode fetches its plugins.
@@ -28,6 +31,20 @@ const LISTENING: &str = "listening on ";
 pub struct Opencode {
     binary: PathBuf,
     server: Mutex<Option<Server>>,
+    /// Sessions answering a prompt, which can't take another meanwhile.
+    busy: std::sync::Mutex<HashSet<String>>,
+}
+
+/// Holds a session busy until dropped.
+struct Running<'a> {
+    opencode: &'a Opencode,
+    session_id: String,
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.opencode.busy.lock().unwrap().remove(&self.session_id);
+    }
 }
 
 struct Server {
@@ -42,9 +59,28 @@ impl Opencode {
         let opencode = Self {
             binary,
             server: Mutex::new(None),
+            busy: Default::default(),
         };
         opencode.api().await?;
         Ok(opencode)
+    }
+
+    /// Marks a session busy, unless it already is: OpenCode would queue a
+    /// second prompt, and the two replies would mix.
+    fn claim(&self, session_id: &str) -> Result<Running<'_>> {
+        let fresh = self.busy.lock().unwrap().insert(session_id.to_string());
+        ensure!(
+            fresh,
+            "session {session_id} is already answering a prompt; wait for it, or cancel it"
+        );
+        Ok(Running {
+            opencode: self,
+            session_id: session_id.to_string(),
+        })
+    }
+
+    fn is_busy(&self, session_id: &str) -> bool {
+        self.busy.lock().unwrap().contains(session_id)
     }
 
     /// A client for the server, which is restarted if it has died.
@@ -173,4 +209,27 @@ async fn install() -> Result<()> {
 #[cfg(not(unix))]
 async fn install() -> Result<()> {
     bail!("install opencode first (npm install -g opencode-ai), then restart the worker")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_session_takes_one_prompt_at_a_time() {
+        let opencode = Opencode {
+            binary: PathBuf::new(),
+            server: Mutex::new(None),
+            busy: Default::default(),
+        };
+        let running = opencode.claim("ses_a").unwrap();
+        assert!(opencode.is_busy("ses_a"));
+        assert!(opencode.claim("ses_a").is_err());
+        // Other sessions run alongside.
+        let other = opencode.claim("ses_b").unwrap();
+        drop(running);
+        assert!(!opencode.is_busy("ses_a"));
+        assert!(opencode.claim("ses_a").is_ok());
+        drop(other);
+    }
 }

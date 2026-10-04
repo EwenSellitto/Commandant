@@ -16,6 +16,8 @@ pub enum Pick {
     Command,
     /// An MCP server, to connect or disconnect.
     Mcp,
+    /// One of the node's chats or saved sessions.
+    Session,
 }
 
 impl Pick {
@@ -26,6 +28,7 @@ impl Pick {
             Self::Effort => "Thinking effort",
             Self::Command => "Commands and skills",
             Self::Mcp => "MCP servers (Enter connects or disconnects)",
+            Self::Session => "Sessions on this node",
         }
     }
 }

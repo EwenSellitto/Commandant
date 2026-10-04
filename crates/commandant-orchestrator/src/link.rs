@@ -15,6 +15,7 @@ use tonic::{Request, Response, Status, Streaming};
 use tracing::{info, warn};
 
 use crate::auth::{NODE_PREFIX, generate_token, hash_token, hashes_match};
+use crate::queries::Answer;
 use crate::registry::ConnId;
 use crate::store::{InsertNodeError, NODE_DISCONNECTED, NodeFacts, TaskStatus};
 use crate::{Shared, internal};
@@ -204,7 +205,10 @@ async fn handle_messages(
             }
             worker_msg::Msg::Output(output) => shared.hub.output(conn_id, output),
             worker_msg::Msg::Finished(finished) => record_finished(shared, conn_id, finished).await,
-            worker_msg::Msg::Options(options) => shared.queries.answer(options),
+            worker_msg::Msg::Options(options) => shared.queries.answer(Answer::Options(options)),
+            worker_msg::Msg::Sessions(sessions) => {
+                shared.queries.answer(Answer::Sessions(sessions))
+            }
             worker_msg::Msg::Hello(_) => warn!(%node_id, "ignoring duplicate hello"),
         }
     }

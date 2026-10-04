@@ -32,6 +32,7 @@ envelope!(WorkerMsg.msg, worker_msg::Msg {
     Output(TaskOutput),
     Finished(TaskFinished),
     Options(AgentOptions),
+    Sessions(AgentSessions),
 });
 
 envelope!(OrchestratorMsg.msg, orchestrator_msg::Msg {
@@ -40,6 +41,7 @@ envelope!(OrchestratorMsg.msg, orchestrator_msg::Msg {
     Cancel(CancelTask),
     Prompt(AgentPrompt),
     ListOptions(ListAgentOptions),
+    ListSessions(ListAgentSessions),
 });
 
 envelope!(TaskEvent.event, task_event::Event {

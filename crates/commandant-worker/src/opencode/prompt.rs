@@ -51,6 +51,7 @@ async fn converse(
         "" => api.create_session(&directory).await?,
         id => id.to_string(),
     };
+    let _running = opencode.claim(&session_id)?;
     // Subscribed before prompting, so no event is missed.
     let mut events = api.events(&directory).await?;
     // A command only answers once the agent is done, so it runs aside while

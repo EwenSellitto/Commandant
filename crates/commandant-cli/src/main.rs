@@ -46,6 +46,9 @@ async fn dispatch(cli: Cli) -> Result<i32> {
         }
         Command::Node(NodeCommand::Ls) => admin::list_nodes(&client()?).await?,
         Command::Node(NodeCommand::Rm { node }) => admin::remove_node(&client()?, node).await?,
+        Command::Node(NodeCommand::Sessions { node }) => {
+            admin::list_sessions(&client()?, node).await?
+        }
         Command::Node(NodeCommand::Commands { node }) => {
             admin::list_commands(&client()?, node).await?
         }

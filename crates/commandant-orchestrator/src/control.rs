@@ -14,6 +14,7 @@ use tracing::info;
 use commandant_common::lookup::{self, Match};
 
 use crate::auth::{JOIN_PREFIX, generate_token, hash_token};
+use crate::queries::Answer;
 use crate::registry::Connection;
 use crate::store::{NodeRecord, now};
 use crate::tasks::Owner;
@@ -109,25 +110,40 @@ impl ControlService {
         needle: &str,
         mcp: Option<McpSwitch>,
     ) -> Result<Response<AgentOptions>, Status> {
+        let ask = |request_id| ListAgentOptions { request_id, mcp }.into();
+        match self.ask(needle, ask, "say what its agent offers").await? {
+            Answer::Options(options) if options.error.is_empty() => Ok(Response::new(options)),
+            Answer::Options(options) => Err(Status::unavailable(options.error)),
+            Answer::Sessions(_) => Err(Status::internal("the node answered another question")),
+        }
+    }
+
+    /// Puts a question to a node's harness and waits for its answer.
+    async fn ask(
+        &self,
+        needle: &str,
+        question: impl FnOnce(String) -> OrchestratorMsg,
+        doing: &str,
+    ) -> Result<Answer, Status> {
         let (node, conn) = self.connected_node(needle).await?;
         harness(&node, &conn)?;
         let queries = &self.shared.queries;
         let (request_id, answer) = queries.open();
-        let question = ListAgentOptions {
-            request_id: request_id.clone(),
-            mcp,
-        };
-        if conn.tx.send(Ok(question.into())).await.is_err() {
+        if conn
+            .tx
+            .send(Ok(question(request_id.clone())))
+            .await
+            .is_err()
+        {
             queries.close(&request_id);
             return Err(offline(&node));
         }
         let answer = tokio::time::timeout(QUERY_TIMEOUT, answer).await;
         queries.close(&request_id);
         match answer {
-            Ok(Ok(options)) if options.error.is_empty() => Ok(Response::new(options)),
-            Ok(Ok(options)) => Err(Status::unavailable(options.error)),
+            Ok(Ok(answer)) => Ok(answer),
             Ok(Err(_)) | Err(_) => Err(Status::deadline_exceeded(format!(
-                "node {} didn't say what its agent offers",
+                "node {} didn't {doing}",
                 node.name
             ))),
         }
@@ -281,6 +297,19 @@ impl Control for ControlService {
             connect: req.connect,
         };
         self.ask_options(&req.node, Some(switch)).await
+    }
+
+    async fn list_agent_sessions(
+        &self,
+        request: Request<ListAgentSessionsRequest>,
+    ) -> Result<Response<AgentSessions>, Status> {
+        let ask = |request_id| ListAgentSessions { request_id }.into();
+        let needle = request.into_inner().node;
+        match self.ask(&needle, ask, "list its sessions").await? {
+            Answer::Sessions(sessions) if sessions.error.is_empty() => Ok(Response::new(sessions)),
+            Answer::Sessions(sessions) => Err(Status::unavailable(sessions.error)),
+            Answer::Options(_) => Err(Status::internal("the node answered another question")),
+        }
     }
 
     async fn list_tasks(

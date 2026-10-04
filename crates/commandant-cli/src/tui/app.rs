@@ -1,1116 +1,671 @@
-//! The chat's state, and how keys and task events change it.
+//! The whole UI's state: the nodes, and every chat open on them. Chats on
+//! any node run side by side; one is shown at a time.
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-use commandant_proto::task_event::Event as TaskEvent;
+use commandant_common::time::ago;
 use commandant_proto::*;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use super::chat::{self, Activity, Chat, Message, Settings};
 use super::picker::{Choice, Outcome, Pick, Picker};
 
-/// What the worker prefixes its notes with.
-const NOTE_PREFIX: &str = "[opencode] ";
-/// Lines moved by PageUp / PageDown.
-const PAGE: u16 = 10;
+/// Tells chats apart for as long as the UI runs.
+pub type ChatId = u64;
 
-/// Sent with every prompt; `session_id` fills in after the first reply.
-pub struct Settings {
-    pub session_id: String,
-    pub cwd: String,
-    pub model: String,
-    pub agent: String,
-    pub effort: String,
-}
+/// What the session picker offers besides the chats and saved sessions.
+const NEW_SESSION: &str = "new";
 
-/// Something for the event loop to do.
+/// Something for the event loop to do, or (the chat-level ones) for the app.
 pub enum Action {
-    Send(PromptRequest),
+    Send(ChatId, PromptRequest),
     Cancel(String),
-    /// Ask the node what its agent offers.
-    FetchOptions,
-    /// Connect (or disconnect) one of the agent's MCP servers.
+    /// Ask a node what its agent offers.
+    FetchOptions(String),
+    /// Ask a node which sessions its agent has saved.
+    FetchSessions(String),
+    /// Connect (or disconnect) one of a node's MCP servers.
     SwitchMcp {
+        node: String,
         name: String,
         connect: bool,
     },
+    /// Start another chat on the same node.
+    NewChat,
+    /// Pick one of the node's chats or saved sessions.
+    ShowSessions,
+    ShowNodes,
+    CloseChat,
     Quit,
 }
 
 /// What background tasks report to the UI.
-pub enum Message {
-    Task(TaskEvent),
-    /// The prompt couldn't be sent, or its stream broke.
-    Failed(String),
-    Node(NodeInfo),
-    Options(Result<AgentOptions, String>),
+pub enum Update {
+    Chat(ChatId, Message),
+    /// For every chat on the node.
+    Options(String, Result<AgentOptions, String>),
+    Nodes(Vec<NodeInfo>),
+    Sessions(String, Result<Vec<AgentSession>, String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    User,
-    /// The model's thinking, before or between its replies.
-    Thinking,
-    Agent,
-    /// A tool the agent used.
-    Tool,
-    Error,
-    /// A remark from commandant itself.
-    Info,
-    /// What a finished turn used: agent, model, time, tokens, cost.
-    Summary,
-}
-
-pub struct Entry {
-    pub role: Role,
-    pub text: String,
-    /// The agent that was chosen when it was written.
-    pub agent: String,
-}
-
-pub enum Activity {
-    Idle,
-    Working {
-        /// Known once the orchestrator has started the task.
-        task_id: Option<String>,
-        since: Instant,
-        cancelling: bool,
-        /// What the prompt was sent with, for the turn's summary.
-        agent: String,
-        effort: String,
-    },
+pub enum Screen {
+    Nodes,
+    Chat(ChatId),
 }
 
 pub struct App {
-    pub node: NodeInfo,
-    pub settings: Settings,
-    pub thread: Vec<Entry>,
-    pub activity: Activity,
-    pub input: Input,
-    /// How many lines the thread is scrolled up from the bottom.
-    pub scroll: u16,
-    /// Bytes of a UTF-8 character split across output chunks, per stream.
-    partial_stdout: Vec<u8>,
-    partial_stderr: Vec<u8>,
-    partial_reasoning: Vec<u8>,
-    /// A note line still waiting for its newline.
-    partial_note: String,
-    /// The agents, models and efforts the node offers, once it has said.
-    pub options: Option<Arc<AgentOptions>>,
-    fetching_options: bool,
-    /// The MCP server being switched, to report on once the node answers.
-    switching_mcp: Option<String>,
-    /// The model that last replied, which tells what "default" means.
-    pub used_model: String,
-    /// The floating window, when open.
+    pub screen: Screen,
+    pub nodes: Vec<NodeInfo>,
+    /// The highlighted row of the node list.
+    pub selected: usize,
+    /// Every open chat, on every node, oldest first.
+    pub chats: Vec<Chat>,
+    /// What a node's agent offers, once it has said; shared by its chats.
+    options: HashMap<String, Arc<AgentOptions>>,
+    /// The sessions each node has saved, as last listed.
+    pub saved: HashMap<String, Vec<AgentSession>>,
+    /// The chat last shown on each node.
+    last: HashMap<String, ChatId>,
+    /// The session picker, when open; a chat's own pickers live in the chat.
     pub picker: Option<Picker>,
-    /// What the session has cost so far, in US dollars.
-    pub spent: f64,
-    /// Tokens in the session's context after the last turn.
-    pub context: u64,
+    /// A remark on the node screen.
+    pub notice: String,
+    /// What new chats start with; `--session` only goes to the first.
+    defaults: Settings,
+    next_id: ChatId,
 }
 
 impl App {
-    pub fn new(node: NodeInfo, settings: Settings) -> Self {
+    pub fn new(nodes: Vec<NodeInfo>, defaults: Settings) -> Self {
+        // Start on the first node that can take a prompt.
+        let selected = nodes
+            .iter()
+            .position(|n| n.online && !n.harnesses.is_empty())
+            .unwrap_or(0);
         Self {
-            node,
-            settings,
-            thread: Vec::new(),
-            activity: Activity::Idle,
-            input: Input::default(),
-            scroll: 0,
-            partial_stdout: Vec::new(),
-            partial_stderr: Vec::new(),
-            partial_reasoning: Vec::new(),
-            partial_note: String::new(),
-            options: None,
-            // The event loop asks as soon as it starts.
-            fetching_options: true,
-            switching_mcp: None,
-            used_model: String::new(),
+            screen: Screen::Nodes,
+            nodes,
+            selected,
+            chats: Vec::new(),
+            options: HashMap::new(),
+            saved: HashMap::new(),
+            last: HashMap::new(),
             picker: None,
-            spent: 0.0,
-            context: 0,
+            notice: String::new(),
+            defaults,
+            next_id: 1,
         }
     }
 
-    /// The agent prompts go to: the chosen one, else the harness's default.
-    pub fn agent(&self) -> &str {
-        match (&self.settings.agent, &self.options) {
-            (agent, _) if !agent.is_empty() => agent,
-            (_, Some(options)) => &options.default_agent,
-            _ => "",
+    /// The chat on screen, if any.
+    pub fn chat(&self) -> Option<&Chat> {
+        match self.screen {
+            Screen::Chat(id) => self.chats.iter().find(|c| c.id == id),
+            Screen::Nodes => None,
         }
     }
 
-    /// The model prompts go to, if known: the chosen one, else the one that
-    /// last replied, else the configured default.
-    pub fn model(&self) -> &str {
-        let default = self.options.as_ref().map_or("", |o| &o.default_model);
-        [&self.settings.model, &self.used_model]
-            .into_iter()
-            .find(|m| !m.is_empty())
-            .map_or(default, String::as_str)
-    }
-
-    /// What the node said about a model, if anything.
-    pub fn model_choice(&self, id: &str) -> Option<&ModelChoice> {
-        self.options.as_ref()?.models.iter().find(|m| m.id == id)
-    }
-
-    /// A model's name, else its id.
-    pub fn model_name<'a>(&'a self, id: &'a str) -> &'a str {
-        self.model_choice(id).map_or(id, |m| &m.name)
-    }
-
-    /// The thinking efforts of the current model; `None` if it's unknown.
-    fn efforts(&self) -> Option<&[String]> {
-        self.model_choice(self.model())
-            .map(|m| m.variants.as_slice())
-    }
-
-    /// What the agent is up to, judging by the latest output.
-    pub fn doing(&self) -> &'static str {
-        match self.thread.last().map(|e| e.role) {
-            Some(Role::Thinking) => "thinking",
-            Some(Role::Agent) => "writing",
-            Some(Role::Tool) => "using tools",
-            _ => "waiting",
+    fn chat_mut(&mut self) -> Option<&mut Chat> {
+        match self.screen {
+            Screen::Chat(id) => self.chats.iter_mut().find(|c| c.id == id),
+            Screen::Nodes => None,
         }
     }
 
-    pub fn harness(&self) -> Option<&str> {
-        self.node.harnesses.first().map(String::as_str)
+    /// The chats on a node, oldest first.
+    pub fn chats_on<'a>(&'a self, node_id: &'a str) -> impl Iterator<Item = &'a Chat> {
+        self.chats.iter().filter(move |c| c.node.id == node_id)
     }
 
-    pub fn running_task(&self) -> Option<String> {
-        match &self.activity {
-            Activity::Working { task_id, .. } => task_id.clone(),
-            Activity::Idle => None,
-        }
+    /// Tasks still running, for quitting.
+    pub fn running_tasks(&self) -> Vec<String> {
+        self.chats.iter().filter_map(Chat::running_task).collect()
     }
 
-    pub fn on_input(&mut self, event: Event) -> Option<Action> {
+    /// Opens a chat on `node` with `settings`: the first shown on start.
+    pub fn open_node_with(&mut self, node: NodeInfo, settings: Settings) -> Vec<Action> {
+        let mut actions = vec![Action::FetchSessions(node.id.clone())];
+        actions.extend(self.new_chat(node, settings));
+        actions
+    }
+
+    pub fn on_input(&mut self, event: Event) -> Vec<Action> {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
-            Event::Paste(text) => {
-                // The prompt is a single line.
-                self.input.insert_str(&text.replace(['\r', '\n'], " "));
-                None
-            }
-            _ => None,
+            Event::Paste(_) => match self.chat_mut() {
+                Some(chat) => chat.on_input(event).into_iter().collect(),
+                None => Vec::new(),
+            },
+            _ => Vec::new(),
         }
     }
 
-    fn on_key(&mut self, key: KeyEvent) -> Option<Action> {
+    pub fn on_key(&mut self, key: KeyEvent) -> Vec<Action> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
         if ctrl && matches!(key.code, KeyCode::Char('c' | 'd')) {
-            return Some(Action::Quit);
+            return vec![Action::Quit];
+        }
+        if self.screen == Screen::Nodes {
+            return self.on_node_key(key);
         }
         if let Some(picker) = &mut self.picker {
             match picker.on_key(key) {
                 Outcome::Open => {}
                 Outcome::Closed => self.picker = None,
                 Outcome::Chosen(value) => {
-                    let pick = picker.pick;
                     self.picker = None;
-                    return self.choose(pick, value);
+                    return self.choose_session(&value);
                 }
             }
-            return None;
+            return Vec::new();
         }
+        let chat_picking = self.chat().is_some_and(|c| c.picker.is_some());
+        let action = match key.code {
+            _ if chat_picking => None,
+            KeyCode::Char('n') if ctrl => Some(Action::NewChat),
+            KeyCode::Char('o') if ctrl => Some(Action::ShowSessions),
+            KeyCode::Char('g') if ctrl => Some(Action::ShowNodes),
+            KeyCode::Char('w') if ctrl => Some(Action::CloseChat),
+            KeyCode::Left if alt => return self.cycle_chat(-1),
+            KeyCode::Right if alt => return self.cycle_chat(1),
+            _ => None,
+        };
+        let action = match action {
+            Some(action) => Some(action),
+            None => self.chat_mut().and_then(|chat| chat.on_key(key)),
+        };
+        action.map_or_else(Vec::new, |action| self.handle(action))
+    }
+
+    /// Carries out what is the app's to do, and passes the rest on.
+    fn handle(&mut self, action: Action) -> Vec<Action> {
+        let Some(chat) = self.chat() else {
+            return vec![action];
+        };
+        let node = chat.node.clone();
+        match action {
+            Action::NewChat => {
+                let settings = Settings {
+                    session_id: String::new(),
+                    ..chat.settings.clone()
+                };
+                self.new_chat(node, settings)
+            }
+            Action::ShowSessions => {
+                self.open_session_picker(&node.id);
+                vec![Action::FetchSessions(node.id)]
+            }
+            Action::ShowNodes => {
+                self.show_nodes();
+                Vec::new()
+            }
+            Action::CloseChat => {
+                self.close_chat();
+                Vec::new()
+            }
+            action => vec![action],
+        }
+    }
+
+    fn on_node_key(&mut self, key: KeyEvent) -> Vec<Action> {
+        let last = self.nodes.len().saturating_sub(1);
         match key.code {
-            KeyCode::Char('u') if ctrl => self.input.clear(),
-            KeyCode::Char('t') if ctrl => return self.cycle_effort(),
-            KeyCode::Tab => return self.cycle_agent(1),
-            KeyCode::BackTab => return self.cycle_agent(-1),
-            KeyCode::Char(c) => self.input.insert(c),
-            KeyCode::Enter => return self.submit(),
-            KeyCode::Esc => return self.cancel(),
-            KeyCode::Backspace => self.input.backspace(),
-            KeyCode::Delete => self.input.delete(),
-            KeyCode::Left => self.input.left(),
-            KeyCode::Right => self.input.right(),
-            KeyCode::Home => self.input.home(),
-            KeyCode::End => self.input.end(),
-            KeyCode::PageUp => self.scroll = self.scroll.saturating_add(PAGE),
-            KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(PAGE),
+            KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => self.selected = (self.selected + 1).min(last),
+            KeyCode::Char('q') => return vec![Action::Quit],
+            KeyCode::Enter => return self.open_selected_node(),
             _ => {}
         }
-        None
+        Vec::new()
     }
 
-    /// Sends the prompt, or runs a `/command`.
-    fn submit(&mut self) -> Option<Action> {
-        let text = self.input.text.trim().to_string();
-        if text.is_empty() {
-            return None;
+    /// Shows the node's last chat, or starts one.
+    fn open_selected_node(&mut self) -> Vec<Action> {
+        let Some(node) = self.nodes.get(self.selected).cloned() else {
+            return Vec::new();
+        };
+        self.notice.clear();
+        let mut actions = Vec::new();
+        if node.online && !node.harnesses.is_empty() {
+            actions.push(Action::FetchSessions(node.id.clone()));
         }
-        if let Some(command) = text.strip_prefix('/') {
-            let (command, filter) = command.split_once(' ').unwrap_or((command, ""));
-            let pick = match command {
-                "quit" | "exit" => return Some(Action::Quit),
-                "new" => {
-                    self.input.clear();
-                    self.thread.clear();
-                    self.settings.session_id.clear();
-                    self.spent = 0.0;
-                    self.context = 0;
-                    self.info("started a new session");
-                    return None;
-                }
-                "agent" => Pick::Agent,
-                "model" => Pick::Model,
-                "effort" => Pick::Effort,
-                "commands" | "skills" => Pick::Command,
-                "mcp" => Pick::Mcp,
-                // One of the agent's own commands or skills, its arguments after it.
-                name if self.is_agent_command(name) => {
-                    let (name, arguments) = (name.to_string(), filter.trim().to_string());
-                    return self.send(text, name, arguments);
-                }
-                // Not a command: a prompt that starts with a slash.
-                _ => return self.send(text.clone(), String::new(), text),
+        let last = self.last.get(&node.id).copied();
+        let open = last
+            .filter(|id| self.chats.iter().any(|c| c.id == *id))
+            .or_else(|| self.chats_on(&node.id).last().map(|c| c.id));
+        if let Some(id) = open {
+            self.show(id);
+            return actions;
+        }
+        if node.harnesses.is_empty() {
+            self.notice = format!(
+                "{} runs no agent harness; start its worker with --harness opencode",
+                node.name
+            );
+            return Vec::new();
+        }
+        if !node.online {
+            self.notice = format!("{} is offline", node.name);
+            return Vec::new();
+        }
+        let settings = self.defaults.clone();
+        actions.extend(self.new_chat(node, settings));
+        actions
+    }
+
+    /// Starts a chat and shows it; it asks for the options the node hasn't given.
+    fn new_chat(&mut self, node: NodeInfo, settings: Settings) -> Vec<Action> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let options = self.options.get(&node.id).cloned();
+        let fetch = options
+            .is_none()
+            .then(|| Action::FetchOptions(node.id.clone()));
+        self.chats.push(Chat::new(id, node, settings, options));
+        self.show(id);
+        fetch.into_iter().collect()
+    }
+
+    fn show(&mut self, id: ChatId) {
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.id == id) {
+            chat.unseen = None;
+            self.last.insert(chat.node.id.clone(), id);
+            self.screen = Screen::Chat(id);
+        }
+    }
+
+    fn show_nodes(&mut self) {
+        if let Some(chat) = self.chat()
+            && let Some(at) = self.nodes.iter().position(|n| n.id == chat.node.id)
+        {
+            self.selected = at;
+        }
+        self.picker = None;
+        self.screen = Screen::Nodes;
+    }
+
+    /// Closes the chat on screen, unless its agent is still at work.
+    fn close_chat(&mut self) {
+        let Some(chat) = self.chat_mut() else {
+            return;
+        };
+        if matches!(chat.activity, Activity::Working { .. }) {
+            chat.info("the agent is still working: cancel with Esc first, or switch away");
+            return;
+        }
+        let (id, node) = (chat.id, chat.node.id.clone());
+        let siblings: Vec<ChatId> = self.chats_on(&node).map(|c| c.id).collect();
+        let at = siblings.iter().position(|&c| c == id).unwrap_or(0);
+        self.chats.retain(|c| c.id != id);
+        self.last.remove(&node);
+        // The neighbour on the same node, else the node list.
+        let next = siblings
+            .get(at + 1)
+            .or_else(|| at.checked_sub(1).and_then(|before| siblings.get(before)));
+        match next {
+            Some(&next) => self.show(next),
+            None => self.show_nodes(),
+        }
+    }
+
+    /// Shows the next (or previous) chat on the same node.
+    fn cycle_chat(&mut self, step: isize) -> Vec<Action> {
+        let Some(chat) = self.chat() else {
+            return Vec::new();
+        };
+        let ids: Vec<String> = self
+            .chats_on(&chat.node.id)
+            .map(|c| c.id.to_string())
+            .collect();
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        if let Some(next) = chat::cycle(&ids, &chat.id.to_string(), step) {
+            let next = next.parse().expect("an id");
+            self.show(next);
+        }
+        Vec::new()
+    }
+
+    /// The node's open chats, then the sessions it saved that aren't open.
+    fn open_session_picker(&mut self, node_id: &str) {
+        let filter = self.picker.take().map(|p| p.filter).unwrap_or_default();
+        let current = self.chat().map(|c| c.id.to_string()).unwrap_or_default();
+        let mut choices = vec![Choice::new(NEW_SESSION, "+ New session", "ctrl-n")];
+        for chat in self.chats_on(node_id) {
+            let state = match &chat.activity {
+                Activity::Working { .. } => "open · working",
+                Activity::Idle => "open",
             };
-            self.input.clear();
-            return self.open_picker(pick, filter.trim());
+            let detail = match chat.settings.session_id.as_str() {
+                "" => state.to_string(),
+                id => format!("{state} · {id}"),
+            };
+            choices.push(Choice::new(chat.id.to_string(), title(chat), detail));
         }
-        self.send(text.clone(), String::new(), text)
-    }
-
-    fn is_agent_command(&self, name: &str) -> bool {
-        self.options
-            .as_ref()
-            .is_some_and(|o| o.commands.iter().any(|c| c.name == name))
-    }
-
-    /// Sends `prompt` (or runs `command` with it), showing `text` in the thread.
-    fn send(&mut self, text: String, command: String, prompt: String) -> Option<Action> {
-        if matches!(self.activity, Activity::Working { .. }) {
-            // Keep the text; it can be sent once the agent is done.
-            return None;
+        let open: Vec<&str> = self
+            .chats_on(node_id)
+            .map(|c| c.settings.session_id.as_str())
+            .collect();
+        for session in self.saved.get(node_id).into_iter().flatten() {
+            if open.contains(&session.id.as_str()) {
+                continue;
+            }
+            let mut detail = vec![ago(session.updated)];
+            if session.busy {
+                detail.push("working".into());
+            }
+            detail.push(session.directory.clone());
+            let label = match session.title.as_str() {
+                "" => session.id.clone(),
+                title => title.to_string(),
+            };
+            choices.push(Choice::new(
+                format!("ses:{}", session.id),
+                label,
+                detail.join(" · "),
+            ));
         }
-        self.input.clear();
-        self.scroll = 0;
-        self.push(Role::User, &text);
-        self.activity = Activity::Working {
-            task_id: None,
-            since: Instant::now(),
-            cancelling: false,
-            agent: self.agent().to_string(),
-            effort: self.settings.effort.clone(),
-        };
-        Some(Action::Send(PromptRequest {
-            node: self.node.id.clone(),
-            prompt,
-            command,
-            session_id: self.settings.session_id.clone(),
-            cwd: self.settings.cwd.clone(),
-            model: self.settings.model.clone(),
-            agent: self.settings.agent.clone(),
-            variant: self.settings.effort.clone(),
-        }))
-    }
-
-    /// Asks the node what its agent offers, unless that's under way.
-    fn ask_for_options(&mut self) -> Option<Action> {
-        if self.fetching_options {
-            self.info("still asking the node what its agent offers…");
-            return None;
-        }
-        self.fetching_options = true;
-        self.info("asking the node what its agent offers…");
-        Some(Action::FetchOptions)
-    }
-
-    fn open_picker(&mut self, pick: Pick, filter: &str) -> Option<Action> {
-        let Some(options) = self.options.clone() else {
-            return self.ask_for_options();
-        };
-        let (choices, current) = match pick {
-            Pick::Agent => {
-                let choices = options
-                    .agents
-                    .iter()
-                    .map(|a| Choice::new(&a.name, &a.name, &a.description))
-                    .collect();
-                (choices, self.agent().to_string())
-            }
-            Pick::Model => {
-                let default = match options.default_model.as_str() {
-                    "" => "OpenCode picks".to_string(),
-                    model => model.to_string(),
-                };
-                let models = options
-                    .models
-                    .iter()
-                    .map(|m| Choice::new(&m.id, &m.name, format!("{} · {}", m.provider, m.id)));
-                let choices = std::iter::once(Choice::new("", "Default", default))
-                    .chain(models)
-                    .collect();
-                (choices, self.settings.model.clone())
-            }
-            Pick::Effort => {
-                let efforts = self.efforts_or_explain()?;
-                let choices = std::iter::once(Choice::new("", "Default", "the model's own"))
-                    .chain(efforts.iter().map(|e| Choice::new(e, e, "")))
-                    .collect();
-                (choices, self.settings.effort.clone())
-            }
-            Pick::Command => {
-                if options.commands.is_empty() {
-                    self.info("the agent has no commands or skills");
-                    return None;
-                }
-                let choices = options
-                    .commands
-                    .iter()
-                    .map(|c| {
-                        let detail = match c.description.as_str() {
-                            "" => c.source.clone(),
-                            text => format!("{} · {text}", c.source),
-                        };
-                        Choice::new(&c.name, format!("/{}", c.name), detail)
-                    })
-                    .collect();
-                (choices, String::new())
-            }
-            Pick::Mcp => {
-                if options.mcp_servers.is_empty() {
-                    self.info("the agent has no MCP servers configured");
-                    return None;
-                }
-                let choices = options
-                    .mcp_servers
-                    .iter()
-                    .map(|m| Choice::new(&m.name, &m.name, mcp_status(m)))
-                    .collect();
-                (choices, String::new())
-            }
-        };
-        let mut picker = Picker::new(pick, choices, &current);
+        let mut picker = Picker::new(Pick::Session, choices, &current);
         for c in filter.chars() {
             picker.on_key(KeyEvent::from(KeyCode::Char(c)));
         }
         self.picker = Some(picker);
-        None
     }
 
-    /// The current model's efforts, or `None` after saying why there are none.
-    fn efforts_or_explain(&mut self) -> Option<Vec<String>> {
-        match self.efforts() {
-            Some([]) => {
-                let model = self.model().to_string();
-                self.info(&format!("{model} has no thinking efforts"));
-                None
-            }
-            Some(efforts) => Some(efforts.to_vec()),
-            None => {
-                self.info(
-                    "pick a model with /model first (the default one is known after a reply)",
-                );
-                None
-            }
+    /// Shows an open chat, starts a new one, or resumes a saved session.
+    fn choose_session(&mut self, value: &str) -> Vec<Action> {
+        let Some(chat) = self.chat() else {
+            return Vec::new();
+        };
+        let node = chat.node.clone();
+        if value == NEW_SESSION {
+            return self.handle(Action::NewChat);
         }
+        let Some(session_id) = value.strip_prefix("ses:") else {
+            if let Ok(id) = value.parse() {
+                self.show(id);
+            }
+            return Vec::new();
+        };
+        let saved = self
+            .saved
+            .get(&node.id)
+            .and_then(|all| all.iter().find(|s| s.id == session_id))
+            .cloned()
+            .unwrap_or_default();
+        let settings = Settings {
+            session_id: session_id.to_string(),
+            cwd: saved.directory,
+            model: saved.model,
+            agent: saved.agent,
+            effort: saved.variant,
+        };
+        let actions = self.new_chat(node, settings);
+        if let Some(chat) = self.chat_mut() {
+            chat.title = saved.title;
+            chat.spent = saved.cost;
+            chat.info("continuing this session; its earlier messages aren't shown here");
+        }
+        actions
     }
 
-    fn choose(&mut self, pick: Pick, value: String) -> Option<Action> {
-        match pick {
-            Pick::Agent => self.settings.agent = value,
-            Pick::Effort => self.settings.effort = value,
-            Pick::Model => {
-                self.settings.model = value;
-                // An effort the new model doesn't know would be refused.
-                let effort = &self.settings.effort;
-                if !effort.is_empty() && self.efforts().is_some_and(|e| !e.contains(effort)) {
-                    let model = self.model().to_string();
-                    let effort = std::mem::take(&mut self.settings.effort);
-                    self.info(&format!(
-                        "{model} has no {effort:?} effort; back to its default"
-                    ));
-                }
-            }
-            // Ready for its arguments.
-            Pick::Command => self.input.insert_str(&format!("/{value} ")),
-            Pick::Mcp => {
-                let connect = self.options.as_ref().is_some_and(|o| {
-                    o.mcp_servers
-                        .iter()
-                        .any(|m| m.name == value && m.status != "connected")
-                });
-                let doing = if connect {
-                    "connecting"
-                } else {
-                    "disconnecting"
+    /// Takes in what a background task reports, which may call for actions.
+    pub fn on_update(&mut self, update: Update) -> Vec<Action> {
+        match update {
+            Update::Chat(id, message) => {
+                let shown = self.screen == Screen::Chat(id);
+                let Some(chat) = self.chats.iter_mut().find(|c| c.id == id) else {
+                    return Vec::new();
                 };
-                self.info(&format!("{doing} {value}…"));
-                self.switching_mcp = Some(value.clone());
-                return Some(Action::SwitchMcp {
-                    name: value,
-                    connect,
-                });
+                let action = chat.on_message(message);
+                if shown {
+                    chat.unseen = None;
+                }
+                action.into_iter().collect()
             }
-        }
-        None
-    }
-
-    /// Switches to the next (or previous) agent.
-    fn cycle_agent(&mut self, step: isize) -> Option<Action> {
-        let Some(options) = self.options.clone() else {
-            return self.ask_for_options();
-        };
-        let names: Vec<&str> = options.agents.iter().map(|a| a.name.as_str()).collect();
-        if let Some(next) = cycle(&names, self.agent(), step) {
-            self.settings.agent = next.to_string();
-        }
-        None
-    }
-
-    /// Switches to the next effort, wrapping round to the model's default.
-    fn cycle_effort(&mut self) -> Option<Action> {
-        if self.options.is_none() {
-            return self.ask_for_options();
-        }
-        let efforts = self.efforts_or_explain()?;
-        let choices: Vec<&str> = std::iter::once("")
-            .chain(efforts.iter().map(String::as_str))
-            .collect();
-        if let Some(next) = cycle(&choices, &self.settings.effort, 1) {
-            self.settings.effort = next.to_string();
-        }
-        None
-    }
-
-    /// Cancels the task; one not started yet is cancelled as soon as it is.
-    fn cancel(&mut self) -> Option<Action> {
-        let Activity::Working {
-            task_id,
-            cancelling,
-            ..
-        } = &mut self.activity
-        else {
-            return None;
-        };
-        if *cancelling {
-            return None;
-        }
-        *cancelling = true;
-        task_id.clone().map(Action::Cancel)
-    }
-
-    /// Takes in what a background task reports, which may call for an action.
-    pub fn on_message(&mut self, message: Message) -> Option<Action> {
-        match message {
-            Message::Node(node) => self.node = node,
-            Message::Options(options) => {
-                self.fetching_options = false;
-                let switched = self.switching_mcp.take();
-                match options {
-                    Ok(options) => {
-                        let server = switched
-                            .and_then(|name| options.mcp_servers.iter().find(|m| m.name == name));
-                        if let Some(server) = server {
-                            let status = mcp_status(server);
-                            self.info(&format!("{}: {status}", server.name));
-                        }
-                        self.options = Some(Arc::new(options));
+            Update::Options(node, options) => {
+                if let Ok(options) = &options {
+                    self.options.insert(node.clone(), Arc::new(options.clone()));
+                }
+                for chat in self.chats.iter_mut().filter(|c| c.node.id == node) {
+                    chat.on_message(Message::Options(options.clone()));
+                }
+                Vec::new()
+            }
+            Update::Nodes(nodes) => {
+                let selected = self.nodes.get(self.selected).map(|n| n.id.clone());
+                for chat in &mut self.chats {
+                    if let Some(node) = nodes.iter().find(|n| n.id == chat.node.id) {
+                        chat.on_message(Message::Node(node.clone()));
+                    }
+                }
+                self.nodes = nodes;
+                // Keep the same node highlighted.
+                if let Some(at) = selected.and_then(|id| self.nodes.iter().position(|n| n.id == id))
+                {
+                    self.selected = at;
+                }
+                self.selected = self.selected.min(self.nodes.len().saturating_sub(1));
+                Vec::new()
+            }
+            Update::Sessions(node, sessions) => {
+                match sessions {
+                    Ok(sessions) => {
+                        self.saved.insert(node.clone(), sessions);
                     }
                     Err(e) => {
-                        let what = match switched {
-                            Some(name) => format!("couldn't switch {name}"),
-                            None => "couldn't list the agent's options".to_string(),
-                        };
-                        self.push(Role::Error, &format!("{what}: {e}"));
+                        // Only worth saying to someone looking for them.
+                        if self.picker.is_some()
+                            && let Some(chat) = self.chat_mut()
+                        {
+                            chat.info(&format!("couldn't list the node's sessions: {e}"));
+                        }
                     }
                 }
-            }
-            Message::Failed(error) => {
-                self.flush_output();
-                self.push(Role::Error, &error);
-                self.activity = Activity::Idle;
-            }
-            Message::Task(TaskEvent::Started(started)) => {
-                if let Activity::Working {
-                    task_id,
-                    cancelling,
-                    ..
-                } = &mut self.activity
-                {
-                    *task_id = Some(started.task_id.clone());
-                    // Esc was pressed before the task had an id.
-                    if *cancelling {
-                        return Some(Action::Cancel(started.task_id));
-                    }
+                let picking = self
+                    .picker
+                    .as_ref()
+                    .is_some_and(|p| p.pick == Pick::Session);
+                if picking && self.chat().is_some_and(|c| c.node.id == node) {
+                    self.open_session_picker(&node);
                 }
-            }
-            Message::Task(TaskEvent::Output(output)) => match output.stream() {
-                OutputStream::Stderr => {
-                    let text = decode(&mut self.partial_stderr, &output.data);
-                    self.note(&text);
-                }
-                OutputStream::Reasoning => {
-                    let text = decode(&mut self.partial_reasoning, &output.data);
-                    self.append(Role::Thinking, &text);
-                }
-                _ => {
-                    let text = decode(&mut self.partial_stdout, &output.data);
-                    self.append(Role::Agent, &text);
-                }
-            },
-            Message::Task(TaskEvent::Finished(finished)) => self.finish(finished),
-        }
-        None
-    }
-
-    fn finish(&mut self, finished: TaskFinished) {
-        self.flush_output();
-        if !finished.session_id.is_empty() {
-            self.settings.session_id = finished.session_id.clone();
-        }
-        if !finished.model.is_empty() {
-            self.used_model = finished.model.clone();
-        }
-        if let Some(usage) = &finished.usage {
-            self.spent += usage.cost;
-            if usage.context > 0 {
-                self.context = usage.context;
-            }
-        }
-        let summary = match &self.activity {
-            Activity::Working {
-                since,
-                agent,
-                effort,
-                ..
-            } => Some(self.summary(&finished, agent, effort, since.elapsed())),
-            Activity::Idle => None,
-        };
-        if finished.cancelled {
-            self.info("cancelled");
-        } else if !finished.error.is_empty() {
-            self.push(Role::Error, &finished.error);
-        } else if finished.exit_code != Some(0) {
-            self.push(Role::Error, "the agent failed");
-        }
-        if let Some(summary) = summary {
-            self.push(Role::Summary, &summary);
-        }
-        self.activity = Activity::Idle;
-    }
-
-    /// The worker reports tools and errors as `[opencode] …` lines.
-    fn note(&mut self, text: &str) {
-        self.partial_note.push_str(text);
-        while let Some(end) = self.partial_note.find('\n') {
-            let line: String = self.partial_note.drain(..=end).collect();
-            let line = line.trim_end();
-            match line.strip_prefix(NOTE_PREFIX) {
-                Some(tool) => self.push(Role::Tool, tool),
-                None if !line.is_empty() => self.push(Role::Error, line),
-                None => {}
+                Vec::new()
             }
         }
     }
-
-    /// `build · Claude Sonnet 5 · high · 12.3s · 12.6k in · 184 out · $0.0123`
-    fn summary(
-        &self,
-        finished: &TaskFinished,
-        agent: &str,
-        effort: &str,
-        took: Duration,
-    ) -> String {
-        // A cancelled turn doesn't say which model it had.
-        let model = match finished.model.as_str() {
-            "" => self.model(),
-            model => model,
-        };
-        let mut parts = vec![agent.to_string(), self.model_name(model).to_string()];
-        if !effort.is_empty() {
-            parts.push(effort.to_string());
-        }
-        parts.push(elapsed(took));
-        if let Some(usage) = finished.usage.as_ref().filter(|u| u.input + u.output > 0) {
-            let input = usage.input + usage.cache_read + usage.cache_write;
-            parts.push(format!("{} in", count(input)));
-            parts.push(format!("{} out", count(usage.output + usage.reasoning)));
-            if usage.cost > 0.0 {
-                parts.push(dollars(usage.cost));
-            }
-        }
-        parts.retain(|p| !p.is_empty());
-        parts.join(" · ")
-    }
-
-    fn flush_output(&mut self) {
-        self.partial_stdout.clear();
-        self.partial_stderr.clear();
-        self.partial_reasoning.clear();
-        let rest = std::mem::take(&mut self.partial_note);
-        self.note(&format!("{rest}\n"));
-    }
-
-    fn info(&mut self, text: &str) {
-        self.push(Role::Info, text);
-    }
-
-    fn push(&mut self, role: Role, text: &str) {
-        self.thread.push(Entry {
-            role,
-            text: text.to_string(),
-            agent: self.agent().to_string(),
-        });
-    }
-
-    /// Extends the last entry if it has the same role, so a streamed reply
-    /// stays one entry.
-    fn append(&mut self, role: Role, text: &str) {
-        match self.thread.last_mut() {
-            Some(last) if last.role == role => last.text.push_str(text),
-            _ => self.push(role, text),
-        }
-    }
 }
 
-/// `184`, `12.6k`, `1.2M`.
-pub fn count(n: u64) -> String {
-    let (value, unit) = match n {
-        0..1_000 => return n.to_string(),
-        1_000..1_000_000 => (n as f64 / 1e3, "k"),
-        _ => (n as f64 / 1e6, "M"),
-    };
-    let value = format!("{value:.1}");
-    format!("{}{unit}", value.trim_end_matches(".0"))
-}
-
-/// `$0.0042`, `$1.23`: more digits for small amounts.
-pub fn dollars(cost: f64) -> String {
-    if cost < 0.01 {
-        format!("${cost:.4}")
-    } else {
-        format!("${cost:.2}")
-    }
-}
-
-/// `4.2s`, `2m 03s`.
-pub fn elapsed(took: Duration) -> String {
-    let secs = took.as_secs();
-    if secs < 60 {
-        format!("{:.1}s", took.as_secs_f64())
-    } else {
-        format!("{}m {:02}s", secs / 60, secs % 60)
-    }
-}
-
-/// The item `step` places after `current`, wrapping round; the first item if
-/// `current` isn't there.
-/// `connected`, or `failed: why`.
-fn mcp_status(server: &McpServer) -> String {
-    match server.error.as_str() {
-        "" => server.status.clone(),
-        error => format!("{}: {error}", server.status),
-    }
-}
-
-fn cycle<'a>(items: &[&'a str], current: &str, step: isize) -> Option<&'a str> {
-    let len = items.len() as isize;
-    if len == 0 {
-        return None;
-    }
-    let next = match items.iter().position(|&i| i == current) {
-        Some(at) => (at as isize + step).rem_euclid(len),
-        None => 0,
-    };
-    Some(items[next as usize])
-}
-
-/// Decodes output, holding back a character split across chunks in `partial`.
-fn decode(partial: &mut Vec<u8>, data: &[u8]) -> String {
-    partial.extend_from_slice(data);
-    let complete = match std::str::from_utf8(partial) {
-        Ok(_) => partial.len(),
-        // Invalid bytes, not a cut: let the lossy conversion show them.
-        Err(e) if e.error_len().is_some() => partial.len(),
-        Err(e) => e.valid_up_to(),
-    };
-    let rest = partial.split_off(complete);
-    let text = String::from_utf8_lossy(partial).into_owned();
-    *partial = rest;
-    text
-}
-
-/// A single-line text field. `cursor` counts characters, not bytes.
-#[derive(Default)]
-pub struct Input {
-    pub text: String,
-    pub cursor: usize,
-}
-
-impl Input {
-    fn byte_index(&self) -> usize {
-        self.text
-            .char_indices()
-            .nth(self.cursor)
-            .map_or(self.text.len(), |(i, _)| i)
-    }
-
-    fn insert(&mut self, c: char) {
-        let at = self.byte_index();
-        self.text.insert(at, c);
-        self.cursor += 1;
-    }
-
-    fn insert_str(&mut self, s: &str) {
-        let at = self.byte_index();
-        self.text.insert_str(at, s);
-        self.cursor += s.chars().count();
-    }
-
-    fn backspace(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
-            self.delete();
-        }
-    }
-
-    fn delete(&mut self) {
-        let at = self.byte_index();
-        if at < self.text.len() {
-            self.text.remove(at);
-        }
-    }
-
-    fn left(&mut self) {
-        self.cursor = self.cursor.saturating_sub(1);
-    }
-
-    fn right(&mut self) {
-        self.cursor = (self.cursor + 1).min(self.text.chars().count());
-    }
-
-    fn home(&mut self) {
-        self.cursor = 0;
-    }
-
-    fn end(&mut self) {
-        self.cursor = self.text.chars().count();
-    }
-
-    fn clear(&mut self) {
-        self.text.clear();
-        self.cursor = 0;
+/// What a chat is called in its tab and the session picker.
+pub fn title(chat: &Chat) -> String {
+    match chat.title.as_str() {
+        "" => "new session".to_string(),
+        title => title.to_string(),
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::tui::chat::Unseen;
 
-    pub(crate) fn app() -> App {
-        let node = NodeInfo {
-            id: "n1".into(),
-            name: "w1".into(),
+    pub(crate) fn node(id: &str, online: bool) -> NodeInfo {
+        NodeInfo {
+            id: id.into(),
+            name: format!("box-{id}"),
+            online,
             harnesses: vec!["opencode".into()],
             ..Default::default()
-        };
-        let settings = Settings {
-            session_id: String::new(),
-            cwd: String::new(),
-            model: String::new(),
-            agent: String::new(),
-            effort: String::new(),
-        };
-        App::new(node, settings)
+        }
     }
 
-    pub(crate) fn output(stream: OutputStream, data: &[u8]) -> Message {
-        Message::Task(TaskEvent::Output(TaskOutput {
-            stream: stream as i32,
-            data: data.to_vec(),
-            ..Default::default()
-        }))
+    pub(crate) fn app() -> App {
+        let nodes = vec![node("n1", true), node("n2", true), node("n3", false)];
+        App::new(nodes, Settings::default())
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::from(code)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
     }
 
     fn type_text(app: &mut App, text: &str) {
         for c in text.chars() {
-            app.on_key(KeyEvent::from(KeyCode::Char(c)));
+            app.on_key(key(KeyCode::Char(c)));
         }
     }
 
-    #[test]
-    fn a_turn_streams_into_the_thread_and_keeps_the_session() {
-        let mut app = app();
-        type_text(&mut app, "hi");
-        let Some(Action::Send(request)) = app.on_key(KeyEvent::from(KeyCode::Enter)) else {
-            panic!("Enter should send");
-        };
-        assert_eq!(
-            (request.prompt.as_str(), request.node.as_str()),
-            ("hi", "n1")
-        );
-        assert!(app.input.text.is_empty());
-
-        // Typing on while the agent works is fine, sending isn't.
-        type_text(&mut app, "next");
-        assert!(app.on_key(KeyEvent::from(KeyCode::Enter)).is_none());
-        assert_eq!(app.input.text, "next");
-
-        app.on_message(Message::Task(TaskEvent::Started(TaskStarted {
-            task_id: "t1".into(),
-            ..Default::default()
-        })));
-        // "é" split across two chunks.
-        app.on_message(output(OutputStream::Reasoning, b"let me think"));
-        app.on_message(output(OutputStream::Stdout, b"Hello caf\xc3"));
-        app.on_message(output(OutputStream::Stderr, b"[opencode] write a.txt\n"));
-        app.on_message(output(OutputStream::Stdout, b"\xa9 done"));
-        app.on_message(Message::Task(TaskEvent::Finished(TaskFinished {
-            task_id: "t1".into(),
-            exit_code: Some(0),
-            session_id: "ses_1".into(),
-            model: "a/smart".into(),
-            usage: Some(AgentUsage {
-                input: 1200,
-                output: 34,
-                cost: 0.5,
-                context: 1234,
-                ..Default::default()
-            }),
-            ..Default::default()
-        })));
-
-        let summary = app.thread.last().unwrap().text.clone();
-        assert!(
-            summary.starts_with("a/smart · ") && summary.ends_with(" · 1.2k in · 34 out · $0.50"),
-            "{summary}"
-        );
-        let thread: Vec<_> = app
-            .thread
-            .iter()
-            .map(|e| (e.role, e.text.as_str()))
-            .collect();
-        assert_eq!(
-            thread,
-            [
-                (Role::User, "hi"),
-                (Role::Thinking, "let me think"),
-                (Role::Agent, "Hello caf"),
-                (Role::Tool, "write a.txt"),
-                (Role::Agent, "é done"),
-                (Role::Summary, summary.as_str()),
-            ]
-        );
-        assert_eq!((app.spent, app.context), (0.5, 1234));
-        assert!(matches!(app.activity, Activity::Idle));
-
-        // The next prompt continues the session.
-        let Some(Action::Send(request)) = app.on_key(KeyEvent::from(KeyCode::Enter)) else {
-            panic!("Enter should send once idle");
-        };
-        assert_eq!(request.session_id, "ses_1");
+    /// Sends `text` from the chat on screen and returns where it went.
+    fn send(app: &mut App, text: &str) -> (ChatId, PromptRequest) {
+        type_text(app, text);
+        let mut actions = app.on_key(key(KeyCode::Enter));
+        match actions.pop() {
+            Some(Action::Send(id, request)) => (id, request),
+            _ => panic!("{text:?} should be sent"),
+        }
     }
 
-    fn started(task_id: &str) -> Message {
-        Message::Task(TaskEvent::Started(TaskStarted {
-            task_id: task_id.into(),
+    fn finished(session_id: &str) -> Message {
+        Message::Task(task_event::Event::Finished(TaskFinished {
+            exit_code: Some(0),
+            session_id: session_id.into(),
             ..Default::default()
         }))
     }
 
     #[test]
-    fn esc_cancels_the_task_once() {
+    fn nodes_are_chosen_from_a_list() {
         let mut app = app();
-        type_text(&mut app, "hi");
-        app.on_key(KeyEvent::from(KeyCode::Enter));
-        assert!(app.on_message(started("t1")).is_none());
-        assert!(matches!(
-            app.on_key(KeyEvent::from(KeyCode::Esc)),
-            Some(Action::Cancel(id)) if id == "t1"
-        ));
-        assert!(app.on_key(KeyEvent::from(KeyCode::Esc)).is_none());
+        assert_eq!(app.screen, Screen::Nodes);
+        app.on_key(key(KeyCode::Down));
+        let actions = app.on_key(key(KeyCode::Enter));
+        // It asks the node for its sessions and options.
+        assert!(
+            matches!(&actions[..], [Action::FetchSessions(a), Action::FetchOptions(b)] if a == "n2" && b == "n2")
+        );
+        assert_eq!(app.chat().unwrap().node.id, "n2");
+
+        // An offline node with no chat yet can't be opened.
+        app.on_key(ctrl('g'));
+        assert_eq!(app.screen, Screen::Nodes);
+        app.on_key(key(KeyCode::Down));
+        assert!(app.on_key(key(KeyCode::Enter)).is_empty());
+        assert_eq!(app.notice, "box-n3 is offline");
+
+        // Going back to a node shows its chat again.
+        app.on_key(key(KeyCode::Up));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.chats.len(), 1);
+        assert_eq!(app.screen, Screen::Chat(app.chats[0].id));
     }
 
     #[test]
-    fn esc_before_the_task_starts_cancels_it_when_it_does() {
+    fn sessions_on_a_node_run_side_by_side() {
         let mut app = app();
-        type_text(&mut app, "hi");
-        app.on_key(KeyEvent::from(KeyCode::Enter));
-        assert!(app.on_key(KeyEvent::from(KeyCode::Esc)).is_none());
-        assert!(matches!(
-            app.activity,
-            Activity::Working {
-                cancelling: true,
-                ..
-            }
-        ));
-        assert!(matches!(
-            app.on_message(started("t1")),
-            Some(Action::Cancel(id)) if id == "t1"
-        ));
+        app.on_key(key(KeyCode::Enter));
+        let (first, request) = send(&mut app, "fix the parser");
+        assert_eq!(request.node, "n1");
+
+        // A second session starts while the first is still working.
+        app.on_key(ctrl('n'));
+        let (second, request) = send(&mut app, "write the docs");
+        assert_ne!(first, second);
+        assert_eq!(request.session_id, "");
+        assert_eq!(app.chats_on("n1").count(), 2);
+
+        // The first finishes in the background, and says so in its tab.
+        app.on_update(Update::Chat(first, finished("ses_a")));
+        let chat = |app: &App, id| app.chats.iter().find(|c| c.id == id).unwrap().unseen;
+        assert_eq!(chat(&app, first), Some(Unseen::Done));
+        app.on_update(Update::Chat(second, finished("ses_b")));
+        assert_eq!(chat(&app, second), None, "the shown chat needs no mark");
+
+        // Switching to it clears the mark, and it continues its own session.
+        app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(app.screen, Screen::Chat(first));
+        assert_eq!(chat(&app, first), None);
+        let (id, request) = send(&mut app, "and the lexer");
+        assert_eq!((id, request.session_id.as_str()), (first, "ses_a"));
+        assert_eq!(app.running_tasks().len(), 0, "no task id until started");
     }
 
-    fn with_options() -> App {
+    #[test]
+    fn saved_sessions_are_resumed_from_the_picker() {
         let mut app = app();
-        let model = |id: &str, variants: &[&str]| ModelChoice {
-            id: id.into(),
-            name: id.into(),
-            variants: variants.iter().map(|v| v.to_string()).collect(),
-            ..Default::default()
-        };
-        let agent = |name: &str| AgentChoice {
-            name: name.into(),
-            ..Default::default()
-        };
-        app.on_message(Message::Options(Ok(AgentOptions {
-            agents: vec![agent("build"), agent("plan"), agent("review")],
-            models: vec![model("a/fast", &[]), model("a/smart", &["low", "high"])],
-            default_agent: "build".into(),
-            commands: vec![AgentCommand {
-                name: "review".into(),
-                description: "Review the changes".into(),
-                source: "skill".into(),
-            }],
-            mcp_servers: vec![McpServer {
-                name: "docs".into(),
-                status: "disabled".into(),
+        app.on_key(key(KeyCode::Enter));
+        app.on_update(Update::Sessions(
+            "n1".into(),
+            Ok(vec![AgentSession {
+                id: "ses_old".into(),
+                title: "refactor the store".into(),
+                directory: "/src/app".into(),
+                agent: "plan".into(),
+                model: "a/smart".into(),
+                cost: 0.25,
                 ..Default::default()
-            }],
-            ..Default::default()
-        })));
-        app
-    }
-
-    #[test]
-    fn the_agents_commands_run_with_their_arguments() {
-        let mut app = with_options();
-        let Some(Action::Send(request)) = command(&mut app, "/review  the parser ") else {
-            panic!("a known command is sent");
-        };
-        assert_eq!(
-            (request.command.as_str(), request.prompt.as_str()),
-            ("review", "the parser")
-        );
-        assert_eq!(app.thread.last().unwrap().text, "/review  the parser");
-        app.on_message(Message::Failed("stop".into()));
-
-        // Any other slash is just text.
-        let Some(Action::Send(request)) = command(&mut app, "/etc/hosts?") else {
-            panic!("an unknown command is a prompt");
-        };
-        assert_eq!(
-            (request.command.as_str(), request.prompt.as_str()),
-            ("", "/etc/hosts?")
-        );
-        app.on_message(Message::Failed("stop".into()));
-
-        // Picking one readies it for its arguments.
-        command(&mut app, "/skills");
-        assert_eq!(app.picker.as_ref().unwrap().shown_len(), 1);
-        app.on_key(KeyEvent::from(KeyCode::Enter));
-        assert_eq!(app.input.text, "/review ");
-    }
-
-    #[test]
-    fn mcp_servers_are_switched_from_the_floating_window() {
-        let mut app = with_options();
-        command(&mut app, "/mcp");
-        let Some(Action::SwitchMcp { name, connect }) = app.on_key(KeyEvent::from(KeyCode::Enter))
-        else {
-            panic!("choosing a server switches it");
-        };
-        assert_eq!((name.as_str(), connect), ("docs", true));
-
-        let mut options = (**app.options.as_ref().unwrap()).clone();
-        options.mcp_servers[0].status = "connected".into();
-        app.on_message(Message::Options(Ok(options)));
-        assert_eq!(app.thread.last().unwrap().text, "docs: connected");
-
-        command(&mut app, "/mcp");
-        assert!(matches!(
-            app.on_key(KeyEvent::from(KeyCode::Enter)),
-            Some(Action::SwitchMcp { connect: false, .. })
+            }]),
         ));
-    }
+        let actions = app.on_key(ctrl('o'));
+        assert!(matches!(&actions[..], [Action::FetchSessions(n)] if n == "n1"));
+        let picker = app.picker.as_ref().expect("ctrl-o opens the sessions");
+        // New session, the open chat, the saved one.
+        assert_eq!(picker.total(), 3);
 
-    fn command(app: &mut App, text: &str) -> Option<Action> {
-        type_text(app, text);
-        app.on_key(KeyEvent::from(KeyCode::Enter))
+        type_text(&mut app, "store");
+        app.on_key(key(KeyCode::Enter));
+        let chat = app.chat().unwrap();
+        assert_eq!(chat.title, "refactor the store");
+        assert_eq!(chat.settings.session_id, "ses_old");
+        assert_eq!(chat.settings.cwd, "/src/app");
+        assert_eq!(
+            (chat.settings.agent.as_str(), chat.settings.model.as_str()),
+            ("plan", "a/smart")
+        );
+        assert_eq!(app.chats.len(), 2);
+
+        // An open session isn't offered twice.
+        app.on_key(ctrl('o'));
+        assert_eq!(app.picker.as_ref().unwrap().total(), 3);
     }
 
     #[test]
-    fn tab_cycles_agents_once_the_node_has_said_which() {
+    fn a_working_chat_stays_open() {
         let mut app = app();
-        assert!(app.on_key(KeyEvent::from(KeyCode::Tab)).is_none());
-        assert_eq!(app.thread.last().unwrap().role, Role::Info);
+        app.on_key(key(KeyCode::Enter));
+        let first = app.chat().unwrap().id;
+        send(&mut app, "hi");
+        app.on_key(ctrl('w'));
+        assert_eq!(app.screen, Screen::Chat(first));
 
-        let mut app = with_options();
-        assert_eq!(app.agent(), "build");
-        app.on_key(KeyEvent::from(KeyCode::Tab));
-        assert_eq!(app.agent(), "plan");
-        app.on_key(KeyEvent::from(KeyCode::BackTab));
-        app.on_key(KeyEvent::from(KeyCode::BackTab));
-        assert_eq!(app.agent(), "review");
+        app.on_key(ctrl('n'));
+        type_text(&mut app, "/close");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.screen, Screen::Chat(first));
+        assert_eq!(app.chats.len(), 1);
 
-        // A failed fetch can be retried.
-        let mut failed = self::app();
-        failed.on_message(Message::Options(Err("offline".into())));
-        assert!(matches!(
-            failed.on_key(KeyEvent::from(KeyCode::Tab)),
-            Some(Action::FetchOptions)
-        ));
+        app.on_update(Update::Chat(first, finished("ses_a")));
+        app.on_key(ctrl('w'));
+        assert_eq!(app.screen, Screen::Nodes);
+        assert!(app.chats.is_empty());
     }
 
     #[test]
-    fn model_and_effort_are_picked_in_the_floating_window() {
-        let mut app = with_options();
-        // The default model is unknown until a reply names it.
-        command(&mut app, "/effort");
-        assert!(app.picker.is_none());
-
-        command(&mut app, "/model smart");
-        let picker = app.picker.as_ref().expect("/model opens the picker");
-        assert_eq!(picker.shown_len(), 1);
-        app.on_key(KeyEvent::from(KeyCode::Enter));
-        assert!(app.picker.is_none());
-        assert_eq!(app.settings.model, "a/smart");
-        assert!(app.input.text.is_empty());
-
-        command(&mut app, "/effort");
-        app.on_key(KeyEvent::from(KeyCode::Down));
-        app.on_key(KeyEvent::from(KeyCode::Down));
-        app.on_key(KeyEvent::from(KeyCode::Enter));
-        assert_eq!(app.settings.effort, "high");
-        // Ctrl-T wraps round to the model's default.
-        app.on_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
-        assert_eq!(app.settings.effort, "");
-        app.on_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
-        assert_eq!(app.settings.effort, "low");
-
-        // A model without that effort drops it.
-        command(&mut app, "/model fast");
-        app.on_key(KeyEvent::from(KeyCode::Enter));
-        assert_eq!(app.settings.model, "a/fast");
-        assert_eq!(app.settings.effort, "");
-
-        let Some(Action::Send(request)) = command(&mut app, "hi") else {
-            panic!("a prompt is sent");
+    fn options_reach_every_chat_on_the_node() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(ctrl('n'));
+        let options = AgentOptions {
+            default_agent: "build".into(),
+            ..Default::default()
         };
-        assert_eq!(request.model, "a/fast");
-        assert_eq!(request.agent, "");
-    }
-
-    #[test]
-    fn input_edits_by_character() {
-        let mut input = Input::default();
-        for c in "héllo".chars() {
-            input.insert(c);
-        }
-        input.home();
-        input.right();
-        input.delete();
-        input.end();
-        input.backspace();
-        assert_eq!(input.text, "hll");
-        assert_eq!(input.cursor, 3);
+        app.on_update(Update::Options("n1".into(), Ok(options)));
+        assert!(app.chats.iter().all(|c| c.agent() == "build"));
+        // A later chat starts with them, without asking again.
+        assert!(app.on_key(ctrl('n')).is_empty());
+        assert_eq!(app.chat().unwrap().agent(), "build");
     }
 }

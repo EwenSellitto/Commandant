@@ -15,8 +15,9 @@ use anyhow::{Context, anyhow};
 use commandant_proto::hello::Auth;
 use commandant_proto::node_link_client::NodeLinkClient;
 use commandant_proto::{
-    AgentOptions, AgentPrompt, CancelTask, Heartbeat, Hello, ListAgentOptions, McpSwitch,
-    NodeCredential, OrchestratorMsg, TaskFinished, Welcome, WorkerMsg, orchestrator_msg,
+    AgentOptions, AgentPrompt, AgentSessions, CancelTask, Heartbeat, Hello, ListAgentOptions,
+    ListAgentSessions, McpSwitch, NodeCredential, OrchestratorMsg, TaskFinished, Welcome,
+    WorkerMsg, orchestrator_msg,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -216,6 +217,9 @@ async fn serve(
                     Some(orchestrator_msg::Msg::ListOptions(ListAgentOptions { request_id, mcp })) => {
                         tokio::spawn(answer_options(harness.cloned(), request_id, mcp, outbound.clone()));
                     }
+                    Some(orchestrator_msg::Msg::ListSessions(ListAgentSessions { request_id })) => {
+                        tokio::spawn(answer_sessions(harness.cloned(), request_id, outbound.clone()));
+                    }
                     Some(orchestrator_msg::Msg::Cancel(CancelTask { task_id })) => {
                         if let Some(cancel) = cancels.remove(&task_id) {
                             info!(%task_id, "cancelling task");
@@ -270,6 +274,23 @@ async fn answer_options(
         },
     };
     let _ = outbound.send(options.into()).await;
+}
+
+/// Tells the orchestrator which sessions the harness has saved.
+async fn answer_sessions(
+    harness: Option<Arc<Opencode>>,
+    request_id: String,
+    outbound: mpsc::Sender<WorkerMsg>,
+) {
+    let sessions = match harness {
+        Some(opencode) => opencode::list_sessions(&opencode, request_id).await,
+        None => AgentSessions {
+            request_id,
+            error: NO_HARNESS.into(),
+            ..Default::default()
+        },
+    };
+    let _ = outbound.send(sessions.into()).await;
 }
 
 fn hostname() -> String {

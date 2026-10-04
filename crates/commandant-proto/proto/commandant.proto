@@ -111,8 +111,9 @@ message WorkerMsg {
     TaskOutput output = 3;
     TaskFinished finished = 4;
     AgentOptions options = 10;
+    AgentSessions sessions = 11;
   }
-  reserved 11 to 19; // agent events
+  reserved 12 to 19; // agent events
 }
 
 message Welcome {
@@ -156,6 +157,30 @@ message McpSwitch {
   bool connect = 2;
 }
 
+// Asks the node's agent harness for its saved sessions.
+message ListAgentSessions {
+  string request_id = 1;
+}
+
+// A node's saved agent sessions, most recently updated first.
+message AgentSessions {
+  string request_id = 1;
+  repeated AgentSession sessions = 2;
+  string error = 3;                  // set when the harness couldn't answer
+}
+
+message AgentSession {
+  string id = 1;
+  string title = 2;
+  string directory = 3;
+  int64 updated = 4;                 // unix seconds
+  bool busy = 5;                     // a prompt is running in it on this node
+  string agent = 6;                  // what it last used, if known
+  string model = 7;                  // "provider/model"
+  string variant = 8;
+  double cost = 9;                   // US dollars so far
+}
+
 message OrchestratorMsg {
   oneof msg {
     Welcome welcome = 1;
@@ -163,8 +188,9 @@ message OrchestratorMsg {
     CancelTask cancel = 3;
     AgentPrompt prompt = 10;
     ListAgentOptions list_options = 11;
+    ListAgentSessions list_sessions = 12;
   }
-  reserved 12 to 19; // agent control
+  reserved 13 to 19; // agent control
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +206,7 @@ service Control {
   rpc GetAgentOptions(GetAgentOptionsRequest) returns (AgentOptions);
   // Connects or disconnects an MCP server; answers with the new options.
   rpc SwitchMcpServer(SwitchMcpServerRequest) returns (AgentOptions);
+  rpc ListAgentSessions(ListAgentSessionsRequest) returns (AgentSessions);
   rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
   rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
 }
@@ -238,6 +265,10 @@ message PromptRequest {
 }
 
 message GetAgentOptionsRequest {
+  string node = 1;                   // id, id prefix or name
+}
+
+message ListAgentSessionsRequest {
   string node = 1;                   // id, id prefix or name
 }
 

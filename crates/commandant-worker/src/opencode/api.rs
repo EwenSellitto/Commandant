@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use reqwest::{Method, RequestBuilder, Response};
+use reqwest::{Method, RequestBuilder, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
 /// The HTTP basic auth user OpenCode expects.
@@ -174,6 +174,37 @@ struct Session {
     directory: String,
 }
 
+/// A session as listed: what it is about and what it last used.
+#[derive(Deserialize)]
+pub struct SavedSession {
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    pub directory: String,
+    /// Set on a subagent's session.
+    #[serde(rename = "parentID")]
+    pub parent_id: Option<String>,
+    pub agent: Option<String>,
+    pub model: Option<SessionModel>,
+    #[serde(default)]
+    pub cost: f64,
+    pub time: SessionTime,
+}
+
+#[derive(Deserialize)]
+pub struct SessionModel {
+    pub id: String,
+    #[serde(rename = "providerID")]
+    pub provider_id: String,
+    pub variant: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct SessionTime {
+    /// Unix milliseconds.
+    pub updated: i64,
+}
+
 impl Api {
     pub fn new(base: String, password: String) -> Self {
         Self {
@@ -215,6 +246,26 @@ impl Api {
         let request = self.request(Method::GET, &format!("/session/{session_id}"), None);
         let session: Session = send(request).await?.json().await?;
         Ok(session.directory)
+    }
+
+    /// The latest top-level sessions, in every directory.
+    pub async fn sessions(&self, limit: usize) -> Result<Vec<SavedSession>> {
+        let limit = limit.to_string();
+        let query = [("roots", "true"), ("limit", limit.as_str())];
+        // Across projects; servers without it list the current project's.
+        let request = self.request(Method::GET, "/experimental/session", None);
+        let response = request
+            .query(&query)
+            .send()
+            .await
+            .context("reaching the opencode server")?;
+        let response = match response.status() {
+            StatusCode::NOT_FOUND => {
+                send(self.request(Method::GET, "/session", None).query(&query)).await?
+            }
+            _ => check(response).await?,
+        };
+        Ok(response.json().await?)
     }
 
     pub async fn agents(&self) -> Result<Vec<Agent>> {
@@ -327,6 +378,11 @@ async fn send(request: RequestBuilder) -> Result<Response> {
         .send()
         .await
         .context("reaching the opencode server")?;
+    check(response).await
+}
+
+/// The response, if it succeeded.
+async fn check(response: Response) -> Result<Response> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);

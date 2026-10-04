@@ -110,6 +110,36 @@ pub async fn remove_node(client: &Client, node: String) -> Result<()> {
     Ok(())
 }
 
+pub async fn list_sessions(client: &Client, node: String) -> Result<()> {
+    let sessions = client
+        .connect()
+        .await?
+        .list_agent_sessions(ListAgentSessionsRequest { node })
+        .await?
+        .into_inner()
+        .sessions;
+    if sessions.is_empty() {
+        eprintln!("The agent has no sessions yet.");
+        return Ok(());
+    }
+    println!(
+        "{:<32} {:<9} {:<8} {:<40} TITLE",
+        "ID", "UPDATED", "STATUS", "DIRECTORY"
+    );
+    for session in sessions {
+        let status = if session.busy { "running" } else { "idle" };
+        println!(
+            "{:<32} {:<9} {:<8} {:<40} {}",
+            session.id,
+            ago(session.updated),
+            status,
+            session.directory,
+            session.title
+        );
+    }
+    Ok(())
+}
+
 pub async fn list_commands(client: &Client, node: String) -> Result<()> {
     let commands = client
         .connect()
