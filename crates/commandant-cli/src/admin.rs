@@ -159,7 +159,7 @@ pub async fn list_commands(client: &Client, node: String) -> Result<()> {
         .get_agent_options(GetAgentOptionsRequest { node })
         .await?
         .into_inner();
-    if commands.commands_loading {
+    if commands.loading {
         eprintln!(
             "The agent's commands are still loading (its MCP servers are connecting); try again in a moment."
         );
@@ -209,6 +209,10 @@ pub async fn mcp(
         }
     }
     .into_inner();
+    if options.loading {
+        eprintln!("The agent's MCP servers are still connecting; try again in a moment.");
+        return Ok(());
+    }
     if options.mcp_servers.is_empty() {
         eprintln!("The agent has no MCP servers configured.");
         return Ok(());

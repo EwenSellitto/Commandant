@@ -134,6 +134,8 @@ pub struct Chat {
     /// The agents, models and efforts the node offers, once it has said.
     pub options: Option<Arc<AgentOptions>>,
     fetching_options: bool,
+    /// A picker asked for before the options came, to open once they do.
+    pending_pick: Option<(Pick, String)>,
     /// The model that last replied, which tells what "default" means.
     pub used_model: String,
     /// The floating window, when open.
@@ -167,6 +169,7 @@ impl Chat {
             partial_reasoning: Vec::new(),
             partial_note: String::new(),
             fetching_options: options.is_none(),
+            pending_pick: None,
             options,
             used_model: String::new(),
             picker: None,
@@ -306,7 +309,7 @@ impl Chat {
                     return self.send(text, name, arguments);
                 }
                 // It may be one of those, once they've loaded.
-                _ if self.commands_loading() => {
+                _ if self.loading() => {
                     self.info("the agent's commands are still loading; send it again in a moment");
                     return None;
                 }
@@ -325,8 +328,9 @@ impl Chat {
         Some(action)
     }
 
-    fn commands_loading(&self) -> bool {
-        self.options.as_ref().is_some_and(|o| o.commands_loading)
+    /// Whether the commands and MCP servers are still to come.
+    fn loading(&self) -> bool {
+        self.options.as_ref().is_some_and(|o| o.loading)
     }
 
     fn is_agent_command(&self, name: &str) -> bool {
@@ -375,6 +379,8 @@ impl Chat {
             self.info("still asking the node what its agent offers…");
             return None;
         }
+        // The app drops this if the node is answering already; the answer
+        // reaches every chat on it.
         self.fetching_options = true;
         self.info("asking the node what its agent offers…");
         Some(Action::fetch_options(&self.node.id))
@@ -382,6 +388,12 @@ impl Chat {
 
     fn open_picker(&mut self, pick: Pick, filter: &str) -> Option<Action> {
         let Some(options) = self.options.clone() else {
+            // It opens when they come.
+            self.pending_pick = Some((pick, filter.to_string()));
+            if self.fetching_options {
+                self.info("the node is still saying what its agent offers; this opens when it has");
+                return None;
+            }
             return self.ask_for_options();
         };
         let (choices, current): (Vec<_>, _) = match pick {
@@ -422,7 +434,7 @@ impl Chat {
                 (choices, Some(Choose::Effort(self.settings.effort.clone())))
             }
             Pick::Command => {
-                if options.commands_loading {
+                if options.loading {
                     self.info("the agent's commands are still loading (its MCP servers are connecting); try again in a moment");
                     return None;
                 }
@@ -448,6 +460,12 @@ impl Chat {
                 (choices, None)
             }
             Pick::Mcp => {
+                if options.loading {
+                    self.info(
+                        "the agent's MCP servers are still connecting; try again in a moment",
+                    );
+                    return None;
+                }
                 if options.mcp_servers.is_empty() {
                     self.info("the agent has no MCP servers configured");
                     return None;
@@ -587,9 +605,15 @@ impl Chat {
             Message::Options(options) => {
                 // Every chat on the node hears; one that was waiting explains.
                 let waiting = std::mem::take(&mut self.fetching_options);
+                let pending = self.pending_pick.take();
                 match options {
-                    Ok(options) => self.options = Some(options),
-                    Err(e) if waiting => self.push(
+                    Ok(options) => {
+                        self.options = Some(options);
+                        if let Some((pick, filter)) = pending {
+                            return self.open_picker(pick, &filter);
+                        }
+                    }
+                    Err(e) if waiting || pending.is_some() => self.push(
                         Role::Error,
                         &format!("couldn't list the agent's options: {e}"),
                     ),
@@ -1248,6 +1272,40 @@ pub(crate) mod tests {
         command(&mut app, "again");
         app.on_message(output(OutputStream::Stdout, b"ok"));
         assert_eq!(app.thread.last().unwrap().text, "ok");
+    }
+
+    #[test]
+    fn a_picker_asked_for_too_early_opens_when_the_options_come() {
+        let mut app = chat();
+        // The node hasn't said yet: the request is remembered, not dropped.
+        assert!(command(&mut app, "/model smart").is_none());
+        assert!(app.picker.is_none());
+        assert!(
+            command(&mut app, "/model smart").is_none(),
+            "still the one request"
+        );
+        let options = AgentOptions {
+            models: vec![ModelChoice {
+                id: "a/smart".into(),
+                name: "Smart".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        app.on_message(Message::Options(Ok(Arc::new(options))));
+        let picker = app.picker.as_ref().expect("it opens by itself");
+        assert_eq!((picker.title, picker.filter.as_str()), ("Model", "smart"));
+
+        // If the node can't say, the wait ends with why.
+        let mut failed = chat();
+        command(&mut failed, "/agent");
+        failed.on_message(Message::Options(Err("timed out".into())));
+        assert!(failed.picker.is_none());
+        let said = &failed.thread.last().unwrap().text;
+        assert!(
+            said.contains("couldn't list the agent's options: timed out"),
+            "{said}"
+        );
     }
 
     #[test]

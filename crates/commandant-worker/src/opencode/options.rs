@@ -14,8 +14,9 @@ use super::api::{Agent, Command, McpStatus, Providers};
 
 /// OpenCode's own default agent.
 const BUILD: &str = "build";
-/// How long the options wait for the commands before answering without them.
-const COMMANDS_WAIT: Duration = Duration::from_secs(2);
+/// How long the options wait for the commands and MCP servers before
+/// answering without them.
+const MCP_WAIT: Duration = Duration::from_secs(2);
 
 /// What a prompt can choose from, switching an MCP server first if asked.
 pub async fn options(opencode: &Opencode, mcp: Option<McpSwitch>) -> Result<AgentOptions> {
@@ -35,24 +36,18 @@ pub async fn options(opencode: &Opencode, mcp: Option<McpSwitch>) -> Result<Agen
 
 async fn gather(opencode: &Opencode) -> Result<AgentOptions> {
     let api = opencode.api().await?;
-    // The commands include MCP prompts, so OpenCode lists them once its MCP
-    // servers have connected, which can take a while after it starts. The
-    // rest doesn't wait for them.
-    let (rest, commands) = tokio::join!(
-        async {
-            tokio::try_join!(
-                api.agents(),
-                api.providers(),
-                api.config(),
-                api.mcp_servers()
-            )
-        },
-        tokio::time::timeout(COMMANDS_WAIT, api.commands(None)),
+    // OpenCode lists its MCP servers, and its commands (MCP prompts among
+    // them), once those servers have connected, which can take seconds after
+    // it starts. The agents and models don't wait for that.
+    let mcp = async { tokio::try_join!(api.commands(None), api.mcp_servers()) };
+    let (rest, mcp) = tokio::join!(
+        async { tokio::try_join!(api.agents(), api.providers(), api.config()) },
+        tokio::time::timeout(MCP_WAIT, mcp),
     );
-    let (agents, providers, config, mcp) = rest?;
-    let (commands, commands_loading) = match commands {
-        Ok(commands) => (commands?, false),
-        Err(_) => (Vec::new(), true),
+    let (agents, providers, config) = rest?;
+    let ((commands, mcp), loading) = match mcp {
+        Ok(mcp) => (mcp?, false),
+        Err(_) => (Default::default(), true),
     };
     let agents = promptable(agents);
     let default_agent = match config.default_agent {
@@ -67,7 +62,7 @@ async fn gather(opencode: &Opencode) -> Result<AgentOptions> {
         default_model: config.model.unwrap_or_default(),
         commands: commands.into_iter().map(command).collect(),
         mcp_servers: mcp_servers(mcp),
-        commands_loading,
+        loading,
         ..Default::default()
     })
 }

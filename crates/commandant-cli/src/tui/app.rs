@@ -18,6 +18,9 @@ pub type ChatId = u64;
 /// How long to wait before asking again for commands that were loading.
 const OPTIONS_RETRY: Duration = Duration::from_secs(3);
 const SESSIONS: &str = "Sessions on this node";
+/// How often a node that may answer in a moment is asked again for its
+/// options before the failure is shown.
+const OPTIONS_RETRIES: u32 = 2;
 
 /// Something for the event loop to do, or (the chat-level ones) for the app.
 pub enum Action {
@@ -64,7 +67,7 @@ impl Action {
 pub enum Update {
     Chat(ChatId, Message),
     /// For every chat on the node.
-    Options(String, Result<AgentOptions, String>),
+    Options(String, Result<AgentOptions, Failure>),
     /// How the chat's MCP switch went: the node's options after it.
     McpSwitched {
         chat: ChatId,
@@ -76,6 +79,23 @@ pub enum Update {
     Sessions(String, Result<Vec<AgentSession>, String>),
     /// The node, once it hosts the harness it was asked to start.
     HarnessStarted(String, Result<NodeInfo, String>),
+}
+
+/// Why a node couldn't say what its agent offers.
+#[derive(Debug, Clone)]
+pub struct Failure {
+    pub message: String,
+    /// It may answer in a moment: it timed out, or was out of reach.
+    pub transient: bool,
+}
+
+impl From<&str> for Failure {
+    fn from(message: &str) -> Self {
+        Self {
+            message: message.to_string(),
+            transient: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +124,8 @@ pub struct App {
     options: HashMap<String, Arc<AgentOptions>>,
     /// Nodes asked for their options and yet to answer: one question each.
     fetching: HashSet<String>,
+    /// How often each node has been asked again after failing to answer.
+    retries: HashMap<String, u32>,
     /// The sessions each node has saved, as last listed.
     pub saved: HashMap<String, Vec<AgentSession>>,
     /// The chat last shown on each node.
@@ -134,6 +156,7 @@ impl App {
             chats: Vec::new(),
             options: HashMap::new(),
             fetching: HashSet::new(),
+            retries: HashMap::new(),
             saved: HashMap::new(),
             last: HashMap::new(),
             picker: None,
@@ -291,8 +314,13 @@ impl App {
             return Vec::new();
         };
         self.notice.clear();
+        // Its chats are no use until it hosts an agent again.
+        if node.online && node.harnesses.is_empty() {
+            self.choose_harness(node);
+            return Vec::new();
+        }
         let mut actions = Vec::new();
-        if node.online && !node.harnesses.is_empty() {
+        if node.online {
             actions.push(Action::FetchSessions(node.id.clone()));
         }
         let last = self.last.get(&node.id).copied();
@@ -305,10 +333,6 @@ impl App {
         }
         if !node.online {
             self.notice = format!("{} is offline", node.name);
-            return Vec::new();
-        }
-        if node.harnesses.is_empty() {
-            self.choose_harness(node);
             return Vec::new();
         }
         let settings = self.defaults.clone();
@@ -533,11 +557,30 @@ impl App {
                 }
                 action.into_iter().collect()
             }
+            Update::Options(node, Err(failure)) if failure.transient => {
+                // Busy starting its agent, say: ask again before saying so.
+                let tries = self.retries.entry(node.clone()).or_default();
+                if *tries < OPTIONS_RETRIES {
+                    *tries += 1;
+                    return vec![Action::FetchOptions {
+                        node,
+                        after: OPTIONS_RETRY,
+                    }];
+                }
+                self.on_update(Update::Options(
+                    node,
+                    Err(Failure {
+                        transient: false,
+                        ..failure
+                    }),
+                ))
+            }
             Update::Options(node, options) => {
-                let options = self.set_options(&node, options);
+                self.retries.remove(&node);
+                let options = self.set_options(&node, options.map_err(|f| f.message));
                 // The rest is in; the commands follow once they've loaded,
                 // and the request stays open until then.
-                if options.is_some_and(|o| o.commands_loading) {
+                if options.is_some_and(|o| o.loading) {
                     return vec![Action::FetchOptions {
                         node,
                         after: OPTIONS_RETRY,
@@ -587,12 +630,20 @@ impl App {
                         if let Some(known) = self.nodes.iter_mut().find(|n| n.id == id) {
                             *known = node;
                         }
+                        // What its chats knew came from an agent that's gone.
+                        self.options.remove(&id);
+                        let mut actions = Vec::new();
+                        if self.chats_on(&id).next().is_some() {
+                            actions.extend(self.ask_once(Action::fetch_options(&id)));
+                        }
                         // Still looking at it: open it.
                         let selected = self.nodes.get(self.selected).map(|n| n.id.as_str());
                         if self.screen == Screen::Nodes && selected == Some(id.as_str()) {
-                            return self.open_selected_node();
+                            actions.extend(self.open_selected_node());
+                            return actions;
                         }
                         self.notice = format!("{name} now hosts {hosts}");
+                        return actions;
                     }
                     Err(e) => self.notice = format!("couldn't start an agent on {name}: {e}"),
                 }
@@ -1129,7 +1180,7 @@ pub(crate) mod tests {
         app.on_key(key(KeyCode::Enter));
         let loading = AgentOptions {
             default_agent: "build".into(),
-            commands_loading: true,
+            loading: true,
             ..Default::default()
         };
         let actions = app.on_update(Update::Options("n1".into(), Ok(loading)));
@@ -1225,5 +1276,74 @@ pub(crate) mod tests {
         assert!(!app.busy());
         app.starting.insert("n2".into());
         assert!(app.busy(), "so does a node starting its agent");
+    }
+
+    #[test]
+    fn a_node_that_lost_its_agent_offers_one_again_then_refreshes_its_chats() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Enter));
+        let chat = shown(&app);
+        app.on_update(Update::Options("n1".into(), Ok(AgentOptions::default())));
+        app.on_key(ctrl('g'));
+
+        // Its worker restarted without --harness.
+        let mut nodes = app.nodes.clone();
+        nodes[0] = bare("n1");
+        app.on_update(Update::Nodes(nodes));
+        assert!(app.on_key(key(KeyCode::Enter)).is_empty());
+        assert!(app.picker.is_some(), "the agent picker, not the stale chat");
+        app.on_key(key(KeyCode::Enter));
+
+        let ready = NodeInfo {
+            harnesses: vec!["opencode".into()],
+            ..bare("n1")
+        };
+        let actions = app.on_update(Update::HarnessStarted("n1".into(), Ok(ready)));
+        // Back in its chat, asking the new agent what it offers.
+        assert_eq!(app.screen, Screen::Chat(chat));
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::FetchOptions { node, .. } if node == "n1"))
+        );
+    }
+
+    #[test]
+    fn a_node_that_may_answer_in_a_moment_is_asked_again_quietly() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Enter));
+        let timed_out = || {
+            let failure = Failure {
+                message: "node box-n1 didn't say what its agent offers".into(),
+                transient: true,
+            };
+            Update::Options("n1".into(), Err(failure))
+        };
+        let errors = |app: &App| {
+            let thread = &app.chat().unwrap().thread;
+            thread
+                .iter()
+                .filter(|e| e.role == chat::Role::Error)
+                .count()
+        };
+        // Twice it asks again, saying nothing...
+        for _ in 0..OPTIONS_RETRIES {
+            let actions = app.on_update(timed_out());
+            assert!(
+                matches!(&actions[..], [Action::FetchOptions { after, .. }] if !after.is_zero())
+            );
+            assert_eq!(errors(&app), 0);
+        }
+        // ...then it says why, and stops asking.
+        assert!(app.on_update(timed_out()).is_empty());
+        assert_eq!(errors(&app), 1);
+        assert!(!app.fetching.contains("n1"));
+
+        // An answer resets the count; a refusal is shown at once.
+        app.on_update(Update::Options("n1".into(), Ok(AgentOptions::default())));
+        assert!(!app.retries.contains_key("n1"));
+        app.on_key(ctrl('n'));
+        let refused = Update::Options("n1".into(), Err("node box-n1 runs no agent harness".into()));
+        assert!(app.on_update(refused).is_empty());
     }
 }

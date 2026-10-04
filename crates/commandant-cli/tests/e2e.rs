@@ -1262,7 +1262,7 @@ mod agents {
     /// OpenCode lists its commands only once its MCP servers have connected;
     /// the models and agents don't wait for that.
     #[tokio::test(flavor = "multi_thread")]
-    async fn options_dont_wait_for_slow_commands() {
+    async fn options_dont_wait_for_mcp_servers_to_connect() {
         let Cluster {
             mut client,
             fake,
@@ -1270,7 +1270,8 @@ mod agents {
             _tmp,
             ..
         } = cluster().await;
-        fake.delay_commands(Duration::from_secs(10));
+        // As long as a real one took, and longer than a question may.
+        fake.delay_mcp(Duration::from_secs(20));
         let asked = std::time::Instant::now();
         let options = get_options(&mut client).await;
         assert!(
@@ -1278,14 +1279,16 @@ mod agents {
             "{:?}",
             asked.elapsed()
         );
-        assert!(options.commands_loading);
+        assert!(options.loading);
         assert!(options.commands.is_empty());
+        assert!(options.mcp_servers.is_empty());
         assert_eq!(options.models.len(), 1);
         assert_eq!(options.default_agent, "build");
 
-        fake.delay_commands(Duration::ZERO);
+        fake.delay_mcp(Duration::ZERO);
         let options = get_options(&mut client).await;
-        assert!(!options.commands_loading);
+        assert!(!options.loading);
         assert_eq!(options.commands.len(), 2);
+        assert_eq!(options.mcp_servers.len(), 2);
     }
 }

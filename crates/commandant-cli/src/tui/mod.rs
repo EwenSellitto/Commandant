@@ -23,7 +23,7 @@ use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
-use self::app::{Action, App, ChatId, Update};
+use self::app::{Action, App, ChatId, Failure, Update};
 use self::chat::{Message, Settings};
 use crate::cli::TuiArgs;
 use crate::config::Client;
@@ -153,7 +153,17 @@ async fn perform(
             tokio::spawn(async move {
                 tokio::time::sleep(after).await;
                 let request = GetAgentOptionsRequest { node: node.clone() };
-                let options = ask(control_.get_agent_options(request)).await;
+                let options = control_
+                    .get_agent_options(request)
+                    .await
+                    .map(tonic::Response::into_inner)
+                    .map_err(|status| Failure {
+                        message: status.message().to_string(),
+                        transient: matches!(
+                            status.code(),
+                            tonic::Code::DeadlineExceeded | tonic::Code::Unavailable
+                        ),
+                    });
                 let _ = tx_.send(Update::Options(node, options));
             });
         }
