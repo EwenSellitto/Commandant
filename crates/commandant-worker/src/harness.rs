@@ -2,9 +2,9 @@
 //!
 //! A harness is a coding agent (OpenCode, say) that the worker keeps
 //! running and relays prompts to. Adding one means a [`HarnessKind`] variant
-//! (in `commandant-common`),
-//! an implementation of [`Harness`], and a line in [`start`]; the rest of the
-//! worker, the orchestrator and the clients only see the trait and the name.
+//! (in `commandant-common`), an implementation of [`Harness`], and a line in
+//! [`start`]; the rest of the worker, the orchestrator and the clients only
+//! see the trait and the name.
 
 use std::collections::HashSet;
 use std::path::PathBuf;

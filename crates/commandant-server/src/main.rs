@@ -20,8 +20,14 @@ async fn main() {
         Command::Serve(args) => serve::run(args).await,
         Command::Worker(args) => worker::run(args).await,
     };
-    if let Err(e) = result {
-        eprintln!("error: {e:#}");
-        std::process::exit(1);
-    }
+    // Exits rather than returning: dropping the runtime would wait for any
+    // blocking task still running (a git clone, say) after Ctrl-C.
+    let code = match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            1
+        }
+    };
+    std::process::exit(code);
 }

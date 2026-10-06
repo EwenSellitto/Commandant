@@ -29,6 +29,9 @@ cargo install --path crates/commandant-server   # machines that serve or work
 cargo install --path crates/commandant-client   # machines you control them from
 ```
 
+Upgrading from the single `commandant` binary? Run `cargo uninstall
+commandant-cli` first, or cargo refuses to install the client over it.
+
 ## Quick start
 
 ```sh
