@@ -28,12 +28,12 @@ SQLite or libgit2 in `commandant`. Code used by several crates goes in
 
 | File | |
 |---|---|
-| `lib.rs` | `DEFAULT_PORT`, `VERSION`, `or` |
+| `lib.rs` | `DEFAULT_PORT`, `VERSION`, `or`, `random_hex` for ids and secrets |
 | `link.rs` | The `commandant://` link: encoding, parsing, addresses, loopback for the local machine |
 | `harness.rs` | `HarnessKind`: the coding agents a worker can host, by name and description |
-| `fs.rs` | Private (0600) files, written atomically; reading optional and single-value files |
+| `fs.rs` | Private (0600) files, written atomically; reading optional and single-value files; deleting a file or directory |
 | `dirs.rs` | Default data, state and config directories |
-| `lookup.rs` | Finding a node or task by id or id prefix |
+| `lookup.rs` | Finding a node by name, id or id prefix, and a task by id or id prefix |
 | `time.rs` | Unix time, and `12s ago` for tables |
 
 ## `commandant-proto`
@@ -53,9 +53,10 @@ SQLite or libgit2 in `commandant`. Code used by several crates goes in
 | `link.rs` | `NodeLink`: admits workers (join or reconnect) and handles their messages |
 | `control.rs` | `Control`: the admin API; sends tasks and questions to workers |
 | `registry.rs` | Which node is connected, on which connection, with which harnesses |
-| `tasks.rs` | Fans live task output out to watching clients |
+| `tasks.rs` | Fans live task output out to watching clients, keeping its tail |
+| `output.rs` | The last 1 MiB of a task's output, chunks tagged with their stream |
 | `queries.rs` | Matches workers' answers to the questions asked, by request id |
-| `store.rs` | SQLite: tokens, nodes, tasks (migrations in `migrations/`) |
+| `store.rs` | SQLite: tokens, nodes, tasks and their output (migrations in `migrations/`) |
 | `auth.rs` | Token generation, hashing, constant-time checks |
 
 ## `commandant-worker`
@@ -65,6 +66,7 @@ SQLite or libgit2 in `commandant`. Code used by several crates goes in
 | `lib.rs` | Connects and reconnects, then runs tasks and answers questions |
 | `state.rs` | `node.json` (credentials), and the state-directory lock |
 | `exec.rs` | Runs a command in its own process group and streams its output |
+| `process.rs` | Signals a child's whole process group |
 | `project.rs` | Clones and lists projects and their copies (git2) |
 | `harness.rs` | The `Harness` trait, the `Host` of the running harness, and what harnesses share (session lock, installer, output writer) |
 | `opencode/` | OpenCode: the server process (`mod.rs`), its HTTP API (`api.rs`), prompts (`prompt.rs`), options, sessions and sign-in |
@@ -84,7 +86,7 @@ SQLite or libgit2 in `commandant`. Code used by several crates goes in
 | File | |
 |---|---|
 | `main.rs`, `cli.rs` | Logging, and the command line (clap) |
-| `admin.rs`, `run.rs` | `login`, `token`, `node`, `task`; `run` and `prompt` |
+| `admin.rs`, `run.rs` | `login`, `token`, `node`, `task`; `run`, `prompt` and `task watch` |
 | `config.rs` | Where clients find the server and token |
 | `tui/mod.rs` | The TUI's event loop: draws, reads keys, makes the calls actions ask for |
 | `tui/app.rs` | The nodes and every chat; routes keys and updates |

@@ -25,6 +25,7 @@ use commandant_proto::{
 use tokio::sync::oneshot;
 
 use crate::harness::{Busy, Harness, HarnessKind, ensure_installed};
+use crate::process::{Signal, signal_group};
 
 use self::api::Api;
 
@@ -163,7 +164,7 @@ fn warm_up(api: Api) {
 
 /// Runs `opencode serve` on a free loopback port, behind a random password.
 async fn start_server(binary: &Path) -> Result<Server> {
-    let password = random_password();
+    let password = commandant_common::random_hex(32);
     let mut command = Command::new(binary);
     command
         .args(["serve", "--hostname", "127.0.0.1", "--port", "0"])
@@ -210,11 +211,7 @@ async fn start_server(binary: &Path) -> Result<Server> {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.child.id() {
-            // SAFETY: plain syscall; the group id equals the child's pid.
-            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) };
-        }
+        signal_group(&self.child, Signal::Term);
     }
 }
 
@@ -225,12 +222,6 @@ async fn forward_lines(pipe: impl AsyncRead + Unpin, lines: mpsc::Sender<String>
             return;
         }
     }
-}
-
-fn random_password() -> String {
-    let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).expect("OS random number generator unavailable");
-    hex::encode(bytes)
 }
 
 #[cfg(test)]

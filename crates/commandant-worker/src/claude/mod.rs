@@ -240,13 +240,11 @@ impl Harness for ClaudeCode {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
+#[serde(default)]
 struct Init {
-    #[serde(default)]
     agents: Vec<Named>,
-    #[serde(default)]
     commands: Vec<Named>,
-    #[serde(default)]
     models: Vec<Model>,
 }
 
@@ -269,11 +267,7 @@ struct Model {
 /// What a prompt can choose, from Claude Code's answers. Its `default` model
 /// is left out: no model at all means the same.
 fn options(init: &Value, mcp: &Value) -> AgentOptions {
-    let init = Init::deserialize(init).unwrap_or(Init {
-        agents: Vec::new(),
-        commands: Vec::new(),
-        models: Vec::new(),
-    });
+    let init = Init::deserialize(init).unwrap_or_default();
     let mcp_servers = mcp["mcpServers"]
         .as_array()
         .into_iter()
@@ -322,23 +316,6 @@ fn options(init: &Value, mcp: &Value) -> AgentOptions {
     }
 }
 
-/// A random version-4 UUID, as Claude Code wants its session ids.
-fn new_session_id() -> String {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).expect("OS random number generator unavailable");
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex = hex::encode(bytes);
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..]
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,14 +346,5 @@ mod tests {
         assert_eq!(options.mcp_servers[0].status, "needs_auth");
         assert!(!format!("{options:?}").contains("secret"));
         assert!(options.default_model.is_empty());
-    }
-
-    #[test]
-    fn session_ids_are_v4_uuids() {
-        let id = new_session_id();
-        let parts: Vec<_> = id.split('-').map(str::len).collect();
-        assert_eq!(parts, [8, 4, 4, 4, 12]);
-        assert_eq!(&id[14..15], "4");
-        assert_ne!(id, new_session_id());
     }
 }

@@ -13,9 +13,7 @@ pub const NODE_PREFIX: &str = "cmdn";
 const TOKEN_BYTES: usize = 16;
 
 pub fn generate_token(prefix: &str) -> String {
-    let mut bytes = [0u8; TOKEN_BYTES];
-    getrandom::fill(&mut bytes).expect("OS random number generator unavailable");
-    format!("{prefix}_{}", hex::encode(bytes))
+    format!("{prefix}_{}", commandant_common::random_hex(TOKEN_BYTES))
 }
 
 pub fn hash_token(token: &str) -> String {

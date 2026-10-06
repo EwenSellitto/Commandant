@@ -86,21 +86,9 @@ fn reset(data_dir: &Path) -> Result<()> {
         format!("{DB_FILE}-shm"),
         ADMIN_TOKEN_FILE.into(),
         LINK_FILE.into(),
+        LOCAL_WORKER_DIR.into(),
     ] {
-        let path = data_dir.join(file);
-        match std::fs::remove_file(&path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                return Err(e).with_context(|| format!("deleting {}", path.display()));
-            }
-            _ => {}
-        }
-    }
-    let worker = data_dir.join(LOCAL_WORKER_DIR);
-    match std::fs::remove_dir_all(&worker) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            return Err(e).with_context(|| format!("deleting {}", worker.display()));
-        }
-        _ => {}
+        fs::remove(&data_dir.join(file))?;
     }
     eprintln!("Database reset.");
     Ok(())

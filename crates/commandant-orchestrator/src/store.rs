@@ -4,7 +4,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use commandant_proto::TaskFinished;
+use commandant_common::lookup::{self, Match};
+use commandant_proto::{TaskFinished, TaskOutput};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use sqlx::types::Json;
 
@@ -12,6 +13,8 @@ pub use commandant_common::time::now;
 
 /// Error recorded on tasks whose node went away mid-run.
 pub const NODE_DISCONNECTED: &str = "node disconnected";
+/// Only this many of the newest tasks keep their output.
+pub const KEPT_OUTPUTS: u32 = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskStatus {
@@ -81,21 +84,18 @@ pub struct TaskRecord {
     pub error: Option<String>,
     pub created_at: i64,
     pub finished_at: Option<i64>,
+    pub output_pruned: bool,
 }
 
-#[derive(Debug)]
-pub enum InsertNodeError {
-    NameTaken,
-    Other(sqlx::Error),
-}
-
-impl std::error::Error for InsertNodeError {}
-
-impl std::fmt::Display for InsertNodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NameTaken => f.write_str("a node with this name already exists"),
-            Self::Other(e) => e.fmt(f),
+impl TaskRecord {
+    /// The final event of a task that is over, as its watchers see it.
+    pub fn finished(&self) -> TaskFinished {
+        TaskFinished {
+            task_id: self.id.clone(),
+            exit_code: self.exit_code,
+            error: self.error.clone().unwrap_or_default(),
+            cancelled: self.status == TaskStatus::Cancelled.as_str(),
+            ..Default::default()
         }
     }
 }
@@ -196,15 +196,16 @@ impl Store {
 
     // --- nodes --------------------------------------------------------------
 
+    /// Returns false if another node has the name.
     pub async fn insert_node(
         &self,
         id: &str,
         name: &str,
         secret_hash: &str,
         facts: &NodeFacts<'_>,
-    ) -> Result<(), InsertNodeError> {
+    ) -> Result<bool> {
         let ts = now();
-        sqlx::query(
+        let inserted = sqlx::query(
             "INSERT INTO nodes (id, name, hostname, os, arch, version, secret_hash, created_at, last_seen)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
@@ -218,12 +219,11 @@ impl Store {
         .bind(ts)
         .bind(ts)
         .execute(&self.pool)
-        .await
-        .map_err(|e| match &e {
-            sqlx::Error::Database(db) if db.is_unique_violation() => InsertNodeError::NameTaken,
-            _ => InsertNodeError::Other(e),
-        })?;
-        Ok(())
+        .await;
+        match inserted {
+            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => Ok(false),
+            inserted => inserted.map(|_| true).map_err(Into::into),
+        }
     }
 
     pub async fn node_secret_hash(&self, id: &str) -> Result<Option<String>> {
@@ -299,14 +299,18 @@ impl Store {
         Ok(())
     }
 
+    /// Records how a running task ended and the output it kept, then drops
+    /// the output of all but the newest tasks.
     pub async fn finish_task(
         &self,
         id: &str,
         status: TaskStatus,
         exit_code: Option<i32>,
         error: Option<&str>,
+        output: &[TaskOutput],
     ) -> Result<()> {
-        sqlx::query(
+        let mut tx = self.pool.begin().await?;
+        let res = sqlx::query(
             "UPDATE tasks SET status = ?, exit_code = ?, error = ?, finished_at = ?
              WHERE id = ? AND status = ?",
         )
@@ -316,14 +320,43 @@ impl Store {
         .bind(now())
         .bind(id)
         .bind(TaskStatus::Running.as_str())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        if res.rows_affected() == 1 {
+            for (seq, chunk) in output.iter().enumerate() {
+                sqlx::query(
+                    "INSERT INTO task_output (task_id, seq, stream, data) VALUES (?, ?, ?, ?)",
+                )
+                .bind(id)
+                .bind(seq as i64)
+                .bind(chunk.stream)
+                .bind(&chunk.data)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+        // Everything past the newest KEPT_OUTPUTS tasks.
+        sqlx::query(
+            "UPDATE tasks SET output_pruned = 1 WHERE output_pruned = 0 AND id IN
+             (SELECT id FROM tasks ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?)",
+        )
+        .bind(KEPT_OUTPUTS)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "DELETE FROM task_output WHERE task_id IN
+             (SELECT id FROM tasks ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?)",
+        )
+        .bind(KEPT_OUTPUTS)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     /// Records that a task's node went away before it finished.
-    pub async fn lose_task(&self, id: &str) -> Result<()> {
-        self.finish_task(id, TaskStatus::Lost, None, Some(NODE_DISCONNECTED))
+    pub async fn lose_task(&self, id: &str, output: &[TaskOutput]) -> Result<()> {
+        self.finish_task(id, TaskStatus::Lost, None, Some(NODE_DISCONNECTED), output)
             .await
     }
 
@@ -349,6 +382,47 @@ impl Store {
         .bind(limit)
         .fetch_all(&self.pool)
         .await?)
+    }
+
+    /// Finds a task by id or unambiguous id prefix.
+    pub async fn find_task(&self, needle: &str) -> Result<Match<TaskRecord>> {
+        // The exact id first, else two that start with it: enough to tell
+        // one from several.
+        let tasks: Vec<TaskRecord> = sqlx::query_as(
+            "SELECT t.*, n.name AS node_name FROM tasks t JOIN nodes n ON n.id = t.node_id
+             WHERE substr(t.id, 1, length(?1)) = ?1 ORDER BY t.id = ?1 DESC LIMIT 2",
+        )
+        .bind(needle)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(lookup::find(tasks, needle, |t| &t.id))
+    }
+
+    pub async fn task(&self, id: &str) -> Result<Option<TaskRecord>> {
+        Ok(sqlx::query_as(
+            "SELECT t.*, n.name AS node_name FROM tasks t JOIN nodes n ON n.id = t.node_id
+             WHERE t.id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    /// The output a finished task kept, oldest first.
+    pub async fn task_output(&self, id: &str) -> Result<Vec<TaskOutput>> {
+        let chunks: Vec<(i32, Vec<u8>)> =
+            sqlx::query_as("SELECT stream, data FROM task_output WHERE task_id = ? ORDER BY seq")
+                .bind(id)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(chunks
+            .into_iter()
+            .map(|(stream, data)| TaskOutput {
+                task_id: id.to_string(),
+                stream,
+                data,
+            })
+            .collect())
     }
 }
 

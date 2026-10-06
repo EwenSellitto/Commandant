@@ -162,7 +162,9 @@ pub struct Entry {
     pub agent: String,
 }
 
+#[derive(Default)]
 pub enum Activity {
+    #[default]
     Idle,
     Working {
         /// Known once the orchestrator has started the task.
@@ -182,6 +184,7 @@ pub enum Unseen {
     Failed,
 }
 
+#[derive(Default)]
 pub struct Chat {
     pub id: ChatId,
     /// The session's title: its first prompt, or what the node saved.
@@ -245,35 +248,11 @@ impl Chat {
     ) -> Self {
         Self {
             id,
-            title: String::new(),
-            unseen: None,
             node,
             settings,
-            thread: Vec::new(),
-            activity: Activity::Idle,
-            input: Input::default(),
-            scroll: 0,
-            partial_stdout: Vec::new(),
-            partial_stderr: Vec::new(),
-            partial_reasoning: Vec::new(),
-            partial_note: String::new(),
             fetching_options: options.is_none(),
-            loading_history: false,
-            providers: Vec::new(),
-            listing_providers: None,
-            auth: None,
-            preparing: None,
-            listing_projects: false,
-            pending_pick: None,
             options,
-            used_model: String::new(),
-            picker: None,
-            suggested: 0,
-            sent: Vec::new(),
-            recalled: None,
-            draft: String::new(),
-            spent: 0.0,
-            context: 0,
+            ..Default::default()
         }
     }
 
@@ -976,7 +955,7 @@ impl Chat {
         let result = match result {
             Ok(result) => result,
             Err(e) => {
-                self.push(Role::Error, &format!("couldn't sign in to {name}: {e}"));
+                self.error(&format!("couldn't sign in to {name}: {e}"));
                 return None;
             }
         };
@@ -1022,7 +1001,7 @@ impl Chat {
                     self.info(&format!("{name}: {}", mcp_status(server)));
                 }
             }
-            Err(e) => self.push(Role::Error, &format!("couldn't switch {name}: {e}")),
+            Err(e) => self.error(&format!("couldn't switch {name}: {e}")),
         }
     }
 
@@ -1085,10 +1064,9 @@ impl Chat {
                             return self.open_picker(pick, &filter);
                         }
                     }
-                    Err(e) if waiting || pending.is_some() => self.push(
-                        Role::Error,
-                        &format!("couldn't list the agent's options: {e}"),
-                    ),
+                    Err(e) if waiting || pending.is_some() => {
+                        self.error(&format!("couldn't list the agent's options: {e}"))
+                    }
                     Err(_) => {}
                 }
             }
@@ -1099,7 +1077,7 @@ impl Chat {
                         self.providers = providers;
                         self.open_providers(&filter);
                     }
-                    Err(e) => self.push(Role::Error, &format!("couldn't list the providers: {e}")),
+                    Err(e) => self.error(&format!("couldn't list the providers: {e}")),
                 }
             }
             Message::Auth(result) => return self.signed_in(result),
@@ -1107,14 +1085,14 @@ impl Chat {
                 let repository = self.preparing.take().unwrap_or_default();
                 match ready {
                     Ok(ready) => self.work_in(&ready.path, &ready.id),
-                    Err(e) => self.push(Role::Error, &format!("couldn't get {repository}: {e}")),
+                    Err(e) => self.error(&format!("couldn't get {repository}: {e}")),
                 }
             }
             Message::Projects(projects) => {
                 self.listing_projects = false;
                 match projects {
                     Ok(projects) => self.open_projects(projects),
-                    Err(e) => self.push(Role::Error, &format!("couldn't list the projects: {e}")),
+                    Err(e) => self.error(&format!("couldn't list the projects: {e}")),
                 }
             }
             Message::History(history) => {
@@ -1135,15 +1113,14 @@ impl Chat {
                         // Before whatever was said since resuming.
                         self.thread.splice(0..0, earlier);
                     }
-                    Err(e) => self.push(
-                        Role::Error,
-                        &format!("couldn't load the session's earlier messages: {e}"),
-                    ),
+                    Err(e) => self.error(&format!(
+                        "couldn't load the session's earlier messages: {e}"
+                    )),
                 }
             }
             Message::Failed(error) => {
                 self.flush_output();
-                self.push(Role::Error, &error);
+                self.error(&error);
                 self.activity = Activity::Idle;
                 self.unseen = Some(Unseen::Failed);
             }
@@ -1207,9 +1184,9 @@ impl Chat {
         if finished.cancelled {
             self.info("cancelled");
         } else if !finished.error.is_empty() {
-            self.push(Role::Error, &finished.error);
+            self.error(&finished.error);
         } else if finished.exit_code != Some(0) {
-            self.push(Role::Error, "the agent failed");
+            self.error("the agent failed");
         } else {
             unseen = Unseen::Done;
         }
@@ -1233,7 +1210,7 @@ impl Chat {
             let line = line.trim_end();
             match line.strip_prefix(&prefix) {
                 Some(tool) => self.push(Role::Tool, tool),
-                None if !line.is_empty() => self.push(Role::Error, line),
+                None if !line.is_empty() => self.error(line),
                 None => {}
             }
         }
@@ -1279,6 +1256,10 @@ impl Chat {
 
     pub fn info(&mut self, text: &str) {
         self.push(Role::Info, text);
+    }
+
+    fn error(&mut self, text: &str) {
+        self.push(Role::Error, text);
     }
 
     fn push(&mut self, role: Role, text: &str) {

@@ -27,6 +27,21 @@ pub fn write_private(path: &Path, contents: &str) -> Result<()> {
         .with_context(|| format!("writing {}", path.display()))
 }
 
+/// Deletes a file, or a directory and all it holds; nothing there is fine.
+pub fn remove(path: &Path) -> Result<()> {
+    let removed = if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    match removed {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).with_context(|| format!("deleting {}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Reads a file, or `None` if it doesn't exist.
 pub fn read_optional(path: &Path) -> Result<Option<String>> {
     match std::fs::read_to_string(path) {

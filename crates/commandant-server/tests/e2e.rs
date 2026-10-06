@@ -359,6 +359,8 @@ mod reset {
     use std::os::fd::{FromRawFd, OwnedFd};
     use std::process::Stdio;
 
+    use commandant_common::fs::read_trimmed;
+
     use super::*;
 
     struct Pty {
@@ -466,7 +468,7 @@ mod reset {
         for answers in ["n\n", "\n", "y\nyes\n"] {
             let stderr = refused(&data_dir, port, Some(answers)).await;
             assert!(stderr.contains("reset cancelled"), "{answers:?}: {stderr}");
-            assert_eq!(read_trimmed(&token_file), old_token);
+            assert_eq!(read_trimmed(&token_file).unwrap(), old_token);
         }
 
         // Confirmed: a new token, and the local worker joins the new database.
@@ -493,7 +495,10 @@ mod reset {
         assert_ne!(node.id, old_node.id);
 
         // The link carries the new token; the remembered host stays.
-        let link: Link = read_trimmed(&data_dir.join("link")).parse().unwrap();
+        let link: Link = read_trimmed(&data_dir.join("link"))
+            .unwrap()
+            .parse()
+            .unwrap();
         assert_eq!(link.token, new_token);
         assert_eq!(link.hosts[0], format!("box.lan:{port}"));
 
@@ -506,9 +511,161 @@ mod reset {
         assert!(status.success(), "{status}");
         drop(pty.keyboard);
     }
+}
 
-    fn read_trimmed(path: &Path) -> String {
-        std::fs::read_to_string(path).unwrap().trim().to_string()
+/// Watches a task: its opening event, then its stream.
+async fn watch(
+    client: &mut ControlClient,
+    task_id: &str,
+) -> (TaskStarted, tonic::Streaming<TaskEvent>) {
+    let request = WatchTaskRequest {
+        task_id: task_id.into(),
+    };
+    let mut events = client.watch_task(request).await.unwrap().into_inner();
+    let Some(TaskEvent {
+        event: Some(task_event::Event::Started(started)),
+    }) = events.message().await.unwrap()
+    else {
+        panic!("first event must be Started");
+    };
+    (started, events)
+}
+
+/// Watching tasks, through `WatchTask`: the output they keep, live or stored.
+mod watching {
+    use super::*;
+
+    /// A cluster of one worker, `w1`, on a running orchestrator.
+    async fn cluster(tmp: &Path) -> (ControlClient, JoinHandle<anyhow::Result<()>>, Running) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = serve_on(&tmp.join("server"), listener).await;
+        let mut client = connect_control(&server.addr, &server.token).await.unwrap();
+        let worker = spawn_worker(
+            &server.addr,
+            Some(server.token.clone()),
+            &tmp.join("worker"),
+        );
+        wait_for_node(&mut client, true).await;
+        (client, worker, server)
+    }
+
+    async fn run(client: &mut ControlClient, argv: &[&str]) -> (String, TaskResult) {
+        let (task_id, events) = start_task(client, argv).await;
+        (task_id, collect(events).await)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_finished_tasks_output_outlives_a_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut client, worker, server) = cluster(tmp.path()).await;
+        let script = "echo out; echo err >&2; echo more; exit 3";
+        let (task_id, ran) = run(&mut client, &["sh", "-c", script]).await;
+        assert_eq!(ran.finished.exit_code, Some(3));
+
+        worker.abort();
+        let port = server.addr.rsplit(':').next().unwrap().parse().unwrap();
+        server.stop().await;
+        let server = serve_on(&tmp.path().join("server"), rebind(port).await).await;
+        let mut client = connect_control(&server.addr, &server.token).await.unwrap();
+
+        // By id prefix, with each stream's output kept apart.
+        let (started, events) = watch(&mut client, &task_id[..8]).await;
+        assert_eq!(started.task_id, task_id);
+        assert!(!started.output_pruned);
+        let replay = collect(events).await;
+        assert_eq!(replay.stdout, "out\nmore\n");
+        assert_eq!(replay.stderr, "err\n");
+        assert_eq!(replay.finished.exit_code, Some(3));
+
+        let unknown = WatchTaskRequest {
+            task_id: "nope".into(),
+        };
+        let err = client.watch_task(unknown).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+        server.stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn watching_a_running_task_replays_then_follows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut client, _worker, server) = cluster(tmp.path()).await;
+        let go = tmp.path().join("go");
+        let script = format!(
+            "echo one; while [ ! -e {} ]; do sleep 0.02; done; echo two",
+            go.display()
+        );
+        let (task_id, mut events) = start_task(&mut client, &["sh", "-c", &script]).await;
+        match events.message().await.unwrap().and_then(|e| e.event) {
+            Some(task_event::Event::Output(out)) => assert_eq!(out.data, b"one\n"),
+            other => panic!("expected output, got {other:?}"),
+        }
+
+        let (started, watched) = watch(&mut client, &task_id).await;
+        assert!(!started.output_pruned);
+        std::fs::write(&go, "").unwrap();
+        let watched = collect(watched).await;
+        assert_eq!(watched.stdout, "one\ntwo\n");
+        assert_eq!(watched.finished.exit_code, Some(0));
+        assert_eq!(collect(events).await.stdout, "two\n");
+        server.stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_task_keeps_its_last_mebibyte() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut client, _worker, server) = cluster(tmp.path()).await;
+        // 1.5 MiB of "a", then a marker.
+        let script = "head -c 1572864 /dev/zero | tr '\\0' a; printf END";
+        let (task_id, ran) = run(&mut client, &["sh", "-c", script]).await;
+        assert_eq!(ran.stdout.len(), 1572864 + 3);
+
+        let (_, events) = watch(&mut client, &task_id).await;
+        let replay = collect(events).await;
+        assert_eq!(replay.stdout.len(), 1 << 20);
+        assert!(replay.stdout.ends_with("aaaEND"));
+        server.stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn only_the_newest_thousand_tasks_keep_their_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut client, _worker, server) = cluster(tmp.path()).await;
+        let (first, _) = run(&mut client, &["echo", "first"]).await;
+        let (second, _) = run(&mut client, &["echo", "second"]).await;
+        // 999 more: the second is the oldest of the newest thousand.
+        for batch in 0..999 / 37 {
+            let mut runs = tokio::task::JoinSet::new();
+            for _ in 0..37 {
+                let mut client = client.clone();
+                runs.spawn(async move { run(&mut client, &["true"]).await });
+            }
+            while let Some(done) = runs.join_next().await {
+                assert_eq!(done.unwrap().1.finished.exit_code, Some(0), "batch {batch}");
+            }
+        }
+
+        let (started, events) = watch(&mut client, &first).await;
+        assert!(started.output_pruned);
+        let replay = collect(events).await;
+        assert_eq!(replay.stdout, "");
+        assert_eq!(replay.finished.exit_code, Some(0));
+
+        let (started, events) = watch(&mut client, &second).await;
+        assert!(!started.output_pruned);
+        assert_eq!(collect(events).await.stdout, "second\n");
+
+        let tasks = client
+            .list_tasks(ListTasksRequest { limit: 1000 })
+            .await
+            .unwrap()
+            .into_inner()
+            .tasks;
+        let oldest = tasks.last().unwrap();
+        assert_eq!(
+            (oldest.id.as_str(), oldest.output_pruned),
+            (second.as_str(), false)
+        );
+        server.stop().await;
     }
 }
 
@@ -940,6 +1097,25 @@ mod agents {
             .unwrap_err();
         assert_eq!(again.code(), tonic::Code::NotFound);
         ok(&prompt(&mut client, resume(&session, "after")).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_busy_turn_can_be_watched() {
+        let Cluster {
+            mut client,
+            fake,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        let (task_id, events) = start(&mut client, ask("hold me")).await;
+        let session = fake.wait_held(1).await.remove(0);
+        let (_, watched) = super::watch(&mut client, &task_id).await;
+        fake.release(&session);
+        let (watched, replied) = tokio::join!(collect(watched), collect(events));
+        ok(&watched);
+        assert_eq!(watched.stdout, replied.stdout);
+        assert_eq!(watched.stdout.trim(), "echo: hold me");
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -5,7 +5,7 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use commandant_common::fs::{read_optional, write_private};
+use commandant_common::fs::{read_optional, remove, write_private};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,13 +96,7 @@ pub fn load(state_dir: &Path) -> Result<Option<Credentials>> {
 /// Drops credentials the orchestrator no longer knows, so the next
 /// connection joins afresh.
 pub fn forget(state_dir: &Path) -> Result<()> {
-    let path = path(state_dir);
-    match std::fs::remove_file(&path) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            Err(e).with_context(|| format!("removing {}", path.display()))
-        }
-        _ => Ok(()),
-    }
+    remove(&path(state_dir))
 }
 
 pub fn save(state_dir: &Path, creds: &Credentials) -> Result<()> {

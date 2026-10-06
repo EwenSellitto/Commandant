@@ -4,6 +4,7 @@ mod claude;
 mod exec;
 mod harness;
 mod opencode;
+mod process;
 mod project;
 pub mod state;
 
@@ -75,9 +76,14 @@ enum Stop {
     Stale(anyhow::Error),
 }
 
+/// A status as an error: `Unauthenticated: invalid join token`.
+fn status_error(status: &tonic::Status) -> anyhow::Error {
+    anyhow!("{}: {}", status.code(), status.message())
+}
+
 impl From<tonic::Status> for Stop {
     fn from(status: tonic::Status) -> Self {
-        let err = anyhow!("{}: {}", status.code(), status.message());
+        let err = status_error(&status);
         match status.code() {
             Code::Unauthenticated | Code::AlreadyExists | Code::InvalidArgument => Stop::Fatal(err),
             _ => Stop::Retry(err),
@@ -171,9 +177,7 @@ async fn session(node: &Node, host: &Arc<Host>, first: bool) -> Result<Infallibl
     let channel = connect(&node.server).await?;
     let can_rejoin = first && saved.is_some() && node.join_token.is_some();
     let rejected = |status: tonic::Status| match status.code() {
-        Code::Unauthenticated if can_rejoin => {
-            Stop::Stale(anyhow!("{}: {}", status.code(), status.message()))
-        }
+        Code::Unauthenticated if can_rejoin => Stop::Stale(status_error(&status)),
         _ => status.into(),
     };
 
@@ -284,12 +288,7 @@ async fn serve(
                     Some(orchestrator_msg::Msg::Prompt(task)) => {
                         info!(task_id = %task.task_id, "prompting the agent");
                         let cancelled = track(&mut cancels, &task.task_id);
-                        match host.current() {
-                            Some(harness) => {
-                                tokio::spawn(prompt(harness, task, outbound.clone(), cancelled));
-                            }
-                            None => refuse_prompt(task, outbound).await,
-                        }
+                        tokio::spawn(prompt(host.clone(), task, outbound.clone(), cancelled));
                     }
                     Some(orchestrator_msg::Msg::ListOptions(ListAgentOptions { request_id, mcp })) => {
                         ask_harness(host, outbound, request_id, |h| async move { h.options(mcp).await });
@@ -372,25 +371,15 @@ fn track(
     cancelled
 }
 
-async fn refuse_prompt(task: AgentPrompt, outbound: &mpsc::Sender<WorkerMsg>) {
-    let refused = TaskFinished {
-        task_id: task.task_id,
-        error: NO_HARNESS.into(),
-        ..Default::default()
-    };
-    let _ = outbound.send(refused.into()).await;
-}
-
-/// Runs a prompt on the harness and reports how it ended.
+/// Runs a prompt on the hosted harness and reports how it ended.
 async fn prompt(
-    harness: Arc<dyn Harness>,
+    host: Arc<Host>,
     task: AgentPrompt,
     outbound: mpsc::Sender<WorkerMsg>,
     cancel: oneshot::Receiver<()>,
 ) {
     let task_id = task.task_id.clone();
-    let finished = harness
-        .prompt(task, &outbound, cancel)
+    let finished = async { harness(&host)?.prompt(task, &outbound, cancel).await }
         .await
         .unwrap_or_else(|e| TaskFinished {
             task_id,

@@ -127,8 +127,9 @@ impl From<&str> for Failure {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Screen {
+    #[default]
     Nodes,
     Chat(ChatId),
 }
@@ -142,6 +143,7 @@ pub enum AppChoice {
     Harness { node: String, harness: String },
 }
 
+#[derive(Default)]
 pub struct App {
     pub screen: Screen,
     pub nodes: Vec<NodeInfo>,
@@ -179,20 +181,11 @@ impl App {
             .position(|n| n.online && !n.harnesses.is_empty())
             .unwrap_or(0);
         Self {
-            screen: Screen::Nodes,
             nodes,
             selected,
-            chats: Vec::new(),
-            options: HashMap::new(),
-            fetching: HashSet::new(),
-            retries: HashMap::new(),
-            saved: HashMap::new(),
-            last: HashMap::new(),
-            picker: None,
-            notice: String::new(),
-            starting: HashSet::new(),
             defaults,
             next_id: 1,
+            ..Default::default()
         }
     }
 

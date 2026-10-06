@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use commandant_common::link::Link;
 use commandant_common::time::ago;
 use commandant_proto::*;
+use unicode_width::UnicodeWidthStr;
 
 use crate::cli::LoginArgs;
 use crate::config::{self, Client, FileConfig};
@@ -72,31 +73,31 @@ pub async fn list_nodes(client: &Client) -> Result<()> {
         eprintln!("No nodes yet. Create a join token with `commandant token create`.");
         return Ok(());
     }
-    println!(
-        "{:<10} {:<20} {:<8} {:<20} {:<16} {:<10} LAST SEEN",
-        "ID", "NAME", "STATUS", "HOSTNAME", "PLATFORM", "HARNESS"
-    );
-    for node in nodes {
-        let (status, last_seen) = if node.online {
-            ("online", "now".to_string())
-        } else {
-            ("offline", ago(node.last_seen))
+    let rows = nodes.into_iter().map(|node| {
+        let (status, last_seen) = match node.online {
+            true => ("online", "now".to_string()),
+            false => ("offline", ago(node.last_seen)),
         };
-        let harnesses = match node.harnesses.is_empty() {
-            true => "-".to_string(),
-            false => node.harnesses.join(","),
-        };
-        println!(
-            "{:<10} {:<20} {:<8} {:<20} {:<16} {:<10} {}",
-            short_id(&node.id),
+        [
+            short_id(&node.id).into(),
             node.name,
-            status,
+            status.into(),
             node.hostname,
             format!("{}/{}", node.os, node.arch),
-            harnesses,
-            last_seen
-        );
-    }
+            commandant_common::or(&node.harnesses.join(","), "-").into(),
+            last_seen,
+        ]
+    });
+    let header = [
+        "ID",
+        "NAME",
+        "STATUS",
+        "HOSTNAME",
+        "PLATFORM",
+        "HARNESS",
+        "LAST SEEN",
+    ];
+    table(header, rows);
     Ok(())
 }
 
@@ -134,21 +135,18 @@ pub async fn list_sessions(client: &Client, node: String) -> Result<()> {
         eprintln!("The agent has no sessions yet.");
         return Ok(());
     }
-    println!(
-        "{:<32} {:<9} {:<8} {:<40} TITLE",
-        "ID", "UPDATED", "STATUS", "DIRECTORY"
-    );
-    for session in sessions {
+    let rows = sessions.into_iter().map(|session| {
         let status = if session.busy { "running" } else { "idle" };
-        println!(
-            "{:<32} {:<9} {:<8} {:<40} {}",
+        let updated = ago(session.updated);
+        [
             session.id,
-            ago(session.updated),
-            status,
+            updated,
+            status.into(),
             session.directory,
-            session.title
-        );
-    }
+            session.title,
+        ]
+    });
+    table(["ID", "UPDATED", "STATUS", "DIRECTORY", "TITLE"], rows);
     Ok(())
 }
 
@@ -170,13 +168,10 @@ pub async fn list_commands(client: &Client, node: String) -> Result<()> {
         eprintln!("The agent has no commands or skills.");
         return Ok(());
     }
-    println!("{:<24} {:<8} DESCRIPTION", "NAME", "SOURCE");
-    for command in commands {
-        println!(
-            "{:<24} {:<8} {}",
-            command.name, command.source, command.description
-        );
-    }
+    let rows = commands
+        .into_iter()
+        .map(|c| [c.name, c.source, c.description]);
+    table(["NAME", "SOURCE", "DESCRIPTION"], rows);
     Ok(())
 }
 
@@ -217,10 +212,11 @@ pub async fn mcp(
         eprintln!("The agent has no MCP servers configured.");
         return Ok(());
     }
-    println!("{:<24} {:<12} ERROR", "NAME", "STATUS");
-    for server in options.mcp_servers {
-        println!("{:<24} {:<12} {}", server.name, server.status, server.error);
-    }
+    let rows = options
+        .mcp_servers
+        .into_iter()
+        .map(|s| [s.name, s.status, s.error]);
+    table(["NAME", "STATUS", "ERROR"], rows);
     Ok(())
 }
 
@@ -232,22 +228,17 @@ pub async fn list_tasks(client: &Client, limit: u32) -> Result<()> {
         .await?
         .into_inner()
         .tasks;
-    println!(
-        "{:<10} {:<16} {:<10} {:<5} {:<9} COMMAND",
-        "ID", "NODE", "STATUS", "EXIT", "STARTED"
-    );
-    for task in tasks {
-        let exit_code = task.exit_code.map_or("-".into(), |code| code.to_string());
-        println!(
-            "{:<10} {:<16} {:<10} {:<5} {:<9} {}",
-            short_id(&task.id),
+    let rows = tasks.into_iter().map(|task| {
+        [
+            short_id(&task.id).into(),
             task.node_name,
             task.status,
-            exit_code,
+            task.exit_code.map_or("-".into(), |code| code.to_string()),
             ago(task.created_at),
-            task.argv.join(" ")
-        );
-    }
+            task.argv.join(" "),
+        ]
+    });
+    table(["ID", "NODE", "STATUS", "EXIT", "STARTED", "COMMAND"], rows);
     Ok(())
 }
 
@@ -265,4 +256,53 @@ pub async fn cancel_task(client: &Client, task_id: String) -> Result<()> {
 
 fn short_id(id: &str) -> &str {
     &id[..id.len().min(8)]
+}
+
+/// Prints `rows` under `header`, as [`aligned`].
+fn table<const N: usize>(header: [&str; N], rows: impl IntoIterator<Item = [String; N]>) {
+    print!("{}", aligned(header, rows));
+}
+
+/// `rows` under `header`, one line each, every column as wide as its widest
+/// cell but the last, which is left as long as it is.
+fn aligned<const N: usize>(
+    header: [&str; N],
+    rows: impl IntoIterator<Item = [String; N]>,
+) -> String {
+    let rows: Vec<[String; N]> = std::iter::once(header.map(String::from))
+        .chain(rows)
+        .collect();
+    let widths: [usize; N] =
+        std::array::from_fn(|i| rows.iter().map(|r| r[i].width()).max().unwrap_or_default());
+    let mut text = String::new();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            text += cell;
+            if i + 1 < N {
+                text += &" ".repeat(widths[i] - cell.width() + 1);
+            }
+        }
+        text += "\n";
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn columns_line_up_on_their_widest_cell() {
+        let rows = [
+            ["a1".to_string(), "box".into(), "online".into()],
+            ["b2".into(), "a-much-longer-name".into(), "-".into()],
+        ];
+        assert_eq!(
+            aligned(["ID", "NAME", "STATUS"], rows),
+            "ID NAME               STATUS\n\
+             a1 box                online\n\
+             b2 a-much-longer-name -\n"
+        );
+        assert_eq!(aligned(["ID", "NAME"], []), "ID NAME\n");
+    }
 }

@@ -9,8 +9,9 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
-use super::{ClaudeCode, new_session_id, sessions};
+use super::{ClaudeCode, sessions};
 use crate::harness::{HarnessKind, Output};
+use crate::process::{Signal, signal_group};
 
 /// Runs `task` until Claude Code answers, or `cancel` fires (or its sender is
 /// dropped).
@@ -22,7 +23,7 @@ pub async fn converse(
 ) -> Result<TaskFinished> {
     // A new session gets its id up front, so it can be claimed at once.
     let (session_id, resume) = match task.session_id.as_str() {
-        "" => (new_session_id(), false),
+        "" => (uuid::Uuid::new_v4().to_string(), false),
         id => (id.to_string(), true),
     };
     let directory = directory(&task, resume)?;
@@ -117,11 +118,7 @@ fn directory(task: &AgentPrompt, resume: bool) -> Result<PathBuf> {
 
 /// Stops `claude` and what it started.
 fn stop(child: &mut tokio::process::Child) {
-    #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        // SAFETY: plain syscall; the group id equals the child's pid.
-        unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) };
-    }
+    signal_group(child, Signal::Term);
     let _ = child.start_kill();
 }
 
@@ -309,7 +306,7 @@ fn first_line(text: &str) -> String {
     }
 }
 
-fn text(value: &Value) -> String {
+pub fn text(value: &Value) -> String {
     value.as_str().unwrap_or_default().to_string()
 }
 

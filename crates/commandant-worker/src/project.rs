@@ -185,9 +185,7 @@ fn canonical(path: &Path) -> PathBuf {
 
 /// A short random id for a copy, e.g. `3fa9c1d2`.
 fn new_id() -> String {
-    let mut bytes = [0u8; 4];
-    getrandom::fill(&mut bytes).expect("OS random number generator unavailable");
-    hex::encode(bytes)
+    commandant_common::random_hex(4)
 }
 
 /// Whether `repository` names a project rather than where to clone it from.

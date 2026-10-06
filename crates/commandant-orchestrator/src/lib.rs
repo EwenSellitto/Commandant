@@ -3,6 +3,7 @@
 mod auth;
 mod control;
 mod link;
+mod output;
 mod queries;
 mod registry;
 mod store;

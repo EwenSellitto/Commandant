@@ -1,5 +1,5 @@
 //! `commandant run` and `commandant prompt`: start a task on a node and
-//! stream its output.
+//! stream its output; `commandant task watch`: stream a task's output again.
 
 use std::io::Write;
 
@@ -24,7 +24,7 @@ pub async fn run(client: &Client, args: RunArgs) -> Result<i32> {
         env: args.env.into_iter().collect(),
     };
     let mut events = control.run_command(request).await?.into_inner();
-    stream_task(&mut control, &mut events).await
+    stream_task(&mut control, &mut events, OnCtrlC::Cancel).await
 }
 
 /// Returns 0 once the agent has replied.
@@ -41,14 +41,34 @@ pub async fn prompt(client: &Client, args: PromptArgs) -> Result<i32> {
         variant: args.effort.unwrap_or_default(),
     };
     let mut events = control.prompt(request).await?.into_inner();
-    stream_task(&mut control, &mut events).await
+    stream_task(&mut control, &mut events, OnCtrlC::Cancel).await
 }
 
-/// Prints task output as it arrives. The first Ctrl-C cancels the remote
-/// task; a second one detaches.
+/// Prints what a task printed so far, then follows it to its end. Returns
+/// its exit code, as `run` does.
+pub async fn watch(client: &Client, task_id: String) -> Result<i32> {
+    let mut control = client.connect().await?;
+    let mut events = control
+        .watch_task(WatchTaskRequest { task_id })
+        .await?
+        .into_inner();
+    stream_task(&mut control, &mut events, OnCtrlC::Detach).await
+}
+
+/// What Ctrl-C does to a task being streamed.
+enum OnCtrlC {
+    /// Cancel it; a second Ctrl-C detaches.
+    Cancel,
+    /// Leave it running: only watching stops.
+    Detach,
+}
+
+/// Prints task output as it arrives, until the task finishes or Ctrl-C does
+/// what `on_ctrl_c` says.
 async fn stream_task(
     control: &mut ControlClient,
     events: &mut tonic::Streaming<TaskEvent>,
+    on_ctrl_c: OnCtrlC,
 ) -> Result<i32> {
     let mut task_id: Option<String> = None;
     let mut cancel_requested = false;
@@ -56,8 +76,8 @@ async fn stream_task(
         let event = tokio::select! {
             event = events.message() => event?,
             _ = tokio::signal::ctrl_c() => {
-                match (&task_id, cancel_requested) {
-                    (Some(task_id), false) => {
+                match (&on_ctrl_c, &task_id, cancel_requested) {
+                    (OnCtrlC::Cancel, Some(task_id), false) => {
                         eprintln!("\ncancelling task {task_id} (Ctrl-C again to detach)");
                         let task_id = task_id.clone();
                         control.cancel_task(CancelTaskRequest { task_id }).await?;
@@ -72,7 +92,12 @@ async fn stream_task(
             bail!("stream ended before the task finished");
         };
         match event {
-            Event::Started(started) => task_id = Some(started.task_id),
+            Event::Started(started) => {
+                if started.output_pruned {
+                    eprintln!("commandant: output pruned (only the newest tasks keep theirs)");
+                }
+                task_id = Some(started.task_id);
+            }
             Event::Output(output) if output.stream() == OutputStream::Stderr => {
                 write_now(std::io::stderr(), &output.data)?
             }
