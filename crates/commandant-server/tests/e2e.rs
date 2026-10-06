@@ -242,7 +242,10 @@ async fn worker_joins_runs_commands_and_reconnects() {
     assert!(result.finished.cancelled, "{:?}", result.finished);
 
     let tasks = client
-        .list_tasks(ListTasksRequest { limit: 10 })
+        .list_tasks(ListTasksRequest {
+            limit: 10,
+            ..Default::default()
+        })
         .await
         .unwrap()
         .into_inner()
@@ -278,6 +281,73 @@ async fn worker_joins_runs_commands_and_reconnects() {
     assert!(res.unwrap_err().to_string().contains("join token"));
 
     worker.abort();
+}
+
+async fn list_tasks(
+    client: &mut ControlClient,
+    node: &str,
+) -> Result<Vec<TaskInfo>, tonic::Status> {
+    let request = ListTasksRequest {
+        limit: 10,
+        node: node.into(),
+    };
+    Ok(client.list_tasks(request).await?.into_inner().tasks)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tasks_are_listed_with_what_they_are_and_by_node() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (addr, admin_token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
+    let mut client = connect_control(&addr, &admin_token).await.unwrap();
+    let one = spawn_worker(&addr, Some(admin_token.clone()), &tmp.path().join("w1"));
+    let two = tokio::spawn(commandant_worker::run(WorkerConfig {
+        name: Some("w2".into()),
+        ..worker_config(&addr, Some(admin_token.clone()), &tmp.path().join("w2"))
+    }));
+    wait_for_named(&mut client, "w1", true).await;
+    let w2 = wait_for_named(&mut client, "w2", true).await;
+
+    let dir = tmp.path().display().to_string();
+    let request = RunCommandRequest {
+        node: "w1".into(),
+        argv: vec!["pwd".into()],
+        cwd: dir.clone(),
+        ..Default::default()
+    };
+    let (_, events) = started(client.run_command(request).await.unwrap().into_inner()).await;
+    assert_eq!(collect(events).await.stdout.trim(), dir);
+    let request = RunCommandRequest {
+        node: "w2".into(),
+        argv: vec!["true".into()],
+        ..Default::default()
+    };
+    let (on_w2, events) = started(client.run_command(request).await.unwrap().into_inner()).await;
+    collect(events).await;
+
+    let all = list_tasks(&mut client, "").await.unwrap();
+    assert_eq!(all.len(), 2);
+    let ran_pwd = &all[1];
+    assert_eq!(
+        (
+            ran_pwd.kind.as_str(),
+            ran_pwd.cwd.as_str(),
+            ran_pwd.session_id.as_str()
+        ),
+        ("command", dir.as_str(), "")
+    );
+    assert_eq!((all[0].kind.as_str(), all[0].cwd.as_str()), ("command", ""));
+
+    // By name or id, only that node's tasks.
+    for needle in ["w2", w2.id.as_str()] {
+        let tasks = list_tasks(&mut client, needle).await.unwrap();
+        let ids: Vec<_> = tasks.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, [on_w2.as_str()]);
+    }
+    let err = list_tasks(&mut client, "nope").await.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::NotFound);
+
+    one.abort();
+    two.abort();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -655,7 +725,10 @@ mod watching {
         assert_eq!(collect(events).await.stdout, "second\n");
 
         let tasks = client
-            .list_tasks(ListTasksRequest { limit: 1000 })
+            .list_tasks(ListTasksRequest {
+                limit: 1000,
+                ..Default::default()
+            })
             .await
             .unwrap()
             .into_inner()
@@ -1030,6 +1103,52 @@ mod agents {
         assert_eq!(one.finished.model, "fake/echo");
         let usage = one.finished.usage.unwrap();
         assert_eq!((usage.input, usage.output, usage.cost), (10, 3, 0.01));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prompt_tasks_are_listed_with_their_session() {
+        let Cluster {
+            mut client,
+            fake,
+            _stop,
+            _tmp,
+            ..
+        } = cluster().await;
+        let (first, events) = start(&mut client, ask("hold the first")).await;
+        let session = fake.wait_held(1).await.remove(0);
+        // A new session's first turn has no session until it is known...
+        let tasks = super::list_tasks(&mut client, "w1").await.unwrap();
+        assert_eq!(
+            (tasks[0].kind.as_str(), tasks[0].session_id.as_str()),
+            ("prompt", "")
+        );
+        fake.release(&session);
+        let done = collect(events).await;
+        ok(&done);
+        assert_eq!(done.finished.session_id, session);
+
+        let next = PromptRequest {
+            cwd: "/somewhere".into(),
+            ..resume(&session, "next")
+        };
+        let (second, events) = start(&mut client, next).await;
+        collect(events).await;
+
+        // ...then has it, as a resumed turn does from the start.
+        let tasks = super::list_tasks(&mut client, "w1").await.unwrap();
+        let listed: Vec<_> = tasks
+            .iter()
+            .map(|t| (t.id.as_str(), t.kind.as_str(), t.session_id.as_str()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (second.as_str(), "prompt", session.as_str()),
+                (first.as_str(), "prompt", session.as_str()),
+            ]
+        );
+        assert_eq!(tasks[0].cwd, "/somewhere");
+        assert_eq!(tasks[0].argv, ["opencode", "next"]);
     }
 
     #[tokio::test(flavor = "multi_thread")]

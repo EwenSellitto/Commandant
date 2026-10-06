@@ -220,11 +220,15 @@ pub async fn mcp(
     Ok(())
 }
 
-pub async fn list_tasks(client: &Client, limit: u32) -> Result<()> {
+pub async fn list_tasks(client: &Client, limit: u32, node: Option<String>) -> Result<()> {
+    let request = ListTasksRequest {
+        limit,
+        node: node.unwrap_or_default(),
+    };
     let tasks = client
         .connect()
         .await?
-        .list_tasks(ListTasksRequest { limit })
+        .list_tasks(request)
         .await?
         .into_inner()
         .tasks;
@@ -232,13 +236,18 @@ pub async fn list_tasks(client: &Client, limit: u32) -> Result<()> {
         [
             short_id(&task.id).into(),
             task.node_name,
+            commandant_common::or(&task.kind, "-").into(),
             task.status,
             task.exit_code.map_or("-".into(), |code| code.to_string()),
             ago(task.created_at),
+            commandant_common::or(&task.session_id, "-").into(),
             task.argv.join(" "),
         ]
     });
-    table(["ID", "NODE", "STATUS", "EXIT", "STARTED", "COMMAND"], rows);
+    let header = [
+        "ID", "NODE", "KIND", "STATUS", "EXIT", "STARTED", "SESSION", "COMMAND",
+    ];
+    table(header, rows);
     Ok(())
 }
 
