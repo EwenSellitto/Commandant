@@ -9,5 +9,6 @@ anyhow.workspace = true
 base64.workspace = true
 hex.workspace = true
 directories.workspace = true
+getrandom.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -83,23 +83,6 @@ pub struct TaskRecord {
     pub finished_at: Option<i64>,
 }
 
-#[derive(Debug)]
-pub enum InsertNodeError {
-    NameTaken,
-    Other(sqlx::Error),
-}
-
-impl std::error::Error for InsertNodeError {}
-
-impl std::fmt::Display for InsertNodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NameTaken => f.write_str("a node with this name already exists"),
-            Self::Other(e) => e.fmt(f),
-        }
-    }
-}
-
 impl Store {
     pub async fn open(path: &Path) -> Result<Self> {
         create_private(path)?;
@@ -196,15 +179,16 @@ impl Store {
 
     // --- nodes --------------------------------------------------------------
 
+    /// Returns false if another node has the name.
     pub async fn insert_node(
         &self,
         id: &str,
         name: &str,
         secret_hash: &str,
         facts: &NodeFacts<'_>,
-    ) -> Result<(), InsertNodeError> {
+    ) -> Result<bool> {
         let ts = now();
-        sqlx::query(
+        let inserted = sqlx::query(
             "INSERT INTO nodes (id, name, hostname, os, arch, version, secret_hash, created_at, last_seen)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
@@ -218,12 +202,11 @@ impl Store {
         .bind(ts)
         .bind(ts)
         .execute(&self.pool)
-        .await
-        .map_err(|e| match &e {
-            sqlx::Error::Database(db) if db.is_unique_violation() => InsertNodeError::NameTaken,
-            _ => InsertNodeError::Other(e),
-        })?;
-        Ok(())
+        .await;
+        match inserted {
+            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => Ok(false),
+            inserted => inserted.map(|_| true).map_err(Into::into),
+        }
     }
 
     pub async fn node_secret_hash(&self, id: &str) -> Result<Option<String>> {

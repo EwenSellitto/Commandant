@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use commandant_proto::{AgentSession, HistoryEntry};
 use serde_json::Value;
 
-use super::stream::{blocks, tool_line};
+use super::stream::{blocks, text, tool_line};
 use crate::harness::keep_latest;
 
 /// How many sessions a listing shows.
@@ -55,18 +55,18 @@ pub fn list(projects: &Path) -> Result<Vec<AgentSession>> {
 }
 
 /// What a session's transcript says about it; `None` if nothing was said.
-fn summary(text: &str) -> Option<AgentSession> {
+fn summary(transcript: &str) -> Option<AgentSession> {
     let mut session = AgentSession::default();
     let (mut named, mut prompted) = (String::new(), String::new());
-    for entry in entries(text) {
+    for entry in entries(transcript) {
         if session.directory.is_empty()
             && let Some(cwd) = entry["cwd"].as_str()
         {
             session.directory = cwd.to_string();
         }
         match entry["type"].as_str().unwrap_or_default() {
-            "custom-title" => named = text_of(&entry["customTitle"]),
-            "ai-title" if named.is_empty() => named = text_of(&entry["aiTitle"]),
+            "custom-title" => named = text(&entry["customTitle"]),
+            "ai-title" if named.is_empty() => named = text(&entry["aiTitle"]),
             "user" if prompted.is_empty() => prompted = prompt(&entry).unwrap_or_default(),
             "assistant" => {
                 if let Some(model) = entry["message"]["model"].as_str() {
@@ -165,10 +165,6 @@ fn prompt(entry: &Value) -> Option<String> {
     };
     let text = text.trim();
     (!text.is_empty() && !text.starts_with('<')).then(|| text.to_string())
-}
-
-fn text_of(value: &Value) -> String {
-    value.as_str().unwrap_or_default().to_string()
 }
 
 fn read_dir(dir: &Path) -> Vec<PathBuf> {

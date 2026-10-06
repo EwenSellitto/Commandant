@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 use crate::auth::{NODE_PREFIX, generate_token, hash_token, hashes_match};
 use crate::registry::ConnId;
-use crate::store::{InsertNodeError, NODE_DISCONNECTED, NodeFacts, TaskStatus};
+use crate::store::{NODE_DISCONNECTED, NodeFacts, TaskStatus};
 use crate::{Shared, internal};
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -72,13 +72,13 @@ impl LinkService {
 
         let node_id = uuid::Uuid::new_v4().to_string();
         let node_secret = generate_token(NODE_PREFIX);
-        store
+        let inserted = store
             .insert_node(&node_id, name, &hash_token(&node_secret), facts)
             .await
-            .map_err(|e| match e {
-                InsertNodeError::NameTaken => name_taken(name),
-                InsertNodeError::Other(e) => internal(e),
-            })?;
+            .map_err(internal)?;
+        if !inserted {
+            return Err(name_taken(name));
+        }
         info!(%node_id, %name, "node joined");
         Ok(Welcome {
             node_id,

@@ -122,22 +122,18 @@ struct MessageInfo {
 }
 
 #[derive(Clone, Default, Deserialize)]
+#[serde(default)]
 struct Tokens {
-    #[serde(default)]
     input: u64,
-    #[serde(default)]
     output: u64,
-    #[serde(default)]
     reasoning: u64,
-    #[serde(default)]
     cache: CacheTokens,
 }
 
 #[derive(Clone, Default, Deserialize)]
+#[serde(default)]
 struct CacheTokens {
-    #[serde(default)]
     read: u64,
-    #[serde(default)]
     write: u64,
 }
 

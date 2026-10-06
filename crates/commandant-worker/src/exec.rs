@@ -8,6 +8,8 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::process::{Signal, signal_group};
+
 const CHUNK_SIZE: usize = 16 * 1024;
 /// How long to keep draining pipes after the process exits (a background
 /// grandchild may hold them open).
@@ -110,13 +112,9 @@ fn signal_description(status: ExitStatus) -> Option<String> {
 }
 
 async fn kill_group(child: &mut tokio::process::Child) {
-    #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        // SAFETY: plain syscall; the group id equals the child's pid.
-        unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
-        return;
+    if !signal_group(child, Signal::Kill) {
+        let _ = child.kill().await;
     }
-    let _ = child.kill().await;
 }
 
 async fn forward_output(
