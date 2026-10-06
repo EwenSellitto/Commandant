@@ -1,23 +1,27 @@
 # Code layout
 
-Five crates. For how they work together at runtime, see
+Six crates, building two binaries: `commandant-server` (server and worker)
+and `commandant` (the client). For how they work together at runtime, see
 [architecture.md](architecture.md).
 
 ```mermaid
 flowchart TD
-    CLI["commandant-cli<br/>the commandant binary"]
+    SERVER["commandant-server<br/>the commandant-server binary"]
+    CLIENT["commandant-client<br/>the commandant binary"]
     ORCH["commandant-orchestrator"]
     WORK["commandant-worker"]
     PROTO["commandant-proto<br/>gRPC contract"]
     COMMON["commandant-common"]
-    CLI --> ORCH & WORK & PROTO
+    SERVER --> ORCH & WORK
+    CLIENT --> PROTO
     ORCH --> PROTO
     WORK --> PROTO
     PROTO --> COMMON
 ```
 
-The server and the worker are libraries, so the binary and the end-to-end tests
-both run them in-process. Code used by several crates goes in
+The server and the worker are libraries, so `commandant-server` and the
+end-to-end tests both run them in-process. The client depends on neither: no
+SQLite or libgit2 in `commandant`. Code used by several crates goes in
 `commandant-proto` (anything gRPC) or `commandant-common` (everything else).
 
 ## `commandant-common`
@@ -26,6 +30,7 @@ both run them in-process. Code used by several crates goes in
 |---|---|
 | `lib.rs` | `DEFAULT_PORT`, `VERSION`, `or` |
 | `link.rs` | The `commandant://` link: encoding, parsing, addresses, loopback for the local machine |
+| `harness.rs` | `HarnessKind`: the coding agents a worker can host, by name and description |
 | `fs.rs` | Private (0600) files, written atomically; reading optional and single-value files |
 | `dirs.rs` | Default data, state and config directories |
 | `lookup.rs` | Finding a node or task by id or id prefix |
@@ -65,12 +70,20 @@ both run them in-process. Code used by several crates goes in
 | `opencode/` | OpenCode: the server process (`mod.rs`), its HTTP API (`api.rs`), prompts (`prompt.rs`), options, sessions and sign-in |
 | `claude/` | Claude Code: the CLI (`mod.rs`), one prompt's stream (`stream.rs`), sessions from its transcripts (`sessions.rs`) |
 
-## `commandant-cli`
+## `commandant-server`
 
 | File | |
 |---|---|
 | `main.rs`, `cli.rs` | Logging, and the command line (clap) |
-| `server.rs`, `worker.rs` | `server` (link, reset, local worker) and `worker` |
+| `serve.rs`, `worker.rs` | `serve` (link, reset, local worker) and `worker` |
+| `tests/e2e.rs` | End-to-end tests with a real server and workers in-process |
+| `tests/fake_opencode/` | A fake OpenCode the tests drive (`hold`, `fail`, `permission` in a prompt) |
+
+## `commandant-client`
+
+| File | |
+|---|---|
+| `main.rs`, `cli.rs` | Logging, and the command line (clap) |
 | `admin.rs`, `run.rs` | `login`, `token`, `node`, `task`; `run` and `prompt` |
 | `config.rs` | Where clients find the server and token |
 | `tui/mod.rs` | The TUI's event loop: draws, reads keys, makes the calls actions ask for |
@@ -78,13 +91,11 @@ both run them in-process. Code used by several crates goes in
 | `tui/chat.rs` | One chat: its session, settings, thread, input, commands |
 | `tui/ui.rs`, `tui/text.rs` | Drawing, and markdown styling |
 | `tui/picker.rs` | The floating list to choose from |
-| `tests/e2e.rs` | End-to-end tests with a real server and workers in-process |
-| `tests/fake_opencode/` | A fake OpenCode the tests drive (`hold`, `fail`, `permission` in a prompt) |
 
 ## Other files
 
 | Path | |
 |---|---|
-| `docker/Dockerfile` | The image: `commandant`, `git`, `curl`, run as user `commandant` |
+| `docker/Dockerfile` | The image: `commandant-server`, `git`, `curl`, run as user `commandant` |
 | `docker/*.compose.yml` | Orchestrator and worker deployments |
 | `docker-compose.yml` | A server and two workers on one host, for development |

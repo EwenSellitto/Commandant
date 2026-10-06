@@ -311,27 +311,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
-name = "commandant-cli"
+name = "commandant-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "commandant-common",
- "commandant-orchestrator",
  "commandant-proto",
- "commandant-worker",
  "crossterm",
- "git2",
- "libc",
  "ratatui",
  "serde",
- "serde_json",
- "tempfile",
  "tokio",
  "tokio-stream",
  "toml",
  "tonic",
- "tracing",
  "tracing-subscriber",
  "unicode-width",
 ]
@@ -379,6 +372,26 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+]
+
+[[package]]
+name = "commandant-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "commandant-common",
+ "commandant-orchestrator",
+ "commandant-proto",
+ "commandant-worker",
+ "git2",
+ "libc",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

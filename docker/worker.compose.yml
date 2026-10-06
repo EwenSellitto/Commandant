@@ -1,4 +1,4 @@
-# A worker joining an orchestrator, using the link `commandant server` printed:
+# A worker joining an orchestrator, using the link `commandant-server serve` printed:
 #
 #   COMMANDANT_LINK='commandant://...' docker compose -f docker/worker.compose.yml up -d --build
 #

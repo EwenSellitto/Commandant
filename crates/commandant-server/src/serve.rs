@@ -1,4 +1,4 @@
-//! `commandant server`: the orchestrator, plus the link to reach it.
+//! `commandant-server serve`: the orchestrator, plus the link to reach it.
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::net::SocketAddr;
@@ -11,13 +11,13 @@ use commandant_orchestrator::{ADMIN_TOKEN_FILE, DB_FILE, Orchestrator};
 use commandant_worker::WorkerConfig;
 use tokio::task::JoinHandle;
 
-use crate::cli::ServerArgs;
+use crate::cli::ServeArgs;
 
 const LINK_FILE: &str = "link";
 const ADVERTISE_FILE: &str = "advertise";
 const LOCAL_WORKER_DIR: &str = "local-worker";
 
-pub async fn run(args: ServerArgs) -> Result<()> {
+pub async fn run(args: ServeArgs) -> Result<()> {
     let data_dir = match args.data_dir {
         Some(dir) => dir,
         None => dirs::server_data()?,
@@ -117,7 +117,7 @@ fn ask(question: &str) -> Result<String> {
 
 fn print_welcome(listen: SocketAddr, link: &Link) {
     eprintln!("\nCommandant is listening on {listen}. Connection link:\n\n    {link}\n");
-    eprintln!("  Add a worker:    commandant worker {link}");
+    eprintln!("  Add a worker:    commandant-server worker {link}");
     eprintln!("  Control it:      commandant login {link}\n");
     eprintln!("Anyone with this link controls the cluster; keep it private.\n");
 }

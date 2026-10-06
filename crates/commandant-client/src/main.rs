@@ -2,9 +2,7 @@ mod admin;
 mod cli;
 mod config;
 mod run;
-mod server;
 mod tui;
-mod worker;
 
 use anyhow::Result;
 use clap::Parser;
@@ -38,8 +36,6 @@ async fn main() {
 async fn dispatch(cli: Cli) -> Result<i32> {
     let client = || resolve_client(&cli.client);
     match cli.command {
-        Command::Server(args) => server::run(args).await?,
-        Command::Worker(args) => worker::run(args).await?,
         Command::Login(args) => admin::login(args).await?,
         Command::Token(TokenCommand::Create { ttl, reusable }) => {
             admin::create_token(&client()?, ttl, reusable).await?

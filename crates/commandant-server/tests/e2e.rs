@@ -350,7 +350,7 @@ async fn a_restarted_server_keeps_its_link_and_nodes() {
     second.stop().await;
 }
 
-/// `commandant server --reset`, run as a process: the confirmations need a
+/// `commandant-server serve --reset`, run as a process: the confirmations need a
 /// terminal, so its stdin is a pseudo-terminal the test types into.
 #[cfg(unix)]
 mod reset {
@@ -397,8 +397,8 @@ mod reset {
     }
 
     fn server(data_dir: &Path, port: u16, stdin: Stdio) -> tokio::process::Child {
-        tokio::process::Command::new(env!("CARGO_BIN_EXE_commandant"))
-            .args(["server", "--reset", "--local-worker", "--data-dir"])
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_commandant-server"))
+            .args(["serve", "--reset", "--local-worker", "--data-dir"])
             .arg(data_dir)
             .args(["--listen", &format!("127.0.0.1:{port}")])
             .env_clear()

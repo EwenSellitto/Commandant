@@ -1,4 +1,4 @@
-//! `commandant worker`: joins an orchestrator and runs what it's told.
+//! `commandant-server worker`: joins an orchestrator and runs what it's told.
 
 use anyhow::Result;
 use commandant_common::dirs;

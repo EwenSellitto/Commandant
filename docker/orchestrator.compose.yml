@@ -9,6 +9,9 @@
 #                                  to the machine's primary IP
 #   COMMANDANT_BIND / _PORT        listen address, default 0.0.0.0:7400
 #
+# Then control it from any machine with the client binary:
+#   commandant login 'commandant://...'
+#
 # Host networking lets the orchestrator see the machine's real IP for the link.
 # Traffic is plaintext gRPC: keep the port on a private network (VPN, Tailscale).
 
@@ -20,15 +23,12 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     image: ${COMMANDANT_IMAGE:-commandant:dev}
-    command: ["server"]
+    command: ["serve"]
     network_mode: host
     environment:
       COMMANDANT_LISTEN: ${COMMANDANT_BIND:-0.0.0.0}:${COMMANDANT_PORT:-7400}
       COMMANDANT_ADVERTISE: # passed through only when set
       COMMANDANT_LOCAL_WORKER: ${COMMANDANT_LOCAL_WORKER:-false}
-      # Lets `docker compose exec server commandant ...` act as admin.
-      COMMANDANT_ADDR: http://127.0.0.1:${COMMANDANT_PORT:-7400}
-      COMMANDANT_TOKEN_FILE: /data/admin.token
     volumes: [server-data:/data]
     restart: unless-stopped
 

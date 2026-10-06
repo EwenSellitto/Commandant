@@ -1,14 +1,13 @@
 //! The coding-agent harnesses a worker can host, behind one interface.
 //!
 //! A harness is a coding agent (OpenCode, say) that the worker keeps
-//! running and relays prompts to. Adding one means a [`HarnessKind`] variant,
-//! an implementation of [`Harness`], and a line in [`start`]; the rest of the
-//! worker, the orchestrator and the clients only see the trait and the name.
+//! running and relays prompts to. Adding one means a [`HarnessKind`] variant
+//! (in `commandant-common`), an implementation of [`Harness`], and a line in
+//! [`start`]; the rest of the worker, the orchestrator and the clients only
+//! see the trait and the name.
 
 use std::collections::HashSet;
-use std::fmt;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -22,62 +21,16 @@ use tracing::info;
 use crate::claude::ClaudeCode;
 use crate::opencode::Opencode;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HarnessKind {
-    Opencode,
-    ClaudeCode,
+pub use commandant_common::harness::HarnessKind;
+
+/// How the worker announces the harness it hosts in its hello.
+pub fn capability(kind: HarnessKind) -> String {
+    format!("{HOSTS}{}", kind.name())
 }
 
-impl HarnessKind {
-    /// Every harness this worker can host.
-    pub const ALL: [HarnessKind; 2] = [HarnessKind::Opencode, HarnessKind::ClaudeCode];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Opencode => "opencode",
-            Self::ClaudeCode => "claude-code",
-        }
-    }
-
-    /// One line on what it is, for choosing one.
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::Opencode => "OpenCode, installed on the node if it isn't there",
-            Self::ClaudeCode => {
-                "Claude Code on your Claude subscription, installed if it isn't there"
-            }
-        }
-    }
-
-    /// How the worker announces the harness it hosts in its hello.
-    pub fn capability(self) -> String {
-        format!("{HOSTS}{}", self.name())
-    }
-
-    /// How the worker announces a harness it could start.
-    pub fn hostable(self) -> String {
-        format!("{CAN_HOST}{}", self.name())
-    }
-}
-
-impl fmt::Display for HarnessKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
-    }
-}
-
-impl FromStr for HarnessKind {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::ALL
-            .into_iter()
-            .find(|kind| kind.name() == s)
-            .ok_or_else(|| {
-                let names: Vec<_> = Self::ALL.iter().map(|k| k.name()).collect();
-                format!("unknown harness {s:?} (supported: {})", names.join(", "))
-            })
-    }
+/// How the worker announces a harness it could start.
+pub fn hostable(kind: HarnessKind) -> String {
+    format!("{CAN_HOST}{}", kind.name())
 }
 
 /// A coding agent the worker hosts. Each prompt is its own task, and any
@@ -341,16 +294,6 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn names_round_trip() {
-        for kind in HarnessKind::ALL {
-            assert_eq!(kind.name().parse::<HarnessKind>(), Ok(kind));
-            assert!(!kind.description().is_empty());
-        }
-        let err = "claude".parse::<HarnessKind>().unwrap_err();
-        assert!(err.contains("supported: opencode"), "{err}");
-    }
 
     #[tokio::test]
     async fn a_host_refuses_a_second_start_and_keeps_none_on_failure() {
