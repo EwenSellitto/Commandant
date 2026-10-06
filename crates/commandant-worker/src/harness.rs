@@ -82,6 +82,17 @@ pub fn keep_latest<T>(mut entries: Vec<T>) -> Vec<T> {
     entries.split_off(skip)
 }
 
+/// How a turn ended once its session existed. A turn that failed still
+/// names its session, so it can be resumed.
+pub fn in_session(turn: Result<TaskFinished>, task_id: &str, session_id: &str) -> TaskFinished {
+    turn.unwrap_or_else(|e| TaskFinished {
+        task_id: task_id.to_string(),
+        error: format!("{e:#}"),
+        session_id: session_id.to_string(),
+        ..Default::default()
+    })
+}
+
 /// Where a prompt's reply goes: the agent's text on stdout, its thinking on
 /// the reasoning stream, and notes on what it does on stderr as
 /// `[<harness>] …` lines, each stream's lines kept whole.

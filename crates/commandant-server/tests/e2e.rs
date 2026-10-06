@@ -337,8 +337,8 @@ async fn tasks_are_listed_with_what_they_are_and_by_node() {
     );
     assert_eq!((all[0].kind.as_str(), all[0].cwd.as_str()), ("command", ""));
 
-    // By name or id, only that node's tasks.
-    for needle in ["w2", w2.id.as_str()] {
+    // By name, id or id prefix, only that node's tasks.
+    for needle in ["w2", w2.id.as_str(), &w2.id[..8]] {
         let tasks = list_tasks(&mut client, needle).await.unwrap();
         let ids: Vec<_> = tasks.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, [on_w2.as_str()]);
@@ -1149,6 +1149,15 @@ mod agents {
         );
         assert_eq!(tasks[0].cwd, "/somewhere");
         assert_eq!(tasks[0].argv, ["opencode", "next"]);
+
+        // A first turn that fails once its session exists still names it.
+        let refused = prompt(&mut client, ask("refuse this")).await;
+        assert!(!refused.finished.error.is_empty());
+        assert!(!refused.finished.session_id.is_empty());
+        assert_ne!(refused.finished.session_id, session);
+        let tasks = super::list_tasks(&mut client, "w1").await.unwrap();
+        assert_eq!(tasks[0].status, "failed");
+        assert_eq!(tasks[0].session_id, refused.finished.session_id);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::Opencode;
 use super::api::{Api, CommandRun, Event, Prompt};
-use crate::harness::{HarnessKind, Output};
+use crate::harness::{HarnessKind, Output, in_session};
 
 /// Runs `task` until the agent goes idle or `cancel` fires (or its sender is
 /// dropped).
@@ -17,7 +17,7 @@ pub async fn converse(
     opencode: &Opencode,
     task: AgentPrompt,
     out: &mpsc::Sender<WorkerMsg>,
-    mut cancel: oneshot::Receiver<()>,
+    cancel: oneshot::Receiver<()>,
 ) -> Result<TaskFinished> {
     opencode.reload_if_stale().await?;
     // A reload would abort this prompt, so none runs until it is done.
@@ -36,15 +36,30 @@ pub async fn converse(
         id => id.to_string(),
     };
     let _running = opencode.busy.claim(&session_id)?;
+    let turn = answer(&api, &task, &directory, &session_id, &prompt, out, cancel).await;
+    Ok(in_session(turn, &task.task_id, &session_id))
+}
+
+/// Runs a turn in a session that exists.
+async fn answer(
+    api: &Api,
+    task: &AgentPrompt,
+    directory: &str,
+    session_id: &str,
+    prompt: &Prompt<'_>,
+    out: &mpsc::Sender<WorkerMsg>,
+    mut cancel: oneshot::Receiver<()>,
+) -> Result<TaskFinished> {
     // Subscribed before prompting, so no event is missed.
-    let mut events = api.events(&directory).await?;
+    let mut events = api.events(directory).await?;
     // A command only answers once the agent is done, so it runs aside while
     // its events come in; it only matters if it fails.
     let mut command = None;
     if task.command.is_empty() {
-        api.prompt(&session_id, &directory, &prompt).await?;
+        api.prompt(session_id, directory, prompt).await?;
     } else {
-        let (api, session_id, directory) = (api.clone(), session_id.clone(), directory.clone());
+        let (api, session_id, directory) =
+            (api.clone(), session_id.to_string(), directory.to_string());
         let task = task.clone();
         command = Some(tokio::spawn(async move {
             let run = CommandRun::new(
@@ -58,7 +73,7 @@ pub async fn converse(
         }));
     }
 
-    let mut transcript = Transcript::new(&task.task_id, &session_id, out);
+    let mut transcript = Transcript::new(&task.task_id, session_id, out);
     loop {
         let event = tokio::select! {
             event = events.next() => event?,
@@ -69,11 +84,11 @@ pub async fn converse(
             }
             _ = &mut cancel => {
                 transcript.output.end_line().await;
-                api.abort(&session_id, &directory).await?;
+                api.abort(session_id, directory).await?;
                 return Ok(TaskFinished {
-                    task_id: task.task_id,
+                    task_id: task.task_id.clone(),
                     cancelled: true,
-                    session_id,
+                    session_id: session_id.to_string(),
                     ..Default::default()
                 });
             }
@@ -84,8 +99,7 @@ pub async fn converse(
         if let Some(permission) = transcript.follow(event).await {
             // Nobody is there to answer. The admin could run any command on
             // this node anyway, so this grants nothing new.
-            api.reply_permission(&permission, &directory, "once")
-                .await?;
+            api.reply_permission(&permission, directory, "once").await?;
         }
         if let Some(finished) = transcript.finished() {
             transcript.output.end_line().await;
