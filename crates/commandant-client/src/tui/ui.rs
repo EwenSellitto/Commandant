@@ -92,7 +92,7 @@ fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
         header,
     );
     if app.nodes.is_empty() {
-        let empty = "No nodes yet. Add a worker with `commandant worker <link>`.";
+        let empty = "No nodes yet. Add a worker with `commandant-server worker <link>`.";
         frame.render_widget(Line::from(empty).fg(MUTED), list);
     }
     let name_width = app

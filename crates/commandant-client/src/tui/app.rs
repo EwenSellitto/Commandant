@@ -385,7 +385,7 @@ impl App {
             .can_host
             .iter()
             .map(|name| {
-                let kind = name.parse::<commandant_worker::HarnessKind>();
+                let kind = name.parse::<commandant_common::harness::HarnessKind>();
                 let detail = kind.map_or("", |k| k.description());
                 let choice = AppChoice::Harness {
                     node: node.id.clone(),

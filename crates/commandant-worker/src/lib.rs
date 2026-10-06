@@ -103,7 +103,7 @@ pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
     let remembered = state::load(&claim.dir)?.and_then(|c| c.server);
     let Some(server) = config.server.or(remembered) else {
         bail!(
-            "pass the connection link printed by `commandant server`: commandant worker commandant://..."
+            "pass the connection link printed by `commandant-server serve`: commandant-server worker commandant://..."
         );
     };
     let node = Node {
@@ -229,8 +229,8 @@ fn hello(
         arch: std::env::consts::ARCH.into(),
         version: commandant_common::VERSION.into(),
         capabilities: std::iter::once("exec".into())
-            .chain(hosted.map(HarnessKind::capability))
-            .chain(HarnessKind::ALL.map(HarnessKind::hostable))
+            .chain(hosted.map(harness::capability))
+            .chain(HarnessKind::ALL.map(harness::hostable))
             .collect(),
     })
 }

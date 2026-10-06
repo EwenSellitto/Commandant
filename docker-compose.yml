@@ -1,14 +1,23 @@
-# Local dev cluster: one orchestrator and two workers.
+# Local dev cluster: one orchestrator and two workers, which join through the
+# connection link the orchestrator writes to its data volume.
 #
-#   docker compose up -d server
-#   export COMMANDANT_JOIN_TOKEN=$(docker compose exec server commandant token create --reusable)
-#   docker compose --profile workers up -d
-#   docker compose exec server commandant node ls
+#   docker compose up -d --build
+#   commandant login "$(docker compose exec server cat /data/link)"
+#   commandant node ls
+#
+# The link lists 127.0.0.1 first, for the client on this machine, then
+# `server`, for the workers on the compose network.
 
 x-worker: &worker
   image: commandant:dev
-  profiles: [workers]
-  command: ["worker"]
+  # The link is only there once the server has started. It holds the admin
+  # token, as does the volume it is read from: fine for a dev cluster on one
+  # host, not for workers you trust less.
+  init: true
+  entrypoint: ["sh", "-c"]
+  command:
+    - until [ -s /server/link ]; do sleep 1; done;
+      COMMANDANT_LINK="$(cat /server/link)" exec commandant-server worker
   depends_on: [server]
   restart: unless-stopped
 
@@ -18,11 +27,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     image: commandant:dev
-    command: ["server", "--listen", "0.0.0.0:7400"]
-    environment:
-      # Lets `docker compose exec server commandant ...` act as admin.
-      COMMANDANT_ADDR: http://127.0.0.1:7400
-      COMMANDANT_TOKEN_FILE: /data/admin.token
+    command: ["serve", "--listen", "0.0.0.0:7400", "--advertise", "127.0.0.1,server"]
     ports: ["7400:7400"]
     volumes: [server-data:/data]
     restart: unless-stopped
@@ -30,18 +35,14 @@ services:
   worker-1:
     <<: *worker
     environment:
-      COMMANDANT_SERVER: http://server:7400
-      COMMANDANT_JOIN_TOKEN: ${COMMANDANT_JOIN_TOKEN:-}
       COMMANDANT_NODE_NAME: worker-1
-    volumes: [worker-1-state:/state]
+    volumes: [server-data:/server:ro, worker-1-state:/state]
 
   worker-2:
     <<: *worker
     environment:
-      COMMANDANT_SERVER: http://server:7400
-      COMMANDANT_JOIN_TOKEN: ${COMMANDANT_JOIN_TOKEN:-}
       COMMANDANT_NODE_NAME: worker-2
-    volumes: [worker-2-state:/state]
+    volumes: [server-data:/server:ro, worker-2-state:/state]
 
 volumes:
   server-data:

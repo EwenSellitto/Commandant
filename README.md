@@ -2,12 +2,16 @@
 
 Run commands and AI coding agents on your machines from one place.
 
-One binary, `commandant`, plays three roles:
+Two binaries:
 
-- **server**: the orchestrator. It knows the nodes, keeps the task history and checks tokens.
-- **worker**: runs on each machine that does the work, optionally with a coding
-  agent ([OpenCode](https://opencode.ai) or [Claude Code](https://code.claude.com)).
-- **client**: the commands you type (`node`, `run`, `prompt`, `tui`, …).
+- `commandant-server` (Linux) plays two roles:
+  - **server** (`serve`): the orchestrator. It knows the nodes, keeps the task
+    history and checks tokens.
+  - **worker** (`worker`): runs on each machine that does the work, optionally
+    with a coding agent ([OpenCode](https://opencode.ai) or
+    [Claude Code](https://code.claude.com)).
+- `commandant` is the **client**: the commands you type (`node`, `run`,
+  `prompt`, `tui`, …).
 
 Workers connect *out* to the server, so they work behind NAT, on laptops and in
 Docker without opening a port.
@@ -16,22 +20,24 @@ More detail: [how it works](docs/architecture.md) · [code layout](docs/crates.m
 
 ## Install
 
-Needs Rust 1.89+, `pkg-config` and OpenSSL's headers (`libssl-dev` on Debian,
-`openssl-devel` on Fedora). Or use [Docker](#docker).
+Needs Rust 1.89+. The server binary also needs `pkg-config` and OpenSSL's
+headers (`libssl-dev` on Debian, `openssl-devel` on Fedora), or use
+[Docker](#docker).
 
 ```sh
-cargo install --path crates/commandant-cli
+cargo install --path crates/commandant-server   # machines that serve or work
+cargo install --path crates/commandant-client   # machines you control them from
 ```
 
 ## Quick start
 
 ```sh
 # 1. On the machine that coordinates (also runs a worker there):
-commandant server --local-worker
+commandant-server serve --local-worker
 #    It prints a link: commandant://AuMPUzAc6IS5ocQ1a_7AWy_ocXe-CvHX8jw
 
 # 2. On every other machine:
-commandant worker commandant://…
+commandant-server worker commandant://…
 
 # 3. On your laptop, once:
 commandant login commandant://…
@@ -42,7 +48,7 @@ commandant run my-box -- git status
 commandant tui                       # chat with the nodes' coding agents
 ```
 
-A worker remembers its credentials: afterwards `commandant worker` alone is enough.
+A worker remembers its credentials: afterwards `commandant-server worker` alone is enough.
 
 ### The link
 
@@ -53,14 +59,14 @@ A worker remembers its credentials: afterwards `commandant worker` alone is enou
 - If others reach the server on another address (a public name, a VPN, a port
   forward), pass `--advertise host[,host2…]` once; it is remembered. Clients try
   every address and use the first that answers.
-- `commandant server --reset` wipes nodes, tokens and history and makes a new link.
+- `commandant-server serve --reset` wipes nodes, tokens and history and makes a new link.
 
 ## Coding agents
 
 Start a worker with an agent, or add one later:
 
 ```sh
-commandant worker --harness opencode         # or claude-code
+commandant-server worker --harness opencode  # or claude-code
 commandant node start-agent my-box opencode  # on a running node; the TUI offers it too
 ```
 
@@ -140,13 +146,20 @@ to see the commands, or `/help` for all commands and keys. The main ones:
 
 ## Command reference
 
-Every command has `--help`. Clients find the server from `--addr`/`--token`,
-then `COMMANDANT_ADDR`/`COMMANDANT_TOKEN`, then what `login` saved.
+Every command has `--help`.
+
+`commandant-server` (bare, it prints help):
 
 | Command | |
 |---|---|
-| `server [--local-worker] [--harness H] [--advertise HOSTS] [--reset]` | Run the orchestrator (port 7400) |
+| `serve [--local-worker] [--harness H] [--advertise HOSTS] [--reset]` | Run the orchestrator (port 7400) |
 | `worker [LINK] [--harness H] [--name N] [--state-dir DIR]` | Run a worker |
+
+`commandant` finds the server from `--addr`/`--token`, then
+`COMMANDANT_ADDR`/`COMMANDANT_TOKEN`, then what `login` saved:
+
+| Command | |
+|---|---|
 | `login LINK` | Save the server and admin token for the client commands |
 | `node ls` · `node rm NODE` | List nodes · forget one |
 | `node start-agent NODE HARNESS` | Start an agent on a node that has none |
@@ -174,8 +187,10 @@ docker compose -f docker/orchestrator.compose.yml up -d --build && \
 COMMANDANT_LINK='commandant://…' docker compose -f docker/worker.compose.yml up -d --build
 ```
 
-The image runs as user `commandant` (uid 1000). `docker-compose.yml` at the
-root runs a server and two workers on one host, for development.
+The image holds `commandant-server` only and runs as user `commandant` (uid
+1000); control the cluster with your own `commandant`. `docker-compose.yml` at
+the root runs a server and two workers on one host, for development; the
+workers join through the link in the server's volume.
 
 ## Security
 
@@ -190,5 +205,5 @@ root runs a server and two workers on one host, for development.
 ```sh
 cargo test                                  # unit and end-to-end tests
 cargo clippy --all-targets -- -D warnings
-RUST_LOG=debug commandant server            # verbose logs, for any command
+RUST_LOG=debug commandant-server serve      # verbose logs, for either binary
 ```

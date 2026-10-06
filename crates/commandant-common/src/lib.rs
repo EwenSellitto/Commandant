@@ -2,6 +2,7 @@
 
 pub mod dirs;
 pub mod fs;
+pub mod harness;
 pub mod link;
 pub mod lookup;
 pub mod time;

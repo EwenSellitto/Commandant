@@ -56,7 +56,7 @@ pub async fn create_token(client: &Client, ttl: Duration, reusable: bool) -> Res
     };
     eprintln!("({uses}, {lifetime})");
     let link = Link::for_addr(&created.token, &client.addr);
-    eprintln!("Worker-only link: commandant worker {link}");
+    eprintln!("Worker-only link: commandant-server worker {link}");
     Ok(())
 }
 

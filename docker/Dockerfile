@@ -9,8 +9,8 @@ RUN apt-get update \
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p commandant-cli \
-    && cp target/release/commandant /usr/local/bin/commandant
+    cargo build --release --locked -p commandant-server \
+    && cp target/release/commandant-server /usr/local/bin/commandant-server
 
 FROM debian:trixie-slim
 # git and ca-certificates are what coding agents need on a worker; curl
@@ -18,7 +18,7 @@ FROM debian:trixie-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /usr/local/bin/commandant /usr/local/bin/commandant
+COPY --from=builder /usr/local/bin/commandant-server /usr/local/bin/commandant-server
 
 # Workers refuse root; the server needs nothing more either. Volumes mounted
 # on these directories start out owned by this user.
@@ -31,5 +31,5 @@ ENV COMMANDANT_STATE_DIR=/state \
 WORKDIR /work
 EXPOSE 7400
 
-ENTRYPOINT ["commandant"]
+ENTRYPOINT ["commandant-server"]
 CMD ["worker"]

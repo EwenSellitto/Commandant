@@ -1,0 +1,27 @@
+[package]
+name = "commandant-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "commandant-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+commandant-common.workspace = true
+clap.workspace = true
+commandant-orchestrator.workspace = true
+commandant-worker.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+commandant-proto.workspace = true
+git2.workspace = true
+libc.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tonic.workspace = true
