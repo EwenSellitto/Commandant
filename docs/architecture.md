@@ -26,8 +26,8 @@ flowchart LR
   for workers.
 - **Workers always dial in.** The server never connects to a worker: it sends
   work down the stream the worker opened, so workers can sit behind NAT.
-- **SQLite** keeps tokens, nodes and task history. Who is online and who is
-  watching which task live in memory only.
+- **SQLite** keeps tokens, nodes, task history and task output. Who is
+  online and who is watching which task live in memory only.
 
 ## Connecting
 
@@ -103,6 +103,15 @@ sequenceDiagram
 A task ends `succeeded`, `failed`, `cancelled`, or `lost` (its node
 disconnected, or the server restarted). Cancelling kills the task's whole
 process group. A client too slow to keep up loses output chunks, never the task.
+
+Each task keeps the last 1 MiB of its output, every chunk tagged with its
+stream; the server holds it in memory while the task runs and stores it once
+it ends, before telling anyone it ended. Only the newest 1000 tasks keep
+their output; older ones are marked "output pruned". `WatchTask` (`commandant
+task watch`) replays what a task kept, then follows it while it runs, with
+nothing missed or repeated in between. It works for prompt tasks too, but a
+new session's first turn can't be re-attached from its session, which has
+no id until the turn ends.
 
 ## Coding agents
 

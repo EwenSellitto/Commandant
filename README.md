@@ -170,7 +170,7 @@ Every command has `--help`.
 | `run NODE -- CMD…` | Run a command (no shell) and stream its output; exits with its code |
 | `prompt NODE PROMPT…` | Ask the node's agent |
 | `tui [NODE]` | Chat in the terminal |
-| `task ls` · `task cancel ID` | Recent tasks · cancel one |
+| `task ls` · `task watch ID` · `task cancel ID` | Recent tasks · replay and follow one's output · cancel one |
 | `token create [--ttl 1h] [--reusable]` | A worker-only join token and link |
 
 `NODE` is a name, an id or an id prefix. Most options also have an environment

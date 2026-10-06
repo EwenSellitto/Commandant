@@ -177,6 +177,11 @@ pub enum TaskCommand {
         #[arg(long, default_value_t = 20)]
         limit: u32,
     },
+    /// Print a task's output, and follow it while it runs.
+    Watch {
+        /// Task id or unambiguous prefix.
+        task_id: String,
+    },
     /// Cancel a running task.
     Cancel {
         /// Task id or unambiguous prefix.

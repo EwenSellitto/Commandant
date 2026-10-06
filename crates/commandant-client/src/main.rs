@@ -60,6 +60,9 @@ async fn dispatch(cli: Cli) -> Result<i32> {
         Command::Task(TaskCommand::Cancel { task_id }) => {
             admin::cancel_task(&client()?, task_id).await?
         }
+        Command::Task(TaskCommand::Watch { task_id }) => {
+            return run::watch(&client()?, task_id).await;
+        }
         Command::Run(args) => return run::run(&client()?, args).await,
         Command::Prompt(args) => return run::prompt(&client()?, args).await,
         Command::Tui(args) => tui::run(&client()?, args).await?,

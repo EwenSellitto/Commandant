@@ -236,25 +236,27 @@ async fn record_finished(shared: &Shared, conn_id: ConnId, finished: TaskFinishe
     let status = TaskStatus::of(&finished);
     let exit_code = finished.exit_code;
     let error = Some(finished.error.clone()).filter(|e| !e.is_empty());
-    if !shared.hub.finish(conn_id, finished) {
+    let Some(output) = shared.hub.finish(conn_id, finished) else {
         return;
-    }
+    };
     if let Err(e) = shared
         .store
-        .finish_task(&task_id, status, exit_code, error.as_deref())
+        .finish_task(&task_id, status, exit_code, error.as_deref(), &output)
         .await
     {
         warn!(%task_id, "failed to record task result: {e}");
     }
+    shared.hub.close(&task_id);
 }
 
 /// Marks the node offline and its unfinished tasks lost.
 async fn forget_connection(shared: &Shared, node_id: &str, conn_id: ConnId) {
     shared.registry.disconnect(node_id, conn_id);
-    for task_id in shared.hub.fail_connection(conn_id, NODE_DISCONNECTED) {
-        if let Err(e) = shared.store.lose_task(&task_id).await {
+    for (task_id, output) in shared.hub.fail_connection(conn_id, NODE_DISCONNECTED) {
+        if let Err(e) = shared.store.lose_task(&task_id, &output).await {
             warn!(%task_id, "failed to record lost task: {e}");
         }
+        shared.hub.close(&task_id);
     }
     let _ = shared.store.touch_node(node_id).await;
 }

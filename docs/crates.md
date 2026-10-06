@@ -53,9 +53,10 @@ SQLite or libgit2 in `commandant`. Code used by several crates goes in
 | `link.rs` | `NodeLink`: admits workers (join or reconnect) and handles their messages |
 | `control.rs` | `Control`: the admin API; sends tasks and questions to workers |
 | `registry.rs` | Which node is connected, on which connection, with which harnesses |
-| `tasks.rs` | Fans live task output out to watching clients |
+| `tasks.rs` | Fans live task output out to watching clients, keeping its tail |
+| `output.rs` | The last 1 MiB of a task's output, chunks tagged with their stream |
 | `queries.rs` | Matches workers' answers to the questions asked, by request id |
-| `store.rs` | SQLite: tokens, nodes, tasks (migrations in `migrations/`) |
+| `store.rs` | SQLite: tokens, nodes, tasks and their output (migrations in `migrations/`) |
 | `auth.rs` | Token generation, hashing, constant-time checks |
 
 ## `commandant-worker`
@@ -84,7 +85,7 @@ SQLite or libgit2 in `commandant`. Code used by several crates goes in
 | File | |
 |---|---|
 | `main.rs`, `cli.rs` | Logging, and the command line (clap) |
-| `admin.rs`, `run.rs` | `login`, `token`, `node`, `task`; `run` and `prompt` |
+| `admin.rs`, `run.rs` | `login`, `token`, `node`, `task`; `run`, `prompt` and `task watch` |
 | `config.rs` | Where clients find the server and token |
 | `tui/mod.rs` | The TUI's event loop: draws, reads keys, makes the calls actions ask for |
 | `tui/app.rs` | The nodes and every chat; routes keys and updates |

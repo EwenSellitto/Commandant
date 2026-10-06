@@ -357,6 +357,8 @@ service Control {
   // which can take minutes if it has to be installed.
   rpc StartHarness(StartHarnessRequest) returns (NodeInfo);
   rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+  // Replays the output a task kept, then follows it while it runs.
+  rpc WatchTask(WatchTaskRequest) returns (stream TaskEvent);
   rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
 }
 
@@ -460,6 +462,7 @@ message SwitchMcpServerRequest {
 message TaskStarted {
   string task_id = 1;
   string node_id = 2;
+  bool output_pruned = 3;            // WatchTask: the task's output was dropped
 }
 
 message TaskEvent {
@@ -480,6 +483,7 @@ message TaskInfo {
   string error = 7;
   int64 created_at = 8;
   optional int64 finished_at = 9;
+  bool output_pruned = 10;           // only the newest tasks keep their output
 }
 
 message ListTasksRequest {
@@ -488,6 +492,10 @@ message ListTasksRequest {
 
 message ListTasksResponse {
   repeated TaskInfo tasks = 1;
+}
+
+message WatchTaskRequest {
+  string task_id = 1;                // id or unambiguous prefix
 }
 
 message CancelTaskRequest {

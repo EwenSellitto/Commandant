@@ -16,7 +16,7 @@ use commandant_common::lookup::{self, Match};
 use crate::auth::{JOIN_PREFIX, generate_token, hash_token};
 use crate::registry::Connection;
 use crate::store::{NodeRecord, now};
-use crate::tasks::Owner;
+use crate::tasks::{Owner, Watch};
 use crate::{Shared, internal};
 
 const DEFAULT_TASK_LIMIT: u32 = 20;
@@ -44,11 +44,8 @@ impl ControlService {
             return Err(Status::invalid_argument("node is required"));
         }
         let nodes = self.shared.store.list_nodes().await.map_err(internal)?;
-        match lookup::find_named(nodes, needle, |n| &n.name, |n| &n.id) {
-            Match::One(node) => Ok(node),
-            Match::Ambiguous => Err(Status::invalid_argument(format!("{needle:?} is ambiguous"))),
-            Match::None => Err(Status::not_found(format!("no node matches {needle:?}"))),
-        }
+        let node = lookup::find_named(nodes, needle, |n| &n.name, |n| &n.id);
+        the_one(node, "node", needle)
     }
 
     /// Records a task, sends it to the node's worker, and streams its events
@@ -62,21 +59,24 @@ impl ControlService {
         message: impl FnOnce(String) -> OrchestratorMsg,
     ) -> Result<Response<TaskStream>, Status> {
         let task_id = uuid::Uuid::new_v4().to_string();
-        let store = &self.shared.store;
-        store
-            .insert_task(&task_id, &node.id, record)
-            .await
-            .map_err(internal)?;
+        let (store, hub) = (&self.shared.store, &self.shared.hub);
         let owner = Owner {
             node_id: node.id.clone(),
             conn_id: conn.id,
         };
-        let events = self.shared.hub.start(&task_id, owner);
+        // In the hub before the store, so a watcher never finds it in
+        // neither, running but not followable.
+        let events = hub.start(&task_id, owner);
+        if let Err(e) = store.insert_task(&task_id, &node.id, record).await {
+            hub.abandon(&task_id, &e.to_string());
+            return Err(internal(e));
+        }
 
         if conn.tx.send(Ok(message(task_id.clone()))).await.is_err() {
-            self.shared.hub.abandon(&task_id);
-            let _ = store.lose_task(&task_id).await;
-            return Err(offline(&node));
+            let _ = store.lose_task(&task_id, &[]).await;
+            let offline = offline(&node);
+            hub.abandon(&task_id, offline.message());
+            return Err(offline);
         }
         info!(%task_id, node = %node.name, "task dispatched");
 
@@ -84,6 +84,7 @@ impl ControlService {
         let started = TaskStarted {
             task_id,
             node_id: node.id,
+            ..Default::default()
         };
         let _ = tx.send(Ok(started.into())).await;
         tokio::spawn(relay(events, tx));
@@ -196,6 +197,15 @@ fn harness(node: &NodeRecord, conn: &Connection) -> Result<String, Status> {
             node.name, node.name
         ))
     })
+}
+
+/// The one `what` that `needle` matched, else why there is none.
+fn the_one<T>(found: Match<T>, what: &str, needle: &str) -> Result<T, Status> {
+    match found {
+        Match::One(item) => Ok(item),
+        Match::Ambiguous => Err(Status::invalid_argument(format!("{needle:?} is ambiguous"))),
+        Match::None => Err(Status::not_found(format!("no {what} matches {needle:?}"))),
+    }
 }
 
 fn offline(node: &NodeRecord) -> Status {
@@ -497,9 +507,58 @@ impl Control for ControlService {
                 error: t.error.unwrap_or_default(),
                 created_at: t.created_at,
                 finished_at: t.finished_at,
+                output_pruned: t.output_pruned,
             })
             .collect();
         Ok(Response::new(ListTasksResponse { tasks }))
+    }
+
+    type WatchTaskStream = TaskStream;
+
+    async fn watch_task(
+        &self,
+        request: Request<WatchTaskRequest>,
+    ) -> Result<Response<TaskStream>, Status> {
+        let needle = request.into_inner().task_id;
+        let store = &self.shared.store;
+        let task = store.find_task(&needle).await.map_err(internal)?;
+        let task = the_one(task, "task", &needle)?;
+        let task_id = task.id.clone();
+        let mut started = TaskStarted {
+            task_id: task.id.clone(),
+            node_id: task.node_id.clone(),
+            output_pruned: false,
+        };
+        let watch = match self.shared.hub.watch(&task.id) {
+            Some(watch) => watch,
+            // Over and stored: what the store says now is final.
+            None => {
+                let task = store.find_task(&task.id).await.map_err(internal)?;
+                let task = the_one(task, "task", &task_id)?;
+                started.output_pruned = task.output_pruned;
+                let output = store.task_output(&task.id).await.map_err(internal)?;
+                let mut backlog: Vec<TaskEvent> = output.into_iter().map(Into::into).collect();
+                backlog.push(task.finished().into());
+                Watch {
+                    backlog,
+                    live: None,
+                }
+            }
+        };
+
+        let (tx, rx) = mpsc::channel(256);
+        tokio::spawn(async move {
+            let backlog = std::iter::once(started.into()).chain(watch.backlog);
+            for event in backlog {
+                if tx.send(Ok(event)).await.is_err() {
+                    return;
+                }
+            }
+            if let Some(live) = watch.live {
+                relay(live, tx).await;
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 
     async fn cancel_task(
