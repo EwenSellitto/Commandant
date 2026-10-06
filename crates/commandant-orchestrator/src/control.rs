@@ -15,7 +15,7 @@ use commandant_common::lookup::{self, Match};
 
 use crate::auth::{JOIN_PREFIX, generate_token, hash_token};
 use crate::registry::Connection;
-use crate::store::{NodeRecord, now};
+use crate::store::{NewTask, NodeRecord, TaskKind, now};
 use crate::tasks::{Owner, Watch};
 use crate::{Shared, internal};
 
@@ -49,13 +49,12 @@ impl ControlService {
     }
 
     /// Records a task, sends it to the node's worker, and streams its events
-    /// back. `record` is what `task ls` shows; `message` builds what the
-    /// worker receives from the new task id.
+    /// back. `message` builds what the worker receives from the new task id.
     async fn dispatch(
         &self,
         node: NodeRecord,
         conn: Connection,
-        record: &[String],
+        task: &NewTask,
         message: impl FnOnce(String) -> OrchestratorMsg,
     ) -> Result<Response<TaskStream>, Status> {
         let task_id = uuid::Uuid::new_v4().to_string();
@@ -67,7 +66,7 @@ impl ControlService {
         // In the hub before the store, so a watcher never finds it in
         // neither, running but not followable.
         let events = hub.start(&task_id, owner);
-        if let Err(e) = store.insert_task(&task_id, &node.id, record).await {
+        if let Err(e) = store.insert_task(&task_id, &node.id, task).await {
             hub.abandon(&task_id, &e.to_string());
             return Err(internal(e));
         }
@@ -264,8 +263,13 @@ impl Control for ControlService {
             return Err(Status::invalid_argument("a command is required"));
         }
         let (node, conn) = self.connected_node(&req.node).await?;
-        let record = req.argv.clone();
-        self.dispatch(node, conn, &record, |task_id| {
+        let task = NewTask {
+            kind: TaskKind::Command,
+            argv: req.argv.clone(),
+            cwd: req.cwd.clone(),
+            session_id: String::new(),
+        };
+        self.dispatch(node, conn, &task, |task_id| {
             RunTask {
                 task_id,
                 argv: req.argv,
@@ -293,8 +297,13 @@ impl Control for ControlService {
             "" => req.prompt.clone(),
             command => format!("/{command} {}", req.prompt).trim_end().to_string(),
         };
-        let record = [harness, prompt];
-        self.dispatch(node, conn, &record, |task_id| {
+        let task = NewTask {
+            kind: TaskKind::Prompt,
+            argv: vec![harness, prompt],
+            cwd: req.cwd.clone(),
+            session_id: req.session_id.clone(),
+        };
+        self.dispatch(node, conn, &task, |task_id| {
             AgentPrompt {
                 task_id,
                 prompt: req.prompt,
@@ -485,14 +494,20 @@ impl Control for ControlService {
         &self,
         request: Request<ListTasksRequest>,
     ) -> Result<Response<ListTasksResponse>, Status> {
-        let limit = match request.into_inner().limit {
+        let req = request.into_inner();
+        let limit = match req.limit {
             0 => DEFAULT_TASK_LIMIT,
             n => n.min(MAX_TASK_LIMIT),
         };
+        let node = match req.node.as_str() {
+            "" => None,
+            needle => Some(self.resolve_node(needle).await?),
+        };
+        let node_id = node.as_ref().map(|n| n.id.as_str());
         let tasks = self
             .shared
             .store
-            .list_tasks(limit)
+            .list_tasks(limit, node_id)
             .await
             .map_err(internal)?;
         let tasks = tasks
@@ -508,6 +523,9 @@ impl Control for ControlService {
                 created_at: t.created_at,
                 finished_at: t.finished_at,
                 output_pruned: t.output_pruned,
+                kind: t.kind.unwrap_or_default(),
+                cwd: t.cwd.unwrap_or_default(),
+                session_id: t.session_id.unwrap_or_default(),
             })
             .collect();
         Ok(Response::new(ListTasksResponse { tasks }))

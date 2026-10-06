@@ -484,10 +484,14 @@ message TaskInfo {
   int64 created_at = 8;
   optional int64 finished_at = 9;
   bool output_pruned = 10;           // only the newest tasks keep their output
+  string kind = 11;                  // command | prompt; empty for tasks from before
+  string cwd = 12;                   // the directory asked for; empty = the worker's
+  string session_id = 13;            // prompts: the session, once known
 }
 
 message ListTasksRequest {
   uint32 limit = 1;
+  string node = 2;                   // id, id prefix or name; empty = every node
 }
 
 message ListTasksResponse {

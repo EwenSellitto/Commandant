@@ -47,6 +47,35 @@ impl TaskStatus {
     }
 }
 
+/// One command run, or one prompt turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskKind {
+    Command,
+    Prompt,
+}
+
+impl TaskKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::Prompt => "prompt",
+        }
+    }
+}
+
+/// What a task is, as recorded when it is dispatched.
+#[derive(Debug, Clone)]
+pub struct NewTask {
+    pub kind: TaskKind,
+    /// What `task ls` shows.
+    pub argv: Vec<String>,
+    /// Empty when the worker picks.
+    pub cwd: String,
+    /// The session a prompt continues; empty for a new one, whose id the
+    /// worker reports when the turn ends.
+    pub session_id: String,
+}
+
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
@@ -85,6 +114,10 @@ pub struct TaskRecord {
     pub created_at: i64,
     pub finished_at: Option<i64>,
     pub output_pruned: bool,
+    /// The columns below are None for tasks from before they existed.
+    pub kind: Option<String>,
+    pub cwd: Option<String>,
+    pub session_id: Option<String>,
 }
 
 impl TaskRecord {
@@ -95,6 +128,7 @@ impl TaskRecord {
             exit_code: self.exit_code,
             error: self.error.clone().unwrap_or_default(),
             cancelled: self.status == TaskStatus::Cancelled.as_str(),
+            session_id: self.session_id.clone().unwrap_or_default(),
             ..Default::default()
         }
     }
@@ -285,13 +319,17 @@ impl Store {
 
     // --- tasks --------------------------------------------------------------
 
-    pub async fn insert_task(&self, id: &str, node_id: &str, argv: &[String]) -> Result<()> {
+    pub async fn insert_task(&self, id: &str, node_id: &str, task: &NewTask) -> Result<()> {
         sqlx::query(
-            "INSERT INTO tasks (id, node_id, argv, status, created_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO tasks (id, node_id, kind, argv, cwd, session_id, status, created_at)
+             VALUES (?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?)",
         )
         .bind(id)
         .bind(node_id)
-        .bind(Json(argv))
+        .bind(task.kind.as_str())
+        .bind(Json(&task.argv))
+        .bind(&task.cwd)
+        .bind(&task.session_id)
         .bind(TaskStatus::Running.as_str())
         .bind(now())
         .execute(&self.pool)
@@ -299,25 +337,34 @@ impl Store {
         Ok(())
     }
 
+    /// Records how a running task ended, as its worker reported, and the
+    /// output it kept.
+    pub async fn finish_task(&self, finished: &TaskFinished, output: &[TaskOutput]) -> Result<()> {
+        let error = Some(finished.error.as_str()).filter(|e| !e.is_empty());
+        let end = TaskEnd {
+            status: TaskStatus::of(finished),
+            exit_code: finished.exit_code,
+            error,
+            session_id: &finished.session_id,
+        };
+        self.record_end(&finished.task_id, end, output).await
+    }
+
     /// Records how a running task ended and the output it kept, then drops
     /// the output of all but the newest tasks.
-    pub async fn finish_task(
-        &self,
-        id: &str,
-        status: TaskStatus,
-        exit_code: Option<i32>,
-        error: Option<&str>,
-        output: &[TaskOutput],
-    ) -> Result<()> {
+    async fn record_end(&self, id: &str, end: TaskEnd<'_>, output: &[TaskOutput]) -> Result<()> {
         let mut tx = self.pool.begin().await?;
+        // A new session's first turn only now learns its session.
         let res = sqlx::query(
-            "UPDATE tasks SET status = ?, exit_code = ?, error = ?, finished_at = ?
+            "UPDATE tasks SET status = ?, exit_code = ?, error = ?, finished_at = ?,
+                 session_id = COALESCE(session_id, NULLIF(?, ''))
              WHERE id = ? AND status = ?",
         )
-        .bind(status.as_str())
-        .bind(exit_code)
-        .bind(error)
+        .bind(end.status.as_str())
+        .bind(end.exit_code)
+        .bind(end.error)
         .bind(now())
+        .bind(end.session_id)
         .bind(id)
         .bind(TaskStatus::Running.as_str())
         .execute(&mut *tx)
@@ -356,8 +403,13 @@ impl Store {
 
     /// Records that a task's node went away before it finished.
     pub async fn lose_task(&self, id: &str, output: &[TaskOutput]) -> Result<()> {
-        self.finish_task(id, TaskStatus::Lost, None, Some(NODE_DISCONNECTED), output)
-            .await
+        let end = TaskEnd {
+            status: TaskStatus::Lost,
+            exit_code: None,
+            error: Some(NODE_DISCONNECTED),
+            session_id: "",
+        };
+        self.record_end(id, end, output).await
     }
 
     /// Tasks still running after a restart can never report back.
@@ -374,11 +426,14 @@ impl Store {
         Ok(res.rows_affected())
     }
 
-    pub async fn list_tasks(&self, limit: u32) -> Result<Vec<TaskRecord>> {
+    /// The newest tasks, of every node or only `node_id`'s.
+    pub async fn list_tasks(&self, limit: u32, node_id: Option<&str>) -> Result<Vec<TaskRecord>> {
         Ok(sqlx::query_as(
             "SELECT t.*, n.name AS node_name FROM tasks t JOIN nodes n ON n.id = t.node_id
-             ORDER BY t.created_at DESC, t.rowid DESC LIMIT ?",
+             WHERE ?1 IS NULL OR t.node_id = ?1
+             ORDER BY t.created_at DESC, t.rowid DESC LIMIT ?2",
         )
+        .bind(node_id)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?)
@@ -426,6 +481,15 @@ impl Store {
     }
 }
 
+/// How a task ended.
+struct TaskEnd<'a> {
+    status: TaskStatus,
+    exit_code: Option<i32>,
+    error: Option<&'a str>,
+    /// Empty when the worker reported none.
+    session_id: &'a str,
+}
+
 /// Creates the database file readable by its owner only, since it holds the
 /// admin token, or makes an existing one so. SQLite creates its `-wal` and
 /// `-shm` files with the same permissions; ones left from before are fixed.
@@ -455,4 +519,111 @@ fn create_private(path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FACTS: NodeFacts<'static> = NodeFacts {
+        hostname: "h",
+        os: "linux",
+        arch: "x86_64",
+        version: "0",
+    };
+
+    async fn store(name: &str) -> (Store, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("commandant-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir.join("db.sqlite")).await.unwrap();
+        for node in ["a", "b"] {
+            assert!(store.insert_node(node, node, "x", &FACTS).await.unwrap());
+        }
+        (store, dir)
+    }
+
+    fn command(cwd: &str) -> NewTask {
+        NewTask {
+            kind: TaskKind::Command,
+            argv: vec!["ls".into()],
+            cwd: cwd.into(),
+            session_id: String::new(),
+        }
+    }
+
+    fn prompt(session_id: &str) -> NewTask {
+        NewTask {
+            kind: TaskKind::Prompt,
+            argv: vec!["opencode".into(), "hi".into()],
+            cwd: "/work".into(),
+            session_id: session_id.into(),
+        }
+    }
+
+    fn done(task_id: &str, session_id: &str) -> TaskFinished {
+        TaskFinished {
+            task_id: task_id.into(),
+            exit_code: Some(0),
+            session_id: session_id.into(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn tasks_know_their_kind_directory_and_session() {
+        let (store, dir) = store("task-details").await;
+        store.insert_task("c", "a", &command("/tmp")).await.unwrap();
+        store
+            .insert_task("old", "a", &prompt("ses_old"))
+            .await
+            .unwrap();
+        store.insert_task("new", "b", &prompt("")).await.unwrap();
+
+        // A new session's first turn learns its id once it ends; a resumed
+        // one keeps the one it was asked for.
+        assert_eq!(store.task("new").await.unwrap().unwrap().session_id, None);
+        store
+            .finish_task(&done("new", "ses_new"), &[])
+            .await
+            .unwrap();
+        store
+            .finish_task(&done("old", "ses_other"), &[])
+            .await
+            .unwrap();
+        store.finish_task(&done("c", ""), &[]).await.unwrap();
+
+        let c = store.task("c").await.unwrap().unwrap();
+        assert_eq!(c.kind.as_deref(), Some("command"));
+        assert_eq!(c.cwd.as_deref(), Some("/tmp"));
+        assert_eq!(c.session_id, None);
+        let old = store.task("old").await.unwrap().unwrap();
+        assert_eq!(old.kind.as_deref(), Some("prompt"));
+        assert_eq!(old.session_id.as_deref(), Some("ses_old"));
+        let new = store.task("new").await.unwrap().unwrap();
+        assert_eq!(new.session_id.as_deref(), Some("ses_new"));
+
+        // Rows from before these columns list with them empty.
+        sqlx::query(
+            "INSERT INTO tasks (id, node_id, argv, status, created_at)
+             VALUES ('legacy', 'a', '[\"ls\"]', 'succeeded', 0)",
+        )
+        .execute(store.pool())
+        .await
+        .unwrap();
+        let legacy = store.task("legacy").await.unwrap().unwrap();
+        assert_eq!(
+            (legacy.kind, legacy.cwd, legacy.session_id),
+            (None, None, None)
+        );
+
+        // Listing can keep to one node.
+        let ids = |tasks: Vec<TaskRecord>| tasks.into_iter().map(|t| t.id).collect::<Vec<_>>();
+        let all = store.list_tasks(10, None).await.unwrap();
+        assert_eq!(all.len(), 4);
+        assert_eq!(ids(store.list_tasks(10, Some("b")).await.unwrap()), ["new"]);
+        let on_a = ids(store.list_tasks(10, Some("a")).await.unwrap());
+        assert_eq!(on_a, ["old", "c", "legacy"]);
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

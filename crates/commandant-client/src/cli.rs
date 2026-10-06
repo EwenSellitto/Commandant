@@ -176,6 +176,9 @@ pub enum TaskCommand {
     Ls {
         #[arg(long, default_value_t = 20)]
         limit: u32,
+        /// Only this node's tasks (id, id prefix or name).
+        #[arg(long)]
+        node: Option<String>,
     },
     /// Print a task's output, and follow it while it runs.
     Watch {

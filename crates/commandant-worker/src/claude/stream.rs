@@ -10,7 +10,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{ClaudeCode, sessions};
-use crate::harness::{HarnessKind, Output};
+use crate::harness::{HarnessKind, Output, in_session};
 use crate::process::{Signal, signal_group};
 
 /// Runs `task` until Claude Code answers, or `cancel` fires (or its sender is
@@ -19,7 +19,7 @@ pub async fn converse(
     claude: &ClaudeCode,
     task: AgentPrompt,
     out: &mpsc::Sender<WorkerMsg>,
-    mut cancel: oneshot::Receiver<()>,
+    cancel: oneshot::Receiver<()>,
 ) -> Result<TaskFinished> {
     // A new session gets its id up front, so it can be claimed at once.
     let (session_id, resume) = match task.session_id.as_str() {
@@ -50,7 +50,20 @@ pub async fn converse(
             command.args([flag, value]);
         }
     }
-    let mut child = command.spawn().context("starting claude")?;
+    let child = command.spawn().context("starting claude")?;
+    // Started, Claude Code has the session.
+    let turn = answer(child, &task, &session_id, out, cancel).await;
+    Ok(in_session(turn, &task.task_id, &session_id))
+}
+
+/// Runs a turn on a started `claude`.
+async fn answer(
+    mut child: tokio::process::Child,
+    task: &AgentPrompt,
+    session_id: &str,
+    out: &mpsc::Sender<WorkerMsg>,
+    mut cancel: oneshot::Receiver<()>,
+) -> Result<TaskFinished> {
     let text = match task.command.as_str() {
         "" => task.prompt.clone(),
         name => format!("/{name} {}", task.prompt).trim_end().to_string(),
@@ -66,7 +79,7 @@ pub async fn converse(
     });
 
     let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
-    let mut turn = Turn::new(&task.task_id, &session_id, out);
+    let mut turn = Turn::new(&task.task_id, session_id, out);
     loop {
         let line = tokio::select! {
             line = lines.next_line() => line?,
@@ -74,9 +87,9 @@ pub async fn converse(
                 stop(&mut child);
                 turn.output.end_line().await;
                 return Ok(TaskFinished {
-                    task_id: task.task_id,
+                    task_id: task.task_id.clone(),
                     cancelled: true,
-                    session_id,
+                    session_id: session_id.to_string(),
                     ..Default::default()
                 });
             }

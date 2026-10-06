@@ -56,7 +56,9 @@ async fn dispatch(cli: Cli) -> Result<i32> {
             connect,
             disconnect,
         }) => admin::mcp(&client()?, node, connect, disconnect).await?,
-        Command::Task(TaskCommand::Ls { limit }) => admin::list_tasks(&client()?, limit).await?,
+        Command::Task(TaskCommand::Ls { limit, node }) => {
+            admin::list_tasks(&client()?, limit, node).await?
+        }
         Command::Task(TaskCommand::Cancel { task_id }) => {
             admin::cancel_task(&client()?, task_id).await?
         }

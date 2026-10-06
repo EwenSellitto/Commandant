@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 use crate::auth::{NODE_PREFIX, generate_token, hash_token, hashes_match};
 use crate::registry::ConnId;
-use crate::store::{NODE_DISCONNECTED, NodeFacts, TaskStatus};
+use crate::store::{NODE_DISCONNECTED, NodeFacts};
 use crate::{Shared, internal};
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -232,21 +232,13 @@ async fn handle_messages(
 }
 
 async fn record_finished(shared: &Shared, conn_id: ConnId, finished: TaskFinished) {
-    let task_id = finished.task_id.clone();
-    let status = TaskStatus::of(&finished);
-    let exit_code = finished.exit_code;
-    let error = Some(finished.error.clone()).filter(|e| !e.is_empty());
-    let Some(output) = shared.hub.finish(conn_id, finished) else {
+    let Some(output) = shared.hub.finish(conn_id, finished.clone()) else {
         return;
     };
-    if let Err(e) = shared
-        .store
-        .finish_task(&task_id, status, exit_code, error.as_deref(), &output)
-        .await
-    {
-        warn!(%task_id, "failed to record task result: {e}");
+    if let Err(e) = shared.store.finish_task(&finished, &output).await {
+        warn!(task_id = %finished.task_id, "failed to record task result: {e}");
     }
-    shared.hub.close(&task_id);
+    shared.hub.close(&finished.task_id);
 }
 
 /// Marks the node offline and its unfinished tasks lost.

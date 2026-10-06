@@ -5,7 +5,8 @@
 //!
 //! What a prompt does depends on its text: one with `hold` waits for
 //! [`FakeOpencode::release`] (or an abort), `fail` ends in a session error,
-//! and `permission` asks for a permission first. The reply is `echo: <text>`.
+//! `refuse` is turned down before it starts, and `permission` asks for a
+//! permission first. The reply is `echo: <text>`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -365,6 +366,9 @@ async fn route(
                 .as_str()
                 .unwrap_or_default()
                 .to_string();
+            if text.contains("refuse") {
+                return (500, json!({ "name": "UnknownError" }));
+            }
             tokio::spawn(turn(state.clone(), id.to_string(), text));
             (204, json!(null))
         }
