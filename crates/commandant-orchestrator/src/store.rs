@@ -386,7 +386,8 @@ impl Store {
 
     /// Finds a task by id or unambiguous id prefix.
     pub async fn find_task(&self, needle: &str) -> Result<Match<TaskRecord>> {
-        // The exact id first, then at most two others: enough to tell.
+        // The exact id first, else two that start with it: enough to tell
+        // one from several.
         let tasks: Vec<TaskRecord> = sqlx::query_as(
             "SELECT t.*, n.name AS node_name FROM tasks t JOIN nodes n ON n.id = t.node_id
              WHERE substr(t.id, 1, length(?1)) = ?1 ORDER BY t.id = ?1 DESC LIMIT 2",
@@ -395,6 +396,16 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         Ok(lookup::find(tasks, needle, |t| &t.id))
+    }
+
+    pub async fn task(&self, id: &str) -> Result<Option<TaskRecord>> {
+        Ok(sqlx::query_as(
+            "SELECT t.*, n.name AS node_name FROM tasks t JOIN nodes n ON n.id = t.node_id
+             WHERE t.id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?)
     }
 
     /// The output a finished task kept, oldest first.

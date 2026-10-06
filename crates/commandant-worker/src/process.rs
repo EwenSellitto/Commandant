@@ -3,6 +3,7 @@
 
 use tokio::process::Child;
 
+/// What to ask of a process group: to stop, or to die now.
 pub enum Signal {
     Term,
     Kill,
@@ -21,6 +22,7 @@ pub fn signal_group(child: &Child, signal: Signal) -> bool {
         unsafe { libc::kill(-(pid as libc::pid_t), signal) };
         return true;
     }
+    // Used only on Unix.
     let _ = (child, signal);
     false
 }

@@ -45,7 +45,7 @@ impl ControlService {
         }
         let nodes = self.shared.store.list_nodes().await.map_err(internal)?;
         let node = lookup::find_named(nodes, needle, |n| &n.name, |n| &n.id);
-        the_one(node, "node", needle)
+        matched_or_status(node, "node", needle)
     }
 
     /// Records a task, sends it to the node's worker, and streams its events
@@ -199,8 +199,8 @@ fn harness(node: &NodeRecord, conn: &Connection) -> Result<String, Status> {
     })
 }
 
-/// The one `what` that `needle` matched, else why there is none.
-fn the_one<T>(found: Match<T>, what: &str, needle: &str) -> Result<T, Status> {
+/// The one `what` that `needle` matched, else the error saying why there is none.
+fn matched_or_status<T>(found: Match<T>, what: &str, needle: &str) -> Result<T, Status> {
     match found {
         Match::One(item) => Ok(item),
         Match::Ambiguous => Err(Status::invalid_argument(format!("{needle:?} is ambiguous"))),
@@ -522,19 +522,19 @@ impl Control for ControlService {
         let needle = request.into_inner().task_id;
         let store = &self.shared.store;
         let task = store.find_task(&needle).await.map_err(internal)?;
-        let task = the_one(task, "task", &needle)?;
-        let task_id = task.id.clone();
+        let task = matched_or_status(task, "task", &needle)?;
         let mut started = TaskStarted {
             task_id: task.id.clone(),
             node_id: task.node_id.clone(),
-            output_pruned: false,
+            output_pruned: task.output_pruned,
         };
         let watch = match self.shared.hub.watch(&task.id) {
             Some(watch) => watch,
-            // Over and stored: what the store says now is final.
+            // Over and stored. Read it again: it may have ended since.
             None => {
-                let task = store.find_task(&task.id).await.map_err(internal)?;
-                let task = the_one(task, "task", &task_id)?;
+                let gone = || Status::not_found(format!("task {} is gone", task.id));
+                let task = store.task(&task.id).await.map_err(internal)?;
+                let task = task.ok_or_else(gone)?;
                 started.output_pruned = task.output_pruned;
                 let output = store.task_output(&task.id).await.map_err(internal)?;
                 let mut backlog: Vec<TaskEvent> = output.into_iter().map(Into::into).collect();
