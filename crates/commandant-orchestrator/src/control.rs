@@ -44,10 +44,7 @@ impl ControlService {
             return Err(Status::invalid_argument("node is required"));
         }
         let nodes = self.shared.store.list_nodes().await.map_err(internal)?;
-        if let Some(node) = nodes.iter().find(|n| n.name == needle) {
-            return Ok(node.clone());
-        }
-        match lookup::find(nodes, needle, |n| &n.id) {
+        match lookup::find_named(nodes, needle, |n| &n.name, |n| &n.id) {
             Match::One(node) => Ok(node),
             Match::Ambiguous => Err(Status::invalid_argument(format!("{needle:?} is ambiguous"))),
             Match::None => Err(Status::not_found(format!("no node matches {needle:?}"))),

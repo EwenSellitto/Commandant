@@ -21,6 +21,7 @@ use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, EventStream}
 use crossterm::execute;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
 
 use self::app::{Action, App, ChatId, Failure, Update};
@@ -112,28 +113,20 @@ async fn event_loop(
         for action in actions {
             if let Action::Quit = action {
                 // Don't leave agents working for nobody.
-                let cancels = app.running_tasks().into_iter().map(|task_id| {
-                    let mut control = control.clone();
-                    async move { control.cancel_task(CancelTaskRequest { task_id }).await }
-                });
-                futures_join_all(cancels).await;
+                let cancels: JoinSet<_> = app
+                    .running_tasks()
+                    .into_iter()
+                    .map(|task_id| {
+                        let mut control = control.clone();
+                        async move { control.cancel_task(CancelTaskRequest { task_id }).await }
+                    })
+                    .collect();
+                cancels.join_all().await;
                 return Ok(());
             }
             perform(action, app, control, &tx).await;
         }
     }
-}
-
-/// Runs the futures at once and waits for them all.
-async fn futures_join_all<F: Future + Send + 'static>(futures: impl Iterator<Item = F>)
-where
-    F::Output: Send,
-{
-    let mut set = tokio::task::JoinSet::new();
-    for future in futures {
-        set.spawn(future);
-    }
-    while set.join_next().await.is_some() {}
 }
 
 /// Starts what an action asks for; answers come back as updates.
@@ -345,10 +338,7 @@ async fn watch_nodes(mut control: ControlClient, tx: mpsc::UnboundedSender<Updat
 
 /// The node named by `needle`: a name, an id or an id prefix.
 fn find_node(nodes: &[NodeInfo], needle: &str) -> Result<NodeInfo> {
-    if let Some(node) = nodes.iter().find(|n| n.name == needle) {
-        return Ok(node.clone());
-    }
-    match lookup::find(nodes.to_vec(), needle, |n| &n.id) {
+    match lookup::find_named(nodes.to_vec(), needle, |n| &n.name, |n| &n.id) {
         Match::One(node) => Ok(node),
         Match::Ambiguous => bail!("{needle:?} is ambiguous"),
         Match::None => bail!("no node matches {needle:?}"),

@@ -161,11 +161,12 @@ fn decode(opaque: &str) -> Option<(String, String)> {
 fn pack_host(host: &str, out: &mut Vec<u8>) {
     let (name, port) = match host.parse::<SocketAddr>() {
         Ok(addr) => (addr.ip().to_string(), addr.port()),
-        Err(_) => match host.rsplit_once(':') {
-            Some((name, port)) if port.parse::<u16>().is_ok() => {
-                (name.to_string(), port.parse().expect("checked"))
-            }
-            _ => (host.to_string(), DEFAULT_PORT),
+        Err(_) => match host
+            .rsplit_once(':')
+            .and_then(|(name, port)| Some((name, port.parse().ok()?)))
+        {
+            Some((name, port)) => (name.to_string(), port),
+            None => (host.to_string(), DEFAULT_PORT),
         },
     };
     let port_flag = if port == DEFAULT_PORT { 0 } else { CUSTOM_PORT };
@@ -192,8 +193,7 @@ fn pack_host(host: &str, out: &mut Vec<u8>) {
 }
 
 fn unpack_host(rest: &mut &[u8]) -> Option<String> {
-    let (&tag, tail) = rest.split_first()?;
-    *rest = tail;
+    let tag = *take(rest, 1)?.first()?;
     let name = match tag & !CUSTOM_PORT {
         ADDR_V4 => IpAddr::from(<[u8; 4]>::try_from(take(rest, 4)?).ok()?).to_string(),
         ADDR_V6 => format!(
@@ -248,10 +248,7 @@ fn unpack_token(rest: &[u8]) -> Option<String> {
 }
 
 fn take<'a>(rest: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
-    if rest.len() < n {
-        return None;
-    }
-    let (taken, tail) = rest.split_at(n);
+    let (taken, tail) = rest.split_at_checked(n)?;
     *rest = tail;
     Some(taken)
 }

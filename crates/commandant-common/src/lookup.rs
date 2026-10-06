@@ -7,6 +7,20 @@ pub enum Match<T> {
     None,
 }
 
+/// Returns the item named `needle`, else as [`find`] does by id: things
+/// users name, like nodes, can also be given by id or id prefix.
+pub fn find_named<T>(
+    items: Vec<T>,
+    needle: &str,
+    name: impl Fn(&T) -> &str,
+    id: impl Fn(&T) -> &str,
+) -> Match<T> {
+    match items.iter().position(|item| name(item) == needle) {
+        Some(at) => Match::One(items.into_iter().nth(at).expect("just found")),
+        None => find(items, needle, id),
+    }
+}
+
 /// Returns the item whose key equals `needle`, else the only item whose key
 /// starts with it.
 pub fn find<T>(
@@ -45,5 +59,15 @@ mod tests {
         assert_eq!(find(["abc", "abd"], "ab", |s| s), Match::Ambiguous);
         assert_eq!(find(ids, "x", |s| s), Match::None);
         assert_eq!(find(ids, "", |s| s), Match::None);
+    }
+
+    #[test]
+    fn a_name_beats_an_id() {
+        let nodes = [("box", "b0c1"), ("b0", "e9f2"), ("lab", "b0d3")];
+        let named = |needle| find_named(nodes.to_vec(), needle, |n| n.0, |n| n.1);
+        assert_eq!(named("b0"), Match::One(("b0", "e9f2")));
+        assert_eq!(named("lab"), Match::One(("lab", "b0d3")));
+        assert_eq!(named("b0c"), Match::One(("box", "b0c1")));
+        assert_eq!(named("b"), Match::Ambiguous);
     }
 }

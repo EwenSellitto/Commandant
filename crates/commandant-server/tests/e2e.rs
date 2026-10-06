@@ -359,6 +359,8 @@ mod reset {
     use std::os::fd::{FromRawFd, OwnedFd};
     use std::process::Stdio;
 
+    use commandant_common::fs::read_trimmed;
+
     use super::*;
 
     struct Pty {
@@ -466,7 +468,7 @@ mod reset {
         for answers in ["n\n", "\n", "y\nyes\n"] {
             let stderr = refused(&data_dir, port, Some(answers)).await;
             assert!(stderr.contains("reset cancelled"), "{answers:?}: {stderr}");
-            assert_eq!(read_trimmed(&token_file), old_token);
+            assert_eq!(read_trimmed(&token_file).unwrap(), old_token);
         }
 
         // Confirmed: a new token, and the local worker joins the new database.
@@ -493,7 +495,10 @@ mod reset {
         assert_ne!(node.id, old_node.id);
 
         // The link carries the new token; the remembered host stays.
-        let link: Link = read_trimmed(&data_dir.join("link")).parse().unwrap();
+        let link: Link = read_trimmed(&data_dir.join("link"))
+            .unwrap()
+            .parse()
+            .unwrap();
         assert_eq!(link.token, new_token);
         assert_eq!(link.hosts[0], format!("box.lan:{port}"));
 
@@ -505,10 +510,6 @@ mod reset {
             .unwrap();
         assert!(status.success(), "{status}");
         drop(pty.keyboard);
-    }
-
-    fn read_trimmed(path: &Path) -> String {
-        std::fs::read_to_string(path).unwrap().trim().to_string()
     }
 }
 
