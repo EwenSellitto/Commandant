@@ -10,7 +10,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::chat::ChatView;
 use super::picker::{Outcome as Picked, Picker};
 use crate::state::chat::{Chat, Settings, cycle};
-use crate::state::{ChatId, Choose, Effect, Go, Intent, Outcome, Scope, State, Update};
+use crate::state::{ChatId, Effect, Go, Intent, Outcome, Scope, State, Update};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Screen {
@@ -26,10 +26,11 @@ pub struct App {
     pub selected: usize,
     /// The chat last shown on each node.
     last: HashMap<String, ChatId>,
-    /// What the terminal keeps of each chat.
-    views: HashMap<ChatId, ChatView>,
+    /// What the terminal keeps of each chat, kept in step with the state's
+    /// chats by [`sync`](Self::sync).
+    pub views: HashMap<ChatId, ChatView>,
     /// The app's picker, as shown.
-    pub picker: Option<Picker<Choose>>,
+    pub picker: Option<Picker>,
     /// Set once the person has asked to leave.
     pub quit: bool,
 }
@@ -243,14 +244,9 @@ impl App {
         Picker::sync(&mut self.picker, self.state.pick(Scope::App));
         let state = &self.state;
         self.views.retain(|id, _| state.chat(*id).is_some());
-        for (id, view) in &mut self.views {
-            Picker::sync(&mut view.picker, state.pick(Scope::Chat(*id)));
-        }
         for chat in &state.chats {
-            if chat.pick.is_some() && !self.views.contains_key(&chat.id) {
-                let view = self.views.entry(chat.id).or_default();
-                Picker::sync(&mut view.picker, chat.pick.as_ref());
-            }
+            let view = self.views.entry(chat.id).or_default();
+            Picker::sync(&mut view.picker, chat.pick.as_ref());
         }
     }
 }
@@ -505,7 +501,7 @@ pub(crate) mod tests {
         ));
         let picker = app.picker.as_ref().unwrap();
         assert_eq!((picker.filter.as_str(), picker.shown_len()), ("about", 2));
-        assert!(!picker.loading);
+        assert!(!picker.loading());
 
         // "+ New session" is a new chat.
         app.on_key(ctrl('u'));

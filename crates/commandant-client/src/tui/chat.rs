@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::picker::{Outcome as Picked, Picker};
 use crate::state::chat::Chat;
-use crate::state::{Choose, Edit, Intent, Scope};
+use crate::state::{Edit, Intent, Scope};
 
 /// Lines moved by PageUp / PageDown.
 const PAGE: u16 = 10;
@@ -22,7 +22,7 @@ pub struct ChatView {
     recalled: Option<usize>,
     draft: String,
     /// The chat's picker, as shown.
-    pub picker: Option<Picker<Choose>>,
+    pub picker: Option<Picker>,
 }
 
 impl ChatView {

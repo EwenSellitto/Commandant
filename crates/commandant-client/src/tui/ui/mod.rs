@@ -6,14 +6,21 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 
 use commandant_common::or;
 
 use super::app::{App, Screen};
 use super::chat::ChatView;
-use super::picker::Picker;
 use super::text::{self, MUTED};
+
+mod lists;
+mod nodes;
+#[cfg(test)]
+mod tests;
+
+use self::lists::{draw_picker, draw_suggestions};
+use self::nodes::draw_nodes;
 use crate::state::ChatId;
 use crate::state::chat::{self, Activity, Auth, Chat, Role, Unseen};
 
@@ -60,9 +67,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .areas(area);
     draw_tabs(frame, app, id, tabs);
-    let picker = app.picker.take();
-    let Some((chat, view)) = app.shown() else {
-        app.picker = picker;
+    let (Some(chat), Some(view)) = (app.state.chat(id), app.views.get_mut(&id)) else {
         return;
     };
     draw_header(frame, chat, header);
@@ -81,88 +86,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let Some(picker) = &view.picker {
         draw_picker(frame, accent, picker);
     }
-    app.picker = picker;
     if let Some(picker) = &app.picker {
         draw_picker(frame, accent, picker);
     }
-}
-
-/// The node list: what each runs, and how many of its chats are open here.
-fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
-    let [header, _, list, notice, footer] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-    let state = &app.state;
-    let online = state.nodes.iter().filter(|n| n.online).count();
-    frame.render_widget(
-        Line::from(vec![
-            "Commandant".bold(),
-            format!("  {} nodes · {online} online", state.nodes.len()).fg(MUTED),
-        ]),
-        header,
-    );
-    if state.nodes.is_empty() {
-        let empty = "No nodes yet. Add a worker with `commandant-server worker <link>`.";
-        frame.render_widget(Line::from(empty).fg(MUTED), list);
-    }
-    let name_width = state
-        .nodes
-        .iter()
-        .map(|n| n.name.chars().count())
-        .max()
-        .unwrap_or(0);
-    let items: Vec<ListItem> = state
-        .nodes
-        .iter()
-        .map(|node| {
-            let dot = status_dot(node.online);
-            let mut facts = facts(node);
-            if !node.online {
-                facts.push(format!(
-                    "seen {}",
-                    commandant_common::time::ago(node.last_seen)
-                ));
-            }
-            let mut spans = vec![
-                dot,
-                Span::raw(format!("{:<name_width$}  ", node.name)).bold(),
-            ];
-            spans.extend(dotted(facts.into_iter().map(|f| f.fg(MUTED))));
-            if state.starting.contains(&node.id) {
-                spans.push(format!("   {} starting its agent…", spinner()).yellow());
-            } else if node.online && node.harnesses.is_empty() && !node.can_host.is_empty() {
-                spans.push("   enter to start an agent".fg(MUTED));
-            }
-            let chats = state.chats_on(&node.id).count();
-            if chats > 0 {
-                let working = state
-                    .chats_on(&node.id)
-                    .filter(|c| matches!(c.activity, Activity::Working { .. }))
-                    .count();
-                let mut open = format!("   {chats} open");
-                if working > 0 {
-                    open.push_str(&format!(" · {working} working"));
-                }
-                spans.push(open.cyan());
-            }
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
-    let list_widget = List::new(items)
-        .highlight_symbol(Line::from("▌ ").cyan())
-        .highlight_style(Style::new().bg(SELECTED));
-    let mut list_state = ListState::default().with_selected(Some(app.selected));
-    frame.render_stateful_widget(list_widget, list, &mut list_state);
-    frame.render_widget(Line::from(state.notice.clone()).yellow(), notice);
-    frame.render_widget(
-        hints(&[("↑↓", "move"), ("enter", "open"), ("q", "quit")]),
-        footer,
-    );
 }
 
 /// The node's chats, the shown one highlighted; the others say whether they
@@ -565,115 +491,6 @@ fn draw_footer(frame: &mut Frame, chat: &Chat, area: Rect) {
     frame.render_widget(right.right_aligned(), area);
 }
 
-/// The commands completing what is typed, on a panel at the bottom of
-/// `area`, just over the prompt.
-fn draw_suggestions(
-    frame: &mut Frame,
-    suggestions: &[(String, String)],
-    suggested: usize,
-    accent: Color,
-    area: Rect,
-) {
-    const SHOWN: usize = 8;
-    if suggestions.is_empty() {
-        return;
-    }
-    let height = suggestions.len().min(SHOWN).min(area.height as usize);
-    let area = Rect::new(
-        area.x,
-        area.bottom() - height as u16,
-        area.width,
-        height as u16,
-    );
-    frame.render_widget(Clear, area);
-    frame.render_widget(Block::new().bg(PANEL), area);
-    let width = suggestions
-        .iter()
-        .map(|(n, _)| n.chars().count())
-        .max()
-        .unwrap_or(0)
-        + 3;
-    let items: Vec<ListItem> = suggestions
-        .iter()
-        .map(|(name, does)| {
-            ListItem::new(Line::from(vec![
-                Span::raw(format!(" {:<width$}", format!("/{name}"))).fg(accent),
-                Span::raw(does.clone()).fg(MUTED),
-            ]))
-        })
-        .collect();
-    let list =
-        List::new(items).highlight_style(Style::new().bg(SELECTED).add_modifier(Modifier::BOLD));
-    let mut state = ListState::default().with_selected(Some(suggested));
-    frame.render_stateful_widget(list, area, &mut state);
-}
-
-/// The picker: a solid panel centred over everything else.
-fn draw_picker<T: Clone + PartialEq>(frame: &mut Frame, accent: Color, picker: &Picker<T>) {
-    let screen = frame.area();
-    let width = screen.width.saturating_sub(4).min(80);
-    // Title, filter, gap, the list, gap, hints; plus a padding row each end.
-    let rows = picker.shown_len().max(1) as u16;
-    let height = (rows + 7).min(screen.height.saturating_sub(2));
-    let area = screen.centered(Constraint::Length(width), Constraint::Length(height));
-    frame.render_widget(Clear, area);
-    let panel = Block::new().bg(PANEL).padding(Padding::new(2, 2, 1, 1));
-    let inner = panel.inner(area);
-    frame.render_widget(panel, area);
-    let [title, filter, _, list, _, hints] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(inner);
-
-    frame.render_widget(Span::raw(picker.title).bold(), title);
-    let count = format!("{} of {}", picker.shown_len(), picker.total());
-    let count = match picker.loading {
-        true => format!("{} loading · {count}", spinner()),
-        false => count,
-    };
-    frame.render_widget(Line::from(count).fg(MUTED).right_aligned(), title);
-    let query = match picker.filter.as_str() {
-        "" => Line::from(vec!["› ".fg(accent), "type to filter".fg(MUTED)]),
-        filter => Line::from(vec!["› ".fg(accent), Span::raw(filter.to_string())]),
-    };
-    frame.render_widget(query, filter);
-    let x = filter.x + 2 + picker.filter.chars().count() as u16;
-    frame.set_cursor_position((x.min(filter.right().saturating_sub(1)), filter.y));
-    frame.render_widget(
-        self::hints(&[("↑↓", "move"), ("enter", "choose"), ("esc", "close")]),
-        hints,
-    );
-
-    if picker.shown_len() == 0 {
-        let empty = if picker.loading {
-            "loading…"
-        } else {
-            "nothing matches"
-        };
-        frame.render_widget(Line::from(empty).fg(MUTED), list);
-        return;
-    }
-    let items: Vec<ListItem> = picker
-        .shown()
-        .map(|choice| {
-            ListItem::new(Line::from(vec![
-                Span::raw(choice.label.clone()),
-                Span::raw(format!("  {}", choice.detail)).fg(MUTED),
-            ]))
-        })
-        .collect();
-    let list_widget = List::new(items)
-        .highlight_symbol(Line::from("▌ ").fg(accent))
-        .highlight_style(Style::new().bg(SELECTED).add_modifier(Modifier::BOLD));
-    let mut state = ListState::default().with_selected(Some(picker.selected));
-    frame.render_stateful_widget(list_widget, list, &mut state);
-}
-
 /// The color of the agent named `name`, from where the node lists it.
 fn agent_color(chat: &Chat, name: &str) -> Color {
     let at = chat
@@ -747,238 +564,4 @@ fn shorten_left(path: &str, room: usize) -> String {
     }
     let tail: String = path.chars().skip(len - (room - 1)).collect();
     format!("…{tail}")
-}
-
-#[cfg(test)]
-mod tests {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    use ratatui::buffer::Buffer;
-
-    use super::*;
-    use crate::state::Update;
-    use crate::state::chat::tests::output;
-    use crate::state::tests::bare;
-    use crate::tui::app::tests::app;
-    use commandant_proto::OutputStream;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-    /// Where `text` isn't.
-    fn absent(buf: &Buffer, text: &str) -> bool {
-        let area = buf.area;
-        (0..area.height).all(|y| {
-            let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
-            !row.contains(text)
-        })
-    }
-
-    fn render(app: &mut App) -> Buffer {
-        let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
-        terminal.draw(|frame| draw(frame, app)).unwrap();
-        terminal.backend().buffer().clone()
-    }
-
-    /// Where `text` starts on screen.
-    fn find(buf: &Buffer, text: &str) -> (u16, u16) {
-        let area = buf.area;
-        for y in 0..area.height {
-            let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
-            if let Some(at) = row.find(text) {
-                let x = row[..at].chars().count() as u16;
-                return (x, y);
-            }
-        }
-        panic!("{text:?} isn't on screen");
-    }
-
-    #[test]
-    fn secondary_text_stays_readable() {
-        let mut app = app();
-        app.on_key(KeyEvent::from(KeyCode::Enter));
-        let id = app.state.chats[0].id;
-        app.on_update(Update::Chat(
-            id,
-            output(OutputStream::Reasoning, b"pondering"),
-        ));
-        let buf = render(&mut app);
-
-        let hint = &buf[find(&buf, "Message")];
-        assert_eq!((hint.fg, hint.bg), (HINT, SURFACE));
-        assert_eq!(buf[find(&buf, "pondering")].fg, THOUGHT);
-        assert_eq!(buf[find(&buf, "opencode")].fg, MUTED);
-        // Some palettes make dark gray unreadable, so nothing uses it.
-        assert!(buf.content.iter().all(|cell| cell.fg != Color::DarkGray));
-    }
-
-    #[test]
-    fn nodes_list_their_open_chats() {
-        let mut app = app();
-        let buf = render(&mut app);
-        assert_eq!(buf[find(&buf, "box-n1")].modifier, Modifier::BOLD);
-        assert!(
-            find(&buf, "seen ").1 > find(&buf, "box-n2").1,
-            "offline says when last seen"
-        );
-        assert!(absent(&buf, "1 open"));
-
-        app.on_key(KeyEvent::from(KeyCode::Enter));
-        app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
-        let buf = render(&mut app);
-        // Both chats have a tab; the shown one is the second.
-        let (_, row) = find(&buf, " 1 new session");
-        assert_eq!(find(&buf, " 2 new session").1, row);
-        assert_eq!(buf[find(&buf, " 2 new session")].bg, SELECTED);
-        assert_ne!(buf[find(&buf, " 1 new session")].bg, SELECTED);
-
-        app.on_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
-        let buf = render(&mut app);
-        assert_eq!(find(&buf, "2 open").1, find(&buf, "box-n1").1);
-    }
-
-    #[test]
-    fn many_tabs_scroll_round_the_shown_one() {
-        let mut app = app();
-        app.on_key(KeyEvent::from(KeyCode::Enter));
-        for _ in 0..7 {
-            app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
-        }
-        // The last of eight is shown; earlier ones are out of sight to the left.
-        let buf = render(&mut app);
-        let (_, row) = find(&buf, " 8 new session");
-        assert_eq!(buf[find(&buf, " 8 new session")].bg, SELECTED);
-        assert_eq!(find(&buf, "‹").1, row);
-        assert!(absent(&buf, " 1 new session"));
-        assert!(absent(&buf, "›"));
-        assert!(absent(&buf, "ctrl-o"), "no room left for the hint");
-
-        // In the middle, both sides are cut.
-        for _ in 0..4 {
-            app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
-        }
-        let buf = render(&mut app);
-        assert_eq!(buf[find(&buf, " 4 new session")].bg, SELECTED);
-        assert_eq!(find(&buf, "‹").1, row);
-        assert_eq!(find(&buf, "›").1, row);
-
-        // A long title is cut short rather than pushing the others out.
-        let long = "a".repeat(80);
-        let id = app.chat().unwrap().id;
-        let chat = app.state.chats.iter_mut().find(|c| c.id == id).unwrap();
-        chat.title = long;
-        let buf = render(&mut app);
-        let (x, _) = find(&buf, " 4 aaaa");
-        let row_text: String = (0..buf.area.width)
-            .map(|c| buf[(c, row)].symbol())
-            .collect();
-        assert!(row_text.contains('…'), "{row_text}");
-        assert!(x < 30);
-    }
-
-    #[test]
-    fn the_status_line_says_what_is_loading() {
-        let mut app = app();
-        app.on_key(KeyEvent::from(KeyCode::Enter));
-        let buf = render(&mut app);
-        find(&buf, "asking box-n1 what its agent offers…");
-
-        let options = commandant_proto::AgentOptions {
-            loading: true,
-            ..Default::default()
-        };
-        app.on_update(Update::Options("n1".into(), Ok(options)));
-        let buf = render(&mut app);
-        find(&buf, "connecting MCP servers");
-        assert!(app.state.busy(), "its spinner turns");
-
-        let mcp = |name: &str, status: &str| commandant_proto::McpServer {
-            name: name.into(),
-            status: status.into(),
-            ..Default::default()
-        };
-        let options = commandant_proto::AgentOptions {
-            mcp_servers: vec![mcp("docs", "connected"), mcp("x", "failed")],
-            ..Default::default()
-        };
-        app.on_update(Update::Options("n1".into(), Ok(options)));
-        let buf = render(&mut app);
-        find(&buf, "mcp 1/2 connected · 1 failed");
-        assert!(!app.state.busy());
-
-        app.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
-        let buf = render(&mut app);
-        find(&buf, "loading · ");
-    }
-
-    #[test]
-    fn only_a_known_commands_name_is_colored() {
-        let mut app = app();
-        app.on_key(KeyEvent::from(KeyCode::Enter));
-        let typed = |app: &mut App, text: &str| {
-            app.shown().unwrap().1.input = Default::default();
-            for c in text.chars() {
-                app.on_key(KeyEvent::from(KeyCode::Char(c)));
-            }
-            render(app)
-        };
-        let accent = Color::Cyan;
-        let buf = typed(&mut app, "/model smart");
-        assert_eq!(buf[find(&buf, "/model smart")].fg, accent);
-        let (x, y) = find(&buf, " smart");
-        assert_eq!(buf[(x + 1, y)].fg, Color::Reset, "its argument isn't");
-        let buf = typed(&mut app, "/nope x");
-        assert_eq!(buf[find(&buf, "/nope x")].fg, Color::Reset, "unknown");
-    }
-
-    #[test]
-    fn completions_float_over_the_prompt() {
-        let mut app = app();
-        app.on_key(KeyEvent::from(KeyCode::Enter));
-        for c in "/prov".chars() {
-            app.on_key(KeyEvent::from(KeyCode::Char(c)));
-        }
-        let buf = render(&mut app);
-        // The empty chat's welcome lists it too: the completion is the lowest.
-        let row = (0..buf.area.height)
-            .rev()
-            .find(|&y| {
-                let text: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
-                text.contains("/providers ")
-            })
-            .unwrap();
-        assert_eq!(buf[(2, row)].bg, SELECTED);
-        let input = (0..buf.area.height)
-            .find(|&y| buf[(1, y)].bg == SURFACE)
-            .unwrap();
-        assert_eq!(row + 2, input, "just over the prompt, past the status line");
-    }
-
-    #[test]
-    fn an_api_key_is_masked_while_typed() {
-        let mut app = app();
-        app.on_key(KeyEvent::from(KeyCode::Enter));
-        app.state.chats[0].auth = Some(Auth::Key {
-            provider: "acme".into(),
-        });
-        for c in "sk-abc".chars() {
-            app.on_key(KeyEvent::from(KeyCode::Char(c)));
-        }
-        let buf = render(&mut app);
-        find(&buf, "••••••");
-        assert!(absent(&buf, "sk-abc"));
-    }
-
-    #[test]
-    fn the_harness_picker_floats_over_the_nodes() {
-        let mut app = App::new(vec![bare("n1")], Default::default());
-        let buf = render(&mut app);
-        find(&buf, "enter to start an agent");
-        app.on_key(KeyEvent::from(KeyCode::Enter));
-        let buf = render(&mut app);
-        find(&buf, "Start an agent on this node");
-        find(&buf, "opencode");
-        app.on_key(KeyEvent::from(KeyCode::Enter));
-        let buf = render(&mut app);
-        assert!(absent(&buf, "Start an agent on this node"));
-        find(&buf, "starting its agent…");
-    }
 }
