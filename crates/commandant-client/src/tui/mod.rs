@@ -24,10 +24,11 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
 
-use self::app::{Action, App, ChatId, Failure, Update};
-use self::chat::{Message, Settings};
+use self::app::App;
 use crate::cli::TuiArgs;
 use crate::config::Client;
+use crate::state::chat::{Message, Settings};
+use crate::state::{ChatId, Effect, Failure, Update};
 
 /// How often the screen refreshes on its own, for the busy spinner.
 const TICK: Duration = Duration::from_millis(100);
@@ -62,8 +63,8 @@ pub async fn run(client: &Client, args: TuiArgs) -> Result<()> {
             session_id,
             ..settings
         };
-        for action in app.open_node_with(node, settings) {
-            perform(action, &mut app, &mut control, &tx).await;
+        for effect in app.open_node_with(node, settings) {
+            perform(effect, &mut app, &mut control, &tx).await;
         }
     }
     let mut terminal = ratatui::init();
@@ -74,7 +75,7 @@ pub async fn run(client: &Client, args: TuiArgs) -> Result<()> {
     watcher.abort();
     result?;
 
-    for chat in &app.chats {
+    for chat in &app.state.chats {
         if !chat.settings.session_id.is_empty() {
             eprintln!(
                 "commandant: continue with: commandant tui {} -s {}",
@@ -96,53 +97,58 @@ async fn event_loop(
     let mut tick = tokio::time::interval(TICK);
     loop {
         terminal.draw(|frame| ui::draw(frame, app))?;
-        let mut actions = tokio::select! {
+        let mut effects = tokio::select! {
             event = input.next() => match event {
                 Some(event) => app.on_input(event?),
-                None => vec![Action::Quit],
+                None => {
+                    app.quit = true;
+                    Vec::new()
+                }
             },
             Some(update) = rx.recv() => app.on_update(update),
             // Only the spinners need redrawing on their own.
-            _ = tick.tick(), if app.busy() => Vec::new(),
+            _ = tick.tick(), if app.state.busy() => Vec::new(),
         };
         // A reply streams in many small pieces: take what has come before
-        // drawing again.
+        // drawing again, or before quitting, so a task that has just
+        // started is known and cancelled.
         while let Ok(update) = rx.try_recv() {
-            actions.extend(app.on_update(update));
+            effects.extend(app.on_update(update));
         }
-        for action in actions {
-            if let Action::Quit = action {
-                // Don't leave agents working for nobody.
-                let cancels: JoinSet<_> = app
-                    .running_tasks()
-                    .into_iter()
-                    .map(|task_id| {
-                        let mut control = control.clone();
-                        async move { control.cancel_task(CancelTaskRequest { task_id }).await }
-                    })
-                    .collect();
-                cancels.join_all().await;
-                return Ok(());
-            }
-            perform(action, app, control, &tx).await;
+        if app.quit {
+            // Don't leave agents working for nobody.
+            let cancels: JoinSet<_> = app
+                .state
+                .running_tasks()
+                .into_iter()
+                .map(|task_id| {
+                    let mut control = control.clone();
+                    async move { control.cancel_task(CancelTaskRequest { task_id }).await }
+                })
+                .collect();
+            cancels.join_all().await;
+            return Ok(());
+        }
+        for effect in effects {
+            perform(effect, app, control, &tx).await;
         }
     }
 }
 
-/// Starts what an action asks for; answers come back as updates.
+/// Starts the call an effect asks for; answers come back as updates.
 async fn perform(
-    action: Action,
+    effect: Effect,
     app: &mut App,
     control: &mut ControlClient,
     tx: &mpsc::UnboundedSender<Update>,
 ) {
     let mut control_ = control.clone();
     let tx_ = tx.clone();
-    match action {
-        Action::Send(chat, request) => {
+    match effect {
+        Effect::Send(chat, request) => {
             tokio::spawn(stream_prompt(control_, chat, request, tx_));
         }
-        Action::FetchOptions { node, after } => {
+        Effect::FetchOptions { node, after } => {
             tokio::spawn(async move {
                 tokio::time::sleep(after).await;
                 let request = GetAgentOptionsRequest { node: node.clone() };
@@ -160,7 +166,7 @@ async fn perform(
                 let _ = tx_.send(Update::Options(node, options));
             });
         }
-        Action::SwitchMcp {
+        Effect::SwitchMcp {
             chat,
             node,
             name,
@@ -179,14 +185,14 @@ async fn perform(
                 options,
             });
         }
-        Action::FetchSessions(node) => {
+        Effect::FetchSessions(node) => {
             let request = ListAgentSessionsRequest { node: node.clone() };
             let call = async move { control_.list_agent_sessions(request).await };
             spawn_ask(tx, call, |sessions| {
                 Update::Sessions(node, sessions.map(|s| s.sessions))
             });
         }
-        Action::FetchHistory {
+        Effect::FetchHistory {
             chat,
             node,
             session_id,
@@ -197,7 +203,7 @@ async fn perform(
                 Update::Chat(chat, Message::History(history.map(|h| h.entries)))
             });
         }
-        Action::PrepareProject {
+        Effect::PrepareProject {
             chat,
             node,
             repository,
@@ -208,21 +214,21 @@ async fn perform(
                 Update::Chat(chat, Message::Project(ready))
             });
         }
-        Action::FetchProjects { chat, node } => {
+        Effect::FetchProjects { chat, node } => {
             let request = ListProjectsRequest { node };
             let call = async move { control_.list_projects(request).await };
             spawn_ask(tx, call, move |projects| {
                 Update::Chat(chat, Message::Projects(projects.map(|p| p.projects)))
             });
         }
-        Action::FetchProviders { chat, node } => {
+        Effect::FetchProviders { chat, node } => {
             let request = ListProvidersRequest { node };
             let call = async move { control_.list_providers(request).await };
             spawn_ask(tx, call, move |providers| {
                 Update::Chat(chat, Message::Providers(providers.map(|p| p.providers)))
             });
         }
-        Action::Authenticate {
+        Effect::Authenticate {
             chat,
             node,
             provider,
@@ -238,8 +244,9 @@ async fn perform(
                 Update::Chat(chat, Message::Auth(result))
             });
         }
-        Action::Cancel(task_id) => {
+        Effect::Cancel(task_id) => {
             let chat = app
+                .state
                 .chats
                 .iter()
                 .find(|c| c.running_task().as_deref() == Some(task_id.as_str()))
@@ -251,7 +258,7 @@ async fn perform(
                 app.on_update(Update::Chat(chat, failed));
             }
         }
-        Action::StartHarness { node, harness } => {
+        Effect::StartHarness { node, harness } => {
             let request = StartHarnessRequest {
                 node: node.clone(),
                 harness,
@@ -259,12 +266,6 @@ async fn perform(
             let call = async move { control_.start_harness(request).await };
             spawn_ask(tx, call, |started| Update::HarnessStarted(node, started));
         }
-        // The app's own, or quitting, which the loop does.
-        Action::NewChat
-        | Action::ShowSessions
-        | Action::ShowNodes
-        | Action::CloseChat
-        | Action::Quit => {}
     }
 }
 

@@ -88,10 +88,13 @@ SQLite or libgit2 in `commandant`. Code used by several crates goes in
 | `main.rs`, `cli.rs` | Logging, and the command line (clap) |
 | `admin.rs`, `run.rs` | `login`, `token`, `node`, `task`; `run`, `prompt` and `task watch` |
 | `config.rs` | Where clients find the server and token |
-| `tui/mod.rs` | The TUI's event loop: draws, reads keys, makes the calls actions ask for |
-| `tui/app.rs` | The nodes and every chat; routes keys and updates |
-| `tui/chat.rs` | One chat: its session, settings, thread, input, commands |
-| `tui/ui.rs`, `tui/text.rs` | Drawing, and markdown styling |
+| `state/mod.rs` | What the client knows and does, apart from how it is shown: the nodes and every chat. No terminal code |
+| `state/intent.rs`, `state/pick.rs` | What goes in (intents, updates) and comes out (effects, where to go, prompt edits); pickers as data |
+| `state/chat/` | One chat: its session, settings, thread and line language (`/model`, `/project`, the agent's `/skill`); its pickers, provider sign-in and projects in their own files |
+| `tui/mod.rs` | The TUI's event loop: draws, reads keys, makes the calls effects ask for |
+| `tui/app.rs` | The screen shown, the highlighted node, the last chat per node; routes keys to intents |
+| `tui/chat.rs` | A chat's prompt (editing, history recall, completion highlight), scroll and picker as shown |
+| `tui/ui/`, `tui/text.rs` | Drawing, and markdown styling |
 | `tui/picker.rs` | The floating list to choose from |
 
 ## Other files

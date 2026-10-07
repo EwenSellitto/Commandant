@@ -2,6 +2,7 @@ mod admin;
 mod cli;
 mod config;
 mod run;
+mod state;
 mod tui;
 
 use anyhow::Result;
