@@ -1,6 +1,8 @@
 use super::*;
+use crate::state::fixtures::{output, started};
+use crate::state::{Choose, Edit};
 
-pub(crate) fn chat() -> Chat {
+fn chat() -> Chat {
     let node = NodeInfo {
         id: "n1".into(),
         name: "w1".into(),
@@ -8,21 +10,6 @@ pub(crate) fn chat() -> Chat {
         ..Default::default()
     };
     Chat::new(1, node, Settings::default(), None)
-}
-
-pub(crate) fn output(stream: OutputStream, data: &[u8]) -> Message {
-    Message::Task(TaskEvent::Output(TaskOutput {
-        stream: stream as i32,
-        data: data.to_vec(),
-        ..Default::default()
-    }))
-}
-
-fn started(task_id: &str) -> Message {
-    Message::Task(TaskEvent::Started(TaskStarted {
-        task_id: task_id.into(),
-        ..Default::default()
-    }))
 }
 
 /// What submitting `text` comes to.

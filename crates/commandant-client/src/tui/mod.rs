@@ -109,6 +109,12 @@ async fn event_loop(
             // Only the spinners need redrawing on their own.
             _ = tick.tick(), if app.state.busy() => Vec::new(),
         };
+        // A reply streams in many small pieces: take what has come before
+        // drawing again, or before quitting, so a task that has just
+        // started is known and cancelled.
+        while let Ok(update) = rx.try_recv() {
+            effects.extend(app.on_update(update));
+        }
         if app.quit {
             // Don't leave agents working for nobody.
             let cancels: JoinSet<_> = app
@@ -122,11 +128,6 @@ async fn event_loop(
                 .collect();
             cancels.join_all().await;
             return Ok(());
-        }
-        // A reply streams in many small pieces: take what has come before
-        // drawing again.
-        while let Ok(update) = rx.try_recv() {
-            effects.extend(app.on_update(update));
         }
         for effect in effects {
             perform(effect, app, control, &tx).await;

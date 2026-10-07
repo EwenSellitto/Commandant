@@ -2,7 +2,7 @@
 
 use commandant_proto::*;
 
-use super::{Activity, Chat};
+use super::Chat;
 use crate::state::{Choice, Choose, Effect, Pick};
 
 impl Chat {
@@ -10,8 +10,7 @@ impl Chat {
     /// project's name), clone a new copy of it to work in. A session stays in
     /// its directory, so only one that hasn't started can move.
     pub(super) fn project(&mut self, repository: &str) -> Option<Effect> {
-        if !self.settings.session_id.is_empty() || matches!(self.activity, Activity::Working { .. })
-        {
+        if !self.settings.session_id.is_empty() || self.activity.working() {
             self.info(
                 "this session already works somewhere: start a new one (Ctrl-N) for a project",
             );

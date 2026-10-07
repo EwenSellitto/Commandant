@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState};
 
 use super::{MUTED, SELECTED, dotted, facts, hints, spinner, status_dot};
-use crate::state::chat::Activity;
+use crate::state::lacks_agent;
 use crate::tui::app::App;
 
 /// The node list: what each runs, and how many of its chats are open here.
@@ -58,14 +58,14 @@ pub(super) fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
             spans.extend(dotted(facts.into_iter().map(|f| f.fg(MUTED))));
             if state.starting.contains(&node.id) {
                 spans.push(format!("   {} starting its agent…", spinner()).yellow());
-            } else if node.online && node.harnesses.is_empty() && !node.can_host.is_empty() {
+            } else if lacks_agent(node) && !node.can_host.is_empty() {
                 spans.push("   enter to start an agent".fg(MUTED));
             }
             let chats = state.chats_on(&node.id).count();
             if chats > 0 {
                 let working = state
                     .chats_on(&node.id)
-                    .filter(|c| matches!(c.activity, Activity::Working { .. }))
+                    .filter(|c| c.activity.working())
                     .count();
                 let mut open = format!("   {chats} open");
                 if working > 0 {

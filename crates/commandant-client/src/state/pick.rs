@@ -9,12 +9,15 @@ use super::ChatId;
 /// What choosing from a picker means.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Choose {
-    // A chat's: the setting it becomes (empty for the default), the command
-    // to fill in, or the MCP server to switch.
+    /// The agent a chat's prompts go to; empty for the default.
     Agent(String),
+    /// The model a chat's prompts go to; empty for the default.
     Model(String),
+    /// The thinking effort; empty for the model's default.
     Effort(String),
+    /// One of the agent's commands, to fill in with its arguments.
     Command(String),
+    /// An MCP server, to connect or disconnect.
     Mcp(String),
     /// A model provider, to sign in to or out of.
     Provider(String),
@@ -28,10 +31,13 @@ pub enum Choose {
     NewCopy(String),
     /// Work in an existing copy of a project, alongside its other sessions.
     Join(ProjectCopy),
-    // The app's.
+    /// Another chat on the node, with a new session.
     NewSession,
+    /// One of the node's open chats.
     Chat(ChatId),
+    /// A session the node saved, to resume in a new chat.
     Saved(AgentSession),
+    /// An agent harness to start on a node that hosts none.
     Harness {
         node: String,
         harness: String,

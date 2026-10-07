@@ -2,10 +2,11 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 
+use ratatui::style::Modifier;
+
 use super::*;
 use crate::state::Update;
-use crate::state::chat::tests::output;
-use crate::state::tests::bare;
+use crate::state::fixtures::{bare, output};
 use crate::tui::app::tests::app;
 use commandant_proto::OutputStream;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

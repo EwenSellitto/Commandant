@@ -7,10 +7,12 @@
 //! shown, typing and scrolling stay with the front end.
 
 pub mod chat;
+#[cfg(test)]
+pub(crate) mod fixtures;
 mod intent;
 mod pick;
 #[cfg(test)]
-pub(crate) mod tests;
+mod tests;
 
 pub use self::intent::{Edit, Effect, Failure, Go, Intent, Outcome, Scope, Update};
 pub use self::pick::{Choice, Choose, Pick};
@@ -98,7 +100,7 @@ impl State {
         !self.starting.is_empty()
             || self.pick.as_ref().is_some_and(|p| p.loading)
             || self.chats.iter().any(|c| {
-                matches!(c.activity, Activity::Working { .. })
+                c.activity.working()
                     || c.fetching_options
                     || c.loading_history
                     || c.loading()
@@ -190,12 +192,12 @@ impl State {
     }
 
     fn open(&mut self, id: &str, chat: Option<ChatId>) -> Outcome {
-        let Some(node) = self.nodes.iter().find(|n| n.id == id).cloned() else {
+        let Some(node) = self.node(id).cloned() else {
             return Outcome::default();
         };
         self.notice.clear();
         // Its chats are no use until it hosts an agent again.
-        if node.online && node.harnesses.is_empty() {
+        if lacks_agent(&node) {
             self.choose_harness(node);
             return Outcome::default();
         }
@@ -255,10 +257,14 @@ impl State {
         Effect::StartHarness { node, harness }.into()
     }
 
+    fn node(&self, id: &str) -> Option<&NodeInfo> {
+        self.nodes.iter().find(|n| n.id == id)
+    }
+
     /// A node's name, else its id.
     fn node_name(&self, id: &str) -> String {
-        let node = self.nodes.iter().find(|n| n.id == id);
-        node.map_or_else(|| id.to_string(), |n| n.name.clone())
+        self.node(id)
+            .map_or_else(|| id.to_string(), |n| n.name.clone())
     }
 
     /// Starts a chat to show; it asks for the options the node hasn't given.
@@ -294,7 +300,7 @@ impl State {
         let Some(chat) = self.chat_mut(id) else {
             return Outcome::default();
         };
-        if matches!(chat.activity, Activity::Working { .. }) {
+        if chat.activity.working() {
             chat.info("the agent is still working: cancel with Esc first, or switch away");
             return Outcome::default();
         }
@@ -529,4 +535,23 @@ impl State {
             }
         }
     }
+}
+
+/// The item `step` places after `current`, wrapping round; the first item if
+/// `current` isn't there.
+pub fn cycle<T: PartialEq + Copy>(items: &[T], current: T, step: isize) -> Option<T> {
+    let len = items.len() as isize;
+    if len == 0 {
+        return None;
+    }
+    let next = match items.iter().position(|&i| i == current) {
+        Some(at) => (at as isize + step).rem_euclid(len),
+        None => 0,
+    };
+    Some(items[next as usize])
+}
+
+/// Online, but its chats are no use until it hosts an agent again.
+pub fn lacks_agent(node: &NodeInfo) -> bool {
+    node.online && node.harnesses.is_empty()
 }

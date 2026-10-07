@@ -1,26 +1,8 @@
 use super::chat::{Role, Unseen};
+use super::fixtures::{bare, node, output, started};
 use super::*;
 
-pub(crate) fn node(id: &str, online: bool) -> NodeInfo {
-    NodeInfo {
-        id: id.into(),
-        name: format!("box-{id}"),
-        online,
-        harnesses: vec!["opencode".into()],
-        ..Default::default()
-    }
-}
-
-/// An online node hosting no agent, which can start one.
-pub(crate) fn bare(id: &str) -> NodeInfo {
-    NodeInfo {
-        harnesses: Vec::new(),
-        can_host: vec!["opencode".into()],
-        ..node(id, true)
-    }
-}
-
-pub(crate) fn state() -> State {
+fn state() -> State {
     let nodes = vec![node("n1", true), node("n2", true), node("n3", false)];
     State::new(nodes, Settings::default())
 }
@@ -65,13 +47,6 @@ fn finished(session_id: &str) -> Message {
     Message::Task(task_event::Event::Finished(TaskFinished {
         exit_code: Some(0),
         session_id: session_id.into(),
-        ..Default::default()
-    }))
-}
-
-pub(crate) fn started(task_id: &str) -> Message {
-    Message::Task(task_event::Event::Started(TaskStarted {
-        task_id: task_id.into(),
         ..Default::default()
     }))
 }
@@ -178,10 +153,7 @@ fn saved_sessions_are_resumed_from_the_picker() {
 
     // What was said since resuming stays after them.
     state.update(Update::Chat(resumed, started("t1")));
-    state.update(Update::Chat(
-        resumed,
-        chat::tests::output(OutputStream::Stdout, b"new"),
-    ));
+    state.update(Update::Chat(resumed, output(OutputStream::Stdout, b"new")));
     let entry = |role: &str, text: &str| HistoryEntry {
         role: role.into(),
         text: text.into(),

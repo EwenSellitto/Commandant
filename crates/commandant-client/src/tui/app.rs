@@ -9,8 +9,8 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::chat::ChatView;
 use super::picker::{Outcome as Picked, Picker};
-use crate::state::chat::{Chat, Settings, cycle};
-use crate::state::{ChatId, Effect, Go, Intent, Outcome, Scope, State, Update};
+use crate::state::chat::{Chat, Settings};
+use crate::state::{ChatId, Effect, Go, Intent, Outcome, Scope, State, Update, cycle};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Screen {
@@ -71,7 +71,7 @@ impl App {
         let Screen::Chat(id) = self.screen else {
             return None;
         };
-        let chat = self.state.chats.iter().find(|c| c.id == id)?;
+        let chat = self.state.chat(id)?;
         Some((chat, self.views.entry(id).or_default()))
     }
 
@@ -255,7 +255,7 @@ impl App {
 pub(crate) mod tests {
     use super::*;
     use crate::state::chat::Unseen;
-    use crate::state::tests::{bare, node, started};
+    use crate::state::fixtures::{bare, node, started};
 
     pub(crate) fn app() -> App {
         let nodes = vec![node("n1", true), node("n2", true), node("n3", false)];
