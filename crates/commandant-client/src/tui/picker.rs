@@ -3,6 +3,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::state::{Choose, Pick};
+
 /// Rows moved by PageUp / PageDown.
 const PAGE: usize = 10;
 
@@ -45,6 +47,8 @@ pub struct Picker<T> {
     pub selected: usize,
     /// More choices are on their way.
     pub loading: bool,
+    /// The [`Pick`] it shows, and the revision of it.
+    shows: (u64, u64),
 }
 
 impl<T: Clone + PartialEq> Picker<T> {
@@ -60,6 +64,7 @@ impl<T: Clone + PartialEq> Picker<T> {
             choices,
             selected,
             loading: false,
+            shows: (0, 0),
         }
     }
 
@@ -83,19 +88,6 @@ impl<T: Clone + PartialEq> Picker<T> {
 
     pub fn total(&self) -> usize {
         self.choices.len()
-    }
-
-    /// Passes `key` to the picker in `slot`, if one is open, and closes it
-    /// once it is done. `None` if none was open; else what was chosen, if
-    /// anything.
-    pub fn take_key(slot: &mut Option<Self>, key: KeyEvent) -> Option<Option<T>> {
-        let chosen = match slot.as_mut()?.on_key(key) {
-            Outcome::Open => return Some(None),
-            Outcome::Closed => None,
-            Outcome::Chosen(value) => Some(value),
-        };
-        *slot = None;
-        Some(chosen)
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Outcome<T> {
@@ -147,6 +139,37 @@ impl<T: Clone + PartialEq> Picker<T> {
             })
             .collect();
         self.selected = 0;
+    }
+}
+
+impl Picker<Choose> {
+    fn showing(pick: &Pick, filter: &str) -> Self {
+        let choices = pick
+            .choices
+            .iter()
+            .map(|c| Choice::new(c.value.clone(), &c.label, &c.detail))
+            .collect();
+        let mut picker = Self::new(pick.title, choices, pick.current.as_ref()).with_filter(filter);
+        picker.loading = pick.loading;
+        picker.shows = (pick.id, pick.revision);
+        picker
+    }
+
+    /// Makes the picker in `slot` show `pick`: a new one as it opens, the
+    /// same one, its filter kept, as its choices change.
+    pub fn sync(slot: &mut Option<Self>, pick: Option<&Pick>) {
+        let Some(pick) = pick else {
+            *slot = None;
+            return;
+        };
+        match slot {
+            Some(shown) if shown.shows == (pick.id, pick.revision) => {}
+            Some(shown) if shown.shows.0 == pick.id => {
+                let filter = std::mem::take(&mut shown.filter);
+                *slot = Some(Self::showing(pick, &filter));
+            }
+            _ => *slot = Some(Self::showing(pick, &pick.filter)),
+        }
     }
 }
 
