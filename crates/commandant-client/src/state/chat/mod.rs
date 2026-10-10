@@ -8,7 +8,7 @@ use commandant_common::or;
 use commandant_proto::task_event::Event as TaskEvent;
 use commandant_proto::*;
 
-use super::{ChatId, Effect, Outcome, Pick, cycle};
+use super::{Ask, ChatId, Effect, Outcome, cycle};
 
 mod commands;
 mod events;
@@ -23,7 +23,7 @@ pub(in crate::state) use self::commands::AppCommand;
 pub use self::commands::{COMMANDS, KEYS};
 pub use self::format::{count, dollars, elapsed};
 use self::menus::Menu;
-pub use self::sign_in::Auth;
+use self::sign_in::SigningIn;
 
 /// Sent with every prompt; `session_id` fills in after the first reply.
 #[derive(Clone, Default)]
@@ -124,21 +124,22 @@ pub struct Chat {
     pub fetching_options: bool,
     /// Waiting for a resumed session's earlier turns.
     pub loading_history: bool,
-    /// The node's model providers, as last listed; the filter to open their
-    /// picker with while they're listed.
+    /// The node's model providers, as last listed; the filter to choose
+    /// from them with while they're listed.
     providers: Vec<ModelProvider>,
     pub listing_providers: Option<String>,
-    pub auth: Option<Auth>,
+    /// The node at a step of signing in.
+    signing_in: Option<SigningIn>,
     /// The repository the node is cloning for this chat.
     pub preparing: Option<String>,
     /// Waiting for the node's projects, to browse them.
     pub listing_projects: bool,
-    /// A picker asked for before the options came, to open once they do.
+    /// A menu asked for before the options came, to open once they do.
     pending: Option<(Menu, String)>,
     /// The model that last replied, which tells what "default" means.
     pub used_model: String,
-    /// What to choose from, when asked.
-    pub pick: Option<Pick>,
+    /// What the chat asks the person, if anything.
+    pub(in crate::state) ask: Option<Ask>,
     /// What was sent, oldest first, to bring back.
     sent: Vec<String>,
     /// What the session has cost so far, in US dollars.
@@ -165,7 +166,7 @@ impl Chat {
         }
     }
 
-    /// What it is called in its tab and the session picker.
+    /// What it is called in its tab and among the sessions.
     pub fn title(&self) -> String {
         or(&self.title, "new session").to_string()
     }
@@ -227,10 +228,26 @@ impl Chat {
         &self.sent
     }
 
-    /// Whether the next line submitted is an API key or code, kept out of
-    /// the thread.
-    pub fn awaiting_secret(&self) -> bool {
-        matches!(self.auth, Some(Auth::Key { .. } | Auth::Code { .. }))
+    /// What the chat asks the person, if anything.
+    pub fn ask(&self) -> Option<&Ask> {
+        self.ask.as_ref()
+    }
+
+    /// Whether the chat asks for a line, which its prompt is then for.
+    pub fn entering(&self) -> bool {
+        matches!(self.ask, Some(Ask::Enter { .. }))
+    }
+
+    /// Asks `ask` instead of what was asked; a line asked for is no
+    /// longer waited for, which is said.
+    fn put(&mut self, ask: impl Into<Ask>) {
+        self.dismiss();
+        self.ask = Some(ask.into());
+    }
+
+    /// What the node is doing to sign in, while it is at it.
+    pub fn signing_in(&self) -> Option<&str> {
+        self.signing_in.as_ref().map(|s| s.doing.as_str())
     }
 
     /// Whether the commands and MCP servers are still to come.

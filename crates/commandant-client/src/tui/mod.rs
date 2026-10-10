@@ -7,6 +7,7 @@
 
 mod app;
 mod chat;
+mod dialog;
 mod picker;
 mod text;
 mod ui;

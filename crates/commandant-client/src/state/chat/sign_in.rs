@@ -3,42 +3,53 @@
 use commandant_proto::*;
 
 use super::Chat;
-use crate::state::{Choice, Choose, Effect, Pick};
+use crate::state::{Ask, Choice, Choices, Choose, Effect, Outcome, Wanted};
 
-/// Where signing in to a provider has got to.
-pub enum Auth {
-    /// The next line submitted is the API key, which the front end masks.
-    Key { provider: String },
-    /// The next line submitted is the code the provider's page showed.
-    Code { provider: String, index: u32 },
-    /// The node is at it; `start` is set while it starts OAuth method `start`.
-    Waiting {
-        provider: String,
-        start: Option<u32>,
-        doing: String,
-    },
+/// A step of signing in to a provider the node is at.
+pub(super) struct SigningIn {
+    provider: String,
+    /// Set while it starts OAuth method `start`.
+    start: Option<u32>,
+    /// What it is doing, to show meanwhile.
+    pub(super) doing: String,
 }
 
 impl Chat {
     /// Sends the API key or code `text` holds, if one is asked for. It is
     /// kept out of the thread.
-    pub(super) fn send_secret(&mut self, text: &str) -> Option<Effect> {
-        let (provider, action) = match self.auth.take()? {
-            Auth::Key { provider } => (provider, auth_action::Action::ApiKey(text.into())),
-            Auth::Code { provider, index } => {
+    pub(in crate::state) fn enter(&mut self, text: &str) -> Outcome {
+        let text = text.trim();
+        if text.is_empty() || !self.entering() {
+            return Outcome::default();
+        }
+        let Some(Ask::Enter { wanted, .. }) = self.ask.take() else {
+            return Outcome::default();
+        };
+        let (provider, action) = match wanted {
+            Wanted::ApiKey { provider } => (provider, auth_action::Action::ApiKey(text.into())),
+            Wanted::Code { provider, index } => {
                 let finish = OauthFinish {
                     index,
                     code: text.into(),
                 };
                 (provider, auth_action::Action::OauthFinish(finish))
             }
-            waiting @ Auth::Waiting { .. } => {
-                self.auth = Some(waiting);
-                return None;
-            }
         };
         let doing = format!("signing in to {}…", self.provider_name(&provider));
-        Some(self.authenticate(provider, None, doing, action))
+        self.authenticate(provider, None, doing, action).into()
+    }
+
+    /// Asks for the API key to sign in to `provider` with.
+    pub(super) fn ask_for_key(&mut self, provider: String) {
+        let name = self.provider_name(&provider);
+        self.info(&format!(
+            "paste the API key for {name} and press Enter (Esc to cancel)"
+        ));
+        self.put(Ask::Enter {
+            label: format!("the API key for {name}"),
+            secret: true,
+            wanted: Wanted::ApiKey { provider },
+        });
     }
 
     /// Has the node do a step of signing in, and waits for it.
@@ -49,7 +60,7 @@ impl Chat {
         doing: String,
         action: auth_action::Action,
     ) -> Effect {
-        self.auth = Some(Auth::Waiting {
+        self.signing_in = Some(SigningIn {
             provider: provider.clone(),
             start,
             doing,
@@ -93,8 +104,8 @@ impl Chat {
                 Choice::new(Choose::Provider(p.id.clone()), &p.name, detail)
             })
             .collect();
-        let pick = Pick::new("Providers (Enter signs in or out)", choices, None);
-        self.pick = Some(pick.with_filter(filter));
+        let choices = Choices::new("Providers (Enter signs in or out)", choices, None);
+        self.put(choices.with_filter(filter));
     }
 
     /// The ways to sign in to `provider`, and out if it is signed in.
@@ -122,7 +133,7 @@ impl Chat {
                 detail,
             ));
         }
-        self.pick = Some(Pick::new("Sign in with", choices, None));
+        self.put(Choices::new("Sign in with", choices, None));
     }
 
     /// Takes in how a step of signing in went, which may call for the next.
@@ -131,12 +142,9 @@ impl Chat {
         result: Result<ProviderAuthResult, String>,
     ) -> Option<Effect> {
         // Esc'd meanwhile, or not this chat's.
-        let Some(Auth::Waiting {
+        let SigningIn {
             provider, start, ..
-        }) = self.auth.take()
-        else {
-            return None;
-        };
+        } = self.signing_in.take()?;
         let name = self.provider_name(&provider);
         let result = match result {
             Ok(result) => result,
@@ -156,7 +164,11 @@ impl Chat {
         self.info(&format!("open {}", result.url));
         if result.needs_code {
             self.info("then paste the code it shows here");
-            self.auth = Some(Auth::Code { provider, index });
+            self.put(Ask::Enter {
+                label: "the code the page shows".into(),
+                secret: false,
+                wanted: Wanted::Code { provider, index },
+            });
             return None;
         }
         // A redirect back to the node's loopback only works in a browser there.

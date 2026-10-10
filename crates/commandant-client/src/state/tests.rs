@@ -1,4 +1,4 @@
-use super::chat::{Role, Unseen};
+use super::chat::{Message, Role, Unseen};
 use super::fixtures::{bare, node, output, started};
 use super::*;
 
@@ -12,6 +12,11 @@ fn open(state: &mut State, node: &str) -> Outcome {
         node: node.into(),
         chat: None,
     })
+}
+
+/// What the app asks to choose from, if that is what it asks.
+fn choices(state: &State) -> Option<&Choices> {
+    state.ask(Scope::App).and_then(Ask::choices)
 }
 
 /// The chat an outcome goes to.
@@ -130,7 +135,7 @@ fn saved_sessions_are_resumed_from_the_picker() {
     ));
     let outcome = state.intent(Intent::Sessions(first));
     assert!(matches!(&outcome.effects[..], [Effect::FetchSessions(n)] if n == "n1"));
-    let pick = state.pick(Scope::App).expect("the sessions to pick from");
+    let pick = choices(&state).expect("the sessions to pick from");
     // New session, the open chat, the saved one.
     assert_eq!(pick.choices.len(), 3);
     assert_eq!(pick.current, Some(Choose::Chat(first)));
@@ -148,7 +153,7 @@ fn saved_sessions_are_resumed_from_the_picker() {
         panic!("resuming asks for the session's earlier messages");
     };
     assert_eq!((*asking, session_id.as_str()), (resumed, "ses_old"));
-    assert!(state.pick(Scope::App).is_none());
+    assert!(state.ask(Scope::App).is_none());
     assert!(state.busy(), "loading them shows a spinner");
 
     // What was said since resuming stays after them.
@@ -189,7 +194,7 @@ fn saved_sessions_are_resumed_from_the_picker() {
 
     // An open session isn't offered twice.
     state.intent(Intent::Sessions(resumed));
-    assert_eq!(state.pick(Scope::App).unwrap().choices.len(), 3);
+    assert_eq!(choices(&state).unwrap().choices.len(), 3);
 }
 
 #[test]
@@ -309,7 +314,7 @@ fn an_old_worker_without_an_agent_isnt_opened() {
     let mut state = State::new(vec![old], Settings::default());
     let outcome = open(&mut state, "n9");
     assert!(outcome.effects.is_empty() && outcome.go.is_none());
-    assert!(state.pick(Scope::App).is_none());
+    assert!(state.ask(Scope::App).is_none());
     assert!(
         state.notice.contains("can't start an agent"),
         "{}",
@@ -331,21 +336,21 @@ fn the_session_picker_keeps_up_with_the_node() {
     assert!(chat(&state, id).thread.is_empty());
 
     state.intent(Intent::Sessions(id));
-    let asked = state.pick(Scope::App).unwrap().clone();
+    let asked = choices(&state).unwrap().clone();
     assert!(asked.loading);
     state.update(Update::Sessions(
         "n1".into(),
         Ok(vec![saved("a"), saved("b")]),
     ));
     // The same picker, revised, done loading.
-    let listed = state.pick(Scope::App).unwrap().clone();
+    let listed = choices(&state).unwrap().clone();
     assert_eq!(listed.id, asked.id);
     assert_ne!(listed.revision, asked.revision);
     assert!(!listed.loading);
     assert_eq!(listed.choices.len(), 4);
     // Another node's sessions don't land in it.
     state.update(Update::Sessions("n2".into(), Ok(vec![saved("z")])));
-    assert_eq!(state.pick(Scope::App).unwrap().choices.len(), 4);
+    assert_eq!(choices(&state).unwrap().choices.len(), 4);
 
     state.update(Update::Sessions("n1".into(), Err("offline".into())));
     let last = &chat(&state, id).thread.last().unwrap().text;
@@ -387,7 +392,7 @@ fn a_node_is_asked_for_its_options_once_at_a_time() {
 fn a_node_without_an_agent_offers_to_start_one() {
     let mut state = State::new(vec![bare("n1")], Settings::default());
     assert!(open(&mut state, "n1").effects.is_empty());
-    let pick = state.pick(Scope::App).expect("a harness to choose");
+    let pick = choices(&state).expect("a harness to choose");
     let harness = Choose::Harness {
         node: "n1".into(),
         harness: "opencode".into(),
@@ -397,7 +402,7 @@ fn a_node_without_an_agent_offers_to_start_one() {
 
     // Backing out starts nothing.
     state.intent(Intent::Dismiss(Scope::App));
-    assert!(state.pick(Scope::App).is_none());
+    assert!(state.ask(Scope::App).is_none());
     assert!(state.starting.is_empty());
 
     open(&mut state, "n1");
@@ -412,7 +417,7 @@ fn a_node_without_an_agent_offers_to_start_one() {
     );
     // Asking again while it starts doesn't start another.
     assert!(open(&mut state, "n1").effects.is_empty());
-    assert!(state.pick(Scope::App).is_none());
+    assert!(state.ask(Scope::App).is_none());
     assert!(state.notice.contains("still starting"), "{}", state.notice);
 
     // Once it hosts it, the node is worth opening.
@@ -438,7 +443,7 @@ fn a_node_without_an_agent_offers_to_start_one() {
 fn a_harness_that_fails_to_start_is_reported() {
     let mut state = State::new(vec![bare("n1")], Settings::default());
     open(&mut state, "n1");
-    let harness = state.pick(Scope::App).unwrap().choices[0].value.clone();
+    let harness = choices(&state).unwrap().choices[0].value.clone();
     state.intent(Intent::Choose(Scope::App, harness));
     let failed = Update::HarnessStarted("n1".into(), Err("no curl on the node".into()));
     let outcome = state.update(failed);
@@ -562,7 +567,7 @@ fn a_node_that_lost_its_agent_offers_one_again_then_refreshes_its_chats() {
     };
     let outcome = state.intent(open_it.clone());
     assert!(outcome.go.is_none(), "not the stale chat");
-    let harness = state.pick(Scope::App).expect("the agent picker");
+    let harness = choices(&state).expect("the agent picker");
     let harness = harness.choices[0].value.clone();
     state.intent(Intent::Choose(Scope::App, harness));
 
@@ -611,4 +616,94 @@ fn a_node_that_may_answer_in_a_moment_is_asked_again_quietly() {
     another(&mut state, id);
     let refused = Update::Options("n1".into(), Err("node box-n1 runs no agent harness".into()));
     assert!(state.update(refused).effects.is_empty());
+}
+
+#[test]
+fn a_chat_asks_for_a_key_on_its_own_and_one_thing_at_a_time() {
+    let mut state = state();
+    let id = chat_on(&mut state, "n1");
+    let other = chat_on(&mut state, "n2");
+    let providers = || {
+        let method = AuthMethod {
+            label: "API key".into(),
+            ..Default::default()
+        };
+        let acme = ModelProvider {
+            id: "acme".into(),
+            name: "Acme".into(),
+            methods: vec![method],
+            ..Default::default()
+        };
+        Update::Chat(id, Message::Providers(Ok(vec![acme])))
+    };
+    state.intent(Intent::Submit(id, "/providers".into()));
+    state.update(providers());
+    assert!(state.ask(Scope::Chat(id)).and_then(Ask::choices).is_some());
+    state.intent(Intent::Choose(
+        Scope::Chat(id),
+        Choose::Provider("acme".into()),
+    ));
+    let key = Choose::SignIn {
+        provider: "acme".into(),
+        oauth: None,
+    };
+    state.intent(Intent::Choose(Scope::Chat(id), key.clone()));
+    assert!(state.ask(Scope::Chat(id)).is_some_and(Ask::secret));
+    assert!(
+        state.ask(Scope::Chat(other)).is_none(),
+        "only that chat asks"
+    );
+
+    // The app asks its own question alongside.
+    state.intent(Intent::Sessions(other));
+    assert!(choices(&state).is_some());
+    assert!(state.ask(Scope::Chat(id)).is_some_and(Ask::secret));
+    state.intent(Intent::Dismiss(Scope::App));
+
+    // Another question in the chat takes the key's place, and says so.
+    state.update(providers());
+    assert!(state.ask(Scope::Chat(id)).and_then(Ask::choices).is_some());
+    let said = &chat(&state, id).thread.last().unwrap().text;
+    assert_eq!(said, "not signed in");
+    let ignored = state.intent(Intent::Enter(Scope::Chat(id), "sk-secret".into()));
+    assert!(ignored.effects.is_empty());
+
+    state.intent(Intent::Choose(Scope::Chat(id), key));
+    let outcome = state.intent(Intent::Enter(Scope::Chat(id), "sk-secret".into()));
+    let [Effect::Authenticate { action, .. }] = &outcome.effects[..] else {
+        panic!("the key is sent");
+    };
+    let key = auth_action::Action::ApiKey("sk-secret".into());
+    assert_eq!(action.action, Some(key));
+    assert!(state.ask(Scope::Chat(id)).is_none());
+    let thread = &chat(&state, id).thread;
+    assert!(thread.iter().all(|e| !e.text.contains("sk-secret")));
+    assert!(state.busy(), "signing in shows a spinner");
+}
+
+#[test]
+fn a_confirmation_does_what_it_asked_once_said_yes() {
+    let mut state = state();
+    state.ask = Some(Ask::Confirm {
+        text: "Start opencode on box-n1?".into(),
+        yes: Choose::Harness {
+            node: "n1".into(),
+            harness: "opencode".into(),
+        },
+    });
+    let outcome = state.intent(Intent::Confirm(Scope::App));
+    assert!(matches!(
+        &outcome.effects[..],
+        [Effect::StartHarness { .. }]
+    ));
+    assert!(state.ask(Scope::App).is_none());
+    // Nothing asked, nothing done.
+    assert!(state.intent(Intent::Confirm(Scope::App)).effects.is_empty());
+
+    state.ask = Some(Ask::Show {
+        title: "Link".into(),
+        text: "commandant://…".into(),
+    });
+    state.intent(Intent::Dismiss(Scope::App));
+    assert!(state.ask(Scope::App).is_none());
 }

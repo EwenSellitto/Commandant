@@ -1,15 +1,15 @@
-//! A chat's pickers for its settings, the agent's commands and MCP
-//! servers, and what choosing from any of its pickers does.
+//! What a chat offers to choose from for its settings, the agent's
+//! commands and MCP servers, and what choosing any of its choices does.
 
 use std::sync::Arc;
 
 use commandant_proto::*;
 
-use super::{Auth, Chat};
-use crate::state::{Choice, Choose, Edit, Effect, Outcome, Pick};
+use super::Chat;
+use crate::state::{Ask, Choice, Choices, Choose, Edit, Effect, Outcome};
 use commandant_common::or;
 
-/// What a chat's picker chooses from.
+/// What a chat offers to choose from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Menu {
     Agent,
@@ -34,7 +34,7 @@ impl Menu {
 }
 
 impl Chat {
-    pub(super) fn open_picker(&mut self, menu: Menu, filter: &str) -> Option<Effect> {
+    pub(super) fn open_menu(&mut self, menu: Menu, filter: &str) -> Option<Effect> {
         let Some(options) = self.options.clone() else {
             // It opens when they come.
             self.pending = Some((menu, filter.to_string()));
@@ -126,7 +126,8 @@ impl Chat {
                 (choices, None)
             }
         };
-        self.pick = Some(Pick::new(menu.title(), choices, current).with_filter(filter));
+        let choices = Choices::new(menu.title(), choices, current).with_filter(filter);
+        self.put(choices);
         None
     }
 
@@ -148,9 +149,9 @@ impl Chat {
         }
     }
 
-    /// Does what was chosen from the chat's picker, which closes.
+    /// Does what was chosen from the chat's question, which closes.
     pub(in crate::state) fn choose(&mut self, choice: Choose) -> Outcome {
-        self.pick = None;
+        self.ask = None;
         match choice {
             Choose::Agent(agent) => self.settings.agent = agent,
             Choose::Effort(effort) => self.settings.effort = effort,
@@ -177,13 +178,7 @@ impl Chat {
             Choose::SignIn {
                 provider,
                 oauth: None,
-            } => {
-                let name = self.provider_name(&provider);
-                self.info(&format!(
-                    "paste the API key for {name} and press Enter (Esc to cancel)"
-                ));
-                self.auth = Some(Auth::Key { provider });
-            }
+            } => self.ask_for_key(provider),
             Choose::SignIn {
                 provider,
                 oauth: Some(index),
@@ -227,14 +222,11 @@ impl Chat {
         Outcome::default()
     }
 
-    /// Closes the chat's picker, or stops waiting for a secret.
-    pub(in crate::state) fn dismiss(&mut self) -> Outcome {
-        if self.pick.take().is_some() || !self.awaiting_secret() {
-            return Outcome::default();
+    /// Leaves the chat's question unanswered.
+    pub(in crate::state) fn dismiss(&mut self) {
+        if let Some(Ask::Enter { .. }) = self.ask.take() {
+            self.info("not signed in");
         }
-        self.auth = None;
-        self.info("not signed in");
-        self.cleared(None)
     }
 
     /// How switching an MCP server went, which this chat asked for.

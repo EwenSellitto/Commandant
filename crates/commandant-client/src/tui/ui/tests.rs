@@ -7,7 +7,7 @@ use ratatui::style::Modifier;
 use super::*;
 use crate::state::Update;
 use crate::state::fixtures::{bare, output};
-use crate::tui::app::tests::app;
+use crate::tui::app::tests::{app, ask_for_a_key};
 use commandant_proto::OutputStream;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -204,9 +204,9 @@ fn completions_float_over_the_prompt() {
 fn an_api_key_is_masked_while_typed() {
     let mut app = app();
     app.on_key(KeyEvent::from(KeyCode::Enter));
-    app.state.chats[0].auth = Some(Auth::Key {
-        provider: "acme".into(),
-    });
+    ask_for_a_key(&mut app);
+    let buf = render(&mut app);
+    find(&buf, "Paste the API key for Acme (hidden)");
     for c in "sk-abc".chars() {
         app.on_key(KeyEvent::from(KeyCode::Char(c)));
     }
@@ -228,4 +228,31 @@ fn the_harness_picker_floats_over_the_nodes() {
     let buf = render(&mut app);
     assert!(absent(&buf, "Start an agent on this node"));
     find(&buf, "starting its agent…");
+}
+
+#[test]
+fn a_question_to_confirm_or_read_floats_over_the_rest() {
+    let mut app = app();
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    let id = app.state.chats[0].id;
+    let show = Ask::Show {
+        title: "Link".into(),
+        text: "commandant://abc".into(),
+    };
+    app.state.set_ask(Scope::Chat(id), show);
+    let buf = render(&mut app);
+    find(&buf, "Link");
+    find(&buf, "commandant://abc");
+    find(&buf, "esc close");
+
+    app.on_key(KeyEvent::from(KeyCode::Esc));
+    let confirm = Ask::Confirm {
+        text: "Remove box-n1?".into(),
+        yes: crate::state::Choose::NewSession,
+    };
+    app.state.set_ask(Scope::App, confirm);
+    let buf = render(&mut app);
+    assert!(absent(&buf, "commandant://abc"));
+    find(&buf, "Remove box-n1?");
+    find(&buf, "enter yes");
 }

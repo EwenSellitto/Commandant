@@ -1,8 +1,11 @@
-//! The floating window for choosing from a [`Pick`] narrowed down by typing.
+//! The floating window for answering an [`Ask::Choose`] narrowed down by
+//! typing.
+//!
+//! [`Ask::Choose`]: crate::state::Ask::Choose
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::state::{Choice, Choose, Pick};
+use crate::state::{Choice, Choices, Choose};
 
 /// Rows moved by PageUp / PageDown.
 const PAGE: usize = 10;
@@ -16,7 +19,7 @@ pub enum Outcome {
 
 pub struct Picker {
     /// What it offers, as the state last had it.
-    pick: Pick,
+    pick: Choices,
     pub filter: String,
     /// Indexes into the choices that match the filter.
     shown: Vec<usize>,
@@ -27,7 +30,7 @@ pub struct Picker {
 impl Picker {
     /// Shows `pick` narrowed down by `filter`, as if it had been typed;
     /// unfiltered, on the current choice.
-    fn new(pick: &Pick, filter: &str) -> Self {
+    fn new(pick: &Choices, filter: &str) -> Self {
         let choices = &pick.choices;
         let current = pick.current.as_ref();
         let selected = current
@@ -48,7 +51,7 @@ impl Picker {
 
     /// Makes the picker in `slot` show `pick`: a new one as it opens, the
     /// same one, its filter kept, as its choices change.
-    pub fn sync(slot: &mut Option<Self>, pick: Option<&Pick>) {
+    pub fn sync(slot: &mut Option<Self>, pick: Option<&Choices>) {
         let Some(pick) = pick else {
             *slot = None;
             return;
@@ -160,7 +163,7 @@ mod tests {
             model("openai/gpt-6", "GPT-6", "OpenAI"),
         ];
         let current = Some(Choose::Model("openai/gpt-6".into()));
-        let mut picker = Picker::new(&Pick::new("Model", choices, current), "");
+        let mut picker = Picker::new(&Choices::new("Model", choices, current), "");
         assert_eq!(picker.selected, 3);
 
         for c in "anth son".chars() {
@@ -190,7 +193,7 @@ mod tests {
     #[test]
     fn a_filter_given_up_front_narrows_like_typing() {
         let choices = vec![model("1", "one", "first"), model("2", "two", "second")];
-        let pick = Pick::new("Numbers", choices, None).with_filter("SEC");
+        let pick = Choices::new("Numbers", choices, None).with_filter("SEC");
         let mut slot = None;
         Picker::sync(&mut slot, Some(&pick));
         let picker = slot.as_ref().unwrap();
@@ -199,18 +202,18 @@ mod tests {
 
     #[test]
     fn a_picker_follows_its_pick() {
-        let pick = Pick::new("Numbers", vec![model("1", "one", "")], None);
+        let pick = Choices::new("Numbers", vec![model("1", "one", "")], None);
         let mut slot = None;
         Picker::sync(&mut slot, Some(&pick));
         slot.as_mut().unwrap().filter = "on".into();
 
         // Revised, it keeps what was typed; another one starts afresh.
-        let mut revised = Pick::new("Numbers", vec![model("2", "two", "")], None);
+        let mut revised = Choices::new("Numbers", vec![model("2", "two", "")], None);
         revised.id = pick.id;
         Picker::sync(&mut slot, Some(&revised));
         assert_eq!(slot.as_ref().unwrap().filter, "on");
         assert_eq!(slot.as_ref().unwrap().total(), 1);
-        Picker::sync(&mut slot, Some(&Pick::new("Other", Vec::new(), None)));
+        Picker::sync(&mut slot, Some(&Choices::new("Other", Vec::new(), None)));
         assert_eq!(slot.as_ref().unwrap().filter, "");
         Picker::sync(&mut slot, None);
         assert!(slot.is_none());

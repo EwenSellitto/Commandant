@@ -3,7 +3,7 @@
 use commandant_proto::*;
 
 use super::Chat;
-use crate::state::{Choice, Choose, Effect, Pick};
+use crate::state::{Choice, Choices, Choose, Effect};
 
 impl Chat {
     /// `/project`: browse the node's projects, or with a repository (or a
@@ -61,11 +61,8 @@ impl Chat {
                 choices.push(Choice::new(Choose::Join(copy), label, detail));
             }
         }
-        self.pick = Some(Pick::new(
-            "Projects (join a copy, or make a new one)",
-            choices,
-            None,
-        ));
+        let title = "Projects (join a copy, or make a new one)";
+        self.put(Choices::new(title, choices, None));
     }
 }
 

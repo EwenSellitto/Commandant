@@ -3,6 +3,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use super::dialog;
 use super::picker::{Outcome as Picked, Picker};
 use crate::state::chat::Chat;
 use crate::state::{Edit, Intent, Scope};
@@ -61,6 +62,9 @@ impl ChatView {
             self.picker = None;
             return Some(intent);
         }
+        if let Some(ask) = chat.ask().filter(|a| dialog::shown(a)) {
+            return dialog::on_key(ask, Scope::Chat(id), key);
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let suggestions = self.suggestions(chat);
         let completing = !suggestions.is_empty();
@@ -95,7 +99,9 @@ impl ChatView {
             KeyCode::BackTab => return Some(Intent::CycleAgent(id, -1)),
             KeyCode::Char(c) => self.input.insert(c),
             KeyCode::Enter => return self.submit(chat),
-            KeyCode::Esc if chat.awaiting_secret() => {
+            // Typing what is asked for, which goes with the line.
+            KeyCode::Esc if chat.entering() => {
+                self.input.clear();
                 return Some(Intent::Dismiss(Scope::Chat(id)));
             }
             KeyCode::Esc => return Some(Intent::Cancel(id)),
@@ -112,16 +118,19 @@ impl ChatView {
         None
     }
 
-    /// Hands over what is typed; the chat says whether it takes it.
+    /// Hands over what is typed: the line asked for, which is taken at
+    /// once, else a prompt the chat says whether it takes.
     fn submit(&mut self, chat: &Chat) -> Option<Intent> {
-        let text = self.input.text.trim();
+        let text = self.input.text.trim().to_string();
         if text.is_empty() {
             return None;
         }
-        if !chat.awaiting_secret() {
-            self.recalled = None;
+        if chat.entering() {
+            self.input.clear();
+            return Some(Intent::Enter(Scope::Chat(chat.id), text));
         }
-        Some(Intent::Submit(chat.id, text.to_string()))
+        self.recalled = None;
+        Some(Intent::Submit(chat.id, text))
     }
 
     /// Fills in the highlighted completion, ready for its arguments.
