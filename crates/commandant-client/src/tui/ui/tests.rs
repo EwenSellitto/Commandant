@@ -1,15 +1,14 @@
+use commandant_client_core::state::fixtures::{bare, output};
+use commandant_client_core::{Core, Scope, Update};
+use commandant_proto::OutputStream;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-
 use ratatui::style::Modifier;
 
 use super::*;
-use crate::state::fixtures::{bare, output};
-use crate::state::{Scope, Update};
-use crate::tui::app::tests::{app, ask_for_a_key};
-use commandant_proto::OutputStream;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::tui::app::tests::{app, ask_for_a_key, press};
 
 /// Where `text` isn't.
 fn absent(buf: &Buffer, text: &str) -> bool {
@@ -43,7 +42,7 @@ fn find(buf: &Buffer, text: &str) -> (u16, u16) {
 fn secondary_text_stays_readable() {
     let mut app = app();
     app.on_key(KeyEvent::from(KeyCode::Enter));
-    let id = app.state.chats[0].id;
+    let id = app.core.chats()[0].id;
     app.on_update(Update::Chat(
         id,
         output(OutputStream::Reasoning, b"pondering"),
@@ -108,11 +107,12 @@ fn many_tabs_scroll_round_the_shown_one() {
     assert_eq!(find(&buf, "‹").1, row);
     assert_eq!(find(&buf, "›").1, row);
 
-    // A long title is cut short rather than pushing the others out.
-    let long = "a".repeat(80);
-    let id = app.chat().unwrap().id;
-    let chat = app.state.chats.iter_mut().find(|c| c.id == id).unwrap();
-    chat.title = long;
+    // A long title (its first prompt) is cut short rather than pushing the
+    // others out.
+    for _ in 0..80 {
+        app.on_key(KeyEvent::from(KeyCode::Char('a')));
+    }
+    app.on_key(KeyEvent::from(KeyCode::Enter));
     let buf = render(&mut app);
     let (x, _) = find(&buf, " 4 aaaa");
     let row_text: String = (0..buf.area.width)
@@ -136,7 +136,7 @@ fn the_status_line_says_what_is_loading() {
     app.on_update(Update::Options("n1".into(), Ok(options)));
     let buf = render(&mut app);
     find(&buf, "connecting MCP servers");
-    assert!(app.state.busy(), "its spinner turns");
+    assert!(app.core.busy(), "its spinner turns");
 
     let mcp = |name: &str, status: &str| commandant_proto::McpServer {
         name: name.into(),
@@ -150,7 +150,7 @@ fn the_status_line_says_what_is_loading() {
     app.on_update(Update::Options("n1".into(), Ok(options)));
     let buf = render(&mut app);
     find(&buf, "mcp 1/2 connected · 1 failed");
-    assert!(!app.state.busy());
+    assert!(!app.core.busy());
 
     app.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
     let buf = render(&mut app);
@@ -219,7 +219,7 @@ fn an_api_key_is_masked_while_typed() {
 fn a_list_coming_while_a_key_is_typed_leaves_it_hidden() {
     let mut app = app();
     app.on_key(KeyEvent::from(KeyCode::Enter));
-    let id = app.state.chats[0].id;
+    let id = app.core.chats()[0].id;
     // Asked for before the key, the projects come while it is typed.
     for c in "/project".chars() {
         app.on_key(KeyEvent::from(KeyCode::Char(c)));
@@ -233,7 +233,7 @@ fn a_list_coming_while_a_key_is_typed_leaves_it_hidden() {
         name: "app".into(),
         ..Default::default()
     };
-    let listed = crate::state::chat::Message::Projects(Ok(vec![project]));
+    let listed = commandant_client_core::chat::Message::Projects(Ok(vec![project]));
     app.on_update(Update::Chat(id, listed));
     let buf = render(&mut app);
     find(&buf, "••••••");
@@ -241,16 +241,16 @@ fn a_list_coming_while_a_key_is_typed_leaves_it_hidden() {
     assert!(absent(&buf, "Projects"), "it waits");
 
     // Enter still sends it as the key.
-    let effects = app.on_key(KeyEvent::from(KeyCode::Enter));
+    let effects = press(&mut app, KeyEvent::from(KeyCode::Enter));
     assert!(matches!(
         &effects[..],
-        [crate::state::Effect::Authenticate { .. }]
+        [commandant_client_core::Effect::Authenticate { .. }]
     ));
 }
 
 #[test]
 fn the_harness_picker_floats_over_the_nodes() {
-    let mut app = App::new(vec![bare("n1")], Default::default());
+    let mut app = App::new(Core::offline(vec![bare("n1")], Default::default()));
     let buf = render(&mut app);
     find(&buf, "enter to start an agent");
     app.on_key(KeyEvent::from(KeyCode::Enter));
@@ -267,12 +267,12 @@ fn the_harness_picker_floats_over_the_nodes() {
 fn a_question_to_confirm_or_read_floats_over_the_rest() {
     let mut app = app();
     app.on_key(KeyEvent::from(KeyCode::Enter));
-    let id = app.state.chats[0].id;
+    let id = app.core.chats()[0].id;
     let show = Ask::Show {
         title: "Link".into(),
         text: "commandant://abc".into(),
     };
-    app.state.set_ask(Scope::Chat(id), show);
+    app.core.set_ask(Scope::Chat(id), show);
     let buf = render(&mut app);
     find(&buf, "Link");
     find(&buf, "commandant://abc");
@@ -281,9 +281,9 @@ fn a_question_to_confirm_or_read_floats_over_the_rest() {
     app.on_key(KeyEvent::from(KeyCode::Esc));
     let confirm = Ask::Confirm {
         text: "Remove box-n1?".into(),
-        yes: crate::state::Choose::NewSession,
+        yes: commandant_client_core::Choose::NewSession,
     };
-    app.state.set_ask(Scope::App, confirm);
+    app.core.set_ask(Scope::App, confirm);
     let buf = render(&mut app);
     assert!(absent(&buf, "commandant://abc"));
     find(&buf, "Remove box-n1?");

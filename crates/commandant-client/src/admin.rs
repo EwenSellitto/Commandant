@@ -3,13 +3,13 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use commandant_client_core::config::{self, Client, FileConfig};
 use commandant_common::link::Link;
 use commandant_common::time::ago;
 use commandant_proto::*;
 use unicode_width::UnicodeWidthStr;
 
 use crate::cli::LoginArgs;
-use crate::config::{self, Client, FileConfig};
 
 pub async fn login(args: LoginArgs) -> Result<()> {
     let client = match (args.target.parse::<Link>(), args.admin_token) {

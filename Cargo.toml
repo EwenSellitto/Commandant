@@ -10,6 +10,7 @@ edition = "2024"
 rust-version = "1.89"
 
 [workspace.dependencies]
+commandant-client-core = { path = "crates/commandant-client-core" }
 commandant-common = { path = "crates/commandant-common" }
 commandant-proto = { path = "crates/commandant-proto" }
 commandant-orchestrator = { path = "crates/commandant-orchestrator" }

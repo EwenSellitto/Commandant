@@ -1,11 +1,10 @@
 //! The floating window for answering an [`Ask::Choose`] narrowed down by
 //! typing.
 //!
-//! [`Ask::Choose`]: crate::state::Ask::Choose
+//! [`Ask::Choose`]: commandant_client_core::Ask::Choose
 
+use commandant_client_core::{Choice, Choices, Intent, Scope};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-use crate::state::{Choice, Choices, Intent, Scope};
 
 /// Rows moved by PageUp / PageDown.
 const PAGE: usize = 10;
@@ -130,7 +129,7 @@ impl Picker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::Choose;
+    use commandant_client_core::Choose;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::from(code)

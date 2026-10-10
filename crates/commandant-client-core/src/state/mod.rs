@@ -1,21 +1,23 @@
 //! What a client knows and does, apart from how it is shown: the nodes, and
 //! every chat open on them. Chats on any node run side by side.
 //!
-//! A front end sends [`Intent`]s and the background results it gets back as
-//! [`Update`]s; both answer with an [`Outcome`]: the calls to make, maybe
-//! where to go next, and what to do to a chat's prompt. Which screen is
-//! shown, typing and scrolling stay with the front end.
+//! [`Intent`]s and the background results that come back as [`Update`]s
+//! both answer with an [`Outcome`]: the calls to make, maybe where to go
+//! next, and what to do to a chat's prompt. The [`Core`](crate::Core) makes
+//! the calls. Which screen is shown, typing and scrolling stay with the
+//! front end.
 
 mod ask;
 pub mod chat;
-#[cfg(test)]
-pub(crate) mod fixtures;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixtures;
 mod intent;
 #[cfg(test)]
 mod tests;
 
 pub use self::ask::{Ask, Choice, Choices, Choose, Wanted};
-pub use self::intent::{Edit, Effect, Failure, Go, Intent, Outcome, Scope, Update};
+pub(crate) use self::intent::Outcome;
+pub use self::intent::{Edit, Effect, Failure, Go, Intent, Scope, Update};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -37,7 +39,7 @@ const SESSIONS: &str = "Sessions on this node";
 const OPTIONS_RETRIES: u32 = 2;
 
 #[derive(Default)]
-pub struct State {
+pub(crate) struct State {
     pub nodes: Vec<NodeInfo>,
     /// Every open chat, on every node, oldest first.
     pub chats: Vec<Chat>,
@@ -93,8 +95,8 @@ impl State {
     }
 
     /// Asks `ask` in `scope`, as the state will once it has a reason to.
-    #[cfg(test)]
-    pub(crate) fn set_ask(&mut self, scope: Scope, ask: Ask) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_ask(&mut self, scope: Scope, ask: Ask) {
         match scope {
             Scope::App => self.ask = Some(ask),
             Scope::Chat(id) => {
@@ -131,8 +133,16 @@ impl State {
         self.chats.iter().filter_map(Chat::running_task).collect()
     }
 
-    /// Opens a chat on `node` with `settings`: the first shown on start.
-    pub fn open_with(&mut self, node: NodeInfo, settings: Settings) -> Outcome {
+    /// Opens a new chat on `node` on the agent's session `session_id`, or a
+    /// new one if empty.
+    fn open_session(&mut self, node: &str, session_id: String) -> Outcome {
+        let Some(node) = self.node(node).cloned() else {
+            return Outcome::default();
+        };
+        let settings = Settings {
+            session_id,
+            ..self.defaults.clone()
+        };
         let fetch = Outcome::from(Effect::FetchSessions(node.id.clone()));
         fetch.and(self.new_chat(node, settings))
     }
@@ -140,6 +150,9 @@ impl State {
     pub fn intent(&mut self, intent: Intent) -> Outcome {
         match intent {
             Intent::Open { node, chat } => self.open(&node, chat),
+            Intent::OpenSession { node, session } => {
+                self.open_session(&node, session.unwrap_or_default())
+            }
             Intent::NewChat(id) => self.another_chat(id),
             Intent::Sessions(id) => {
                 let Some(chat) = self.chat(id) else {

@@ -316,17 +316,29 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "commandant-client-core",
  "commandant-common",
  "commandant-proto",
  "crossterm",
  "ratatui",
- "serde",
  "tokio",
  "tokio-stream",
- "toml",
  "tonic",
  "tracing-subscriber",
  "unicode-width",
+]
+
+[[package]]
+name = "commandant-client-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "commandant-common",
+ "commandant-proto",
+ "serde",
+ "tokio",
+ "toml",
+ "tonic",
 ]
 
 [[package]]
@@ -380,6 +392,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "commandant-client-core",
  "commandant-common",
  "commandant-orchestrator",
  "commandant-proto",

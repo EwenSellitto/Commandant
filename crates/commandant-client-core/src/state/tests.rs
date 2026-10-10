@@ -91,6 +91,25 @@ fn a_node_opens_on_its_chat_or_a_new_one() {
 }
 
 #[test]
+fn a_front_end_starts_on_a_new_chat_on_the_session_asked_for() {
+    let mut state = state();
+    let open = |state: &mut State, session: Option<&str>| {
+        state.intent(Intent::OpenSession {
+            node: "n2".into(),
+            session: session.map(Into::into),
+        })
+    };
+    let first = shown(&open(&mut state, Some("ses_a")));
+    assert_eq!(chat(&state, first).settings.session_id, "ses_a");
+    // Each time, beside the chats already open.
+    let second = shown(&open(&mut state, None));
+    assert_ne!(first, second);
+    assert_eq!(chat(&state, second).settings.session_id, "");
+    assert!(open(&mut state, Some("ses_a")).go.is_some());
+    assert_eq!(state.chats.len(), 3);
+}
+
+#[test]
 fn sessions_on_a_node_run_side_by_side() {
     let mut state = state();
     let first = chat_on(&mut state, "n1");
@@ -277,7 +296,7 @@ fn cancelling_before_a_background_task_starts_still_cancels_it() {
     // Even if another chat is shown when the task starts.
     another(&mut state, id);
     let outcome = state.update(Update::Chat(id, started("t1")));
-    assert!(matches!(&outcome.effects[..], [Effect::Cancel(t)] if t == "t1"));
+    assert!(matches!(&outcome.effects[..], [Effect::Cancel(_, t)] if t == "t1"));
 }
 
 #[test]

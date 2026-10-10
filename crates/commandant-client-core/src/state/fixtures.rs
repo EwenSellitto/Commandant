@@ -1,4 +1,4 @@
-//! What the client's tests build their nodes and task events from.
+//! What the clients' tests build their nodes and task events from.
 
 use commandant_proto::task_event::Event as TaskEvent;
 use commandant_proto::*;

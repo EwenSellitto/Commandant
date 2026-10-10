@@ -988,6 +988,9 @@ mod fake_opencode;
 /// real one.
 #[cfg(unix)]
 mod agents {
+    use commandant_client_core::chat::Role;
+    use commandant_client_core::config::Client;
+    use commandant_client_core::{ChatId, Core, Go, Intent, Settings, Updates};
     use commandant_worker::HarnessKind;
 
     use super::fake_opencode::FakeOpencode;
@@ -995,6 +998,8 @@ mod agents {
 
     struct Cluster {
         client: ControlClient,
+        /// Where a client core finds the server.
+        connection: Client,
         fake: FakeOpencode,
         worker: JoinHandle<anyhow::Result<()>>,
         _stop: oneshot::Sender<()>,
@@ -1016,8 +1021,13 @@ mod agents {
         let mut client = connect_control(&addr, &admin_token).await.unwrap();
         let node = wait_for_node(&mut client, true).await;
         assert_eq!(node.harnesses, ["opencode"]);
+        let connection = Client {
+            addr,
+            token: admin_token,
+        };
         Cluster {
             client,
+            connection,
             fake,
             worker,
             _stop: stop,
@@ -1244,6 +1254,101 @@ mod agents {
         ok(&watched);
         assert_eq!(watched.stdout, replied.stdout);
         assert_eq!(watched.stdout.trim(), "echo: hold me");
+    }
+
+    /// A client core on the cluster's server, with a chat open on its node,
+    /// as a front end starts one.
+    async fn core_with_a_chat(connection: &Client) -> (Core, Updates, ChatId) {
+        let handle = tokio::runtime::Handle::current();
+        let (mut core, updates) = Core::start(connection, Settings::default(), handle)
+            .await
+            .unwrap();
+        let node = core.nodes()[0].id.clone();
+        let open = Intent::OpenSession {
+            node,
+            session: None,
+        };
+        let Some(Go::Chat(chat)) = core.act(open).go else {
+            panic!("the node should open on a new chat");
+        };
+        (core, updates, chat)
+    }
+
+    /// Hands the core what its calls report until `done`, as a front end
+    /// does, failing with `what` after `WAIT`.
+    async fn follow(
+        core: &mut Core,
+        updates: &mut Updates,
+        what: &str,
+        done: impl Fn(&Core) -> bool,
+    ) {
+        let followed = tokio::time::timeout(WAIT, async {
+            while !done(core) {
+                let update = updates.next().await.expect("the core stopped");
+                core.on_update(update);
+            }
+        });
+        followed.await.unwrap_or_else(|_| panic!("{what}"));
+    }
+
+    fn working(core: &Core, chat: ChatId) -> bool {
+        core.chat(chat).unwrap().activity.working()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_core_sends_a_prompt_and_shows_the_reply() {
+        let cluster = cluster().await;
+        let (mut core, mut updates, chat) = core_with_a_chat(&cluster.connection).await;
+        core.act(Intent::Submit(chat, "hello".into()));
+        assert!(working(&core, chat));
+        let idle = |core: &Core| !working(core, chat);
+        follow(&mut core, &mut updates, "the turn never ended", idle).await;
+
+        let chat = core.chat(chat).unwrap();
+        let said = |role| {
+            let entries = chat.thread.iter().filter(move |e| e.role == role);
+            entries.map(|e| e.text.trim()).collect::<Vec<_>>()
+        };
+        assert_eq!(said(Role::User), ["hello"]);
+        assert_eq!(said(Role::Agent), ["echo: hello"]);
+        assert!(said(Role::Error).is_empty());
+        // The next prompt continues the session.
+        assert!(!chat.settings.session_id.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_core_cancels_a_turn_and_its_tasks_when_shut_down() {
+        let cluster = cluster().await;
+        let (mut core, mut updates, chat) = core_with_a_chat(&cluster.connection).await;
+        core.act(Intent::Submit(chat, "hold it".into()));
+        let session = cluster.fake.wait_held(1).await.remove(0);
+        core.act(Intent::Cancel(chat));
+        let idle = |core: &Core| !working(core, chat);
+        follow(
+            &mut core,
+            &mut updates,
+            "the turn was never cancelled",
+            idle,
+        )
+        .await;
+        let thread = &core.chat(chat).unwrap().thread;
+        let cancelled = (Role::Info, "cancelled");
+        assert!(
+            thread
+                .iter()
+                .any(|e| (e.role, e.text.as_str()) == cancelled)
+        );
+        let aborted = format!("POST /session/{session}/abort");
+        assert!(cluster.fake.log().contains(&aborted));
+
+        // Shutting down cancels what is still running.
+        core.act(Intent::Submit(chat, "hold on".into()));
+        let session = cluster.fake.wait_held(1).await.remove(0);
+        let started = |core: &Core| core.chat(chat).unwrap().running_task().is_some();
+        follow(&mut core, &mut updates, "the turn never started", started).await;
+        core.shutdown().await;
+        let aborted = format!("POST /session/{session}/abort");
+        assert!(cluster.fake.log().contains(&aborted));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1843,6 +1948,7 @@ echo '{"type":"result","is_error":false,"total_cost_usd":1.5,"usage":{"input_tok
             worker,
             _stop,
             _tmp,
+            ..
         } = cluster().await;
         let (_, one) = start(&mut client, ask("hold one")).await;
         let (_, two) = start(&mut client, ask("hold two")).await;
