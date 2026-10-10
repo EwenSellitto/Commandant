@@ -4,14 +4,12 @@
 
 use std::collections::HashMap;
 
+use commandant_client_core::{Ask, Chat, ChatId, Core, Go, Intent, Next, Scope, Update, cycle};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::asks;
 use super::chat::ChatView;
 use super::picker::Picker;
-use commandant_client_core::{
-    Ask, Chat, ChatId, Core, Edit, Go, Intent, Next, Scope, Update, cycle,
-};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Screen {
@@ -156,11 +154,7 @@ impl App {
         };
         let chat = self.last.get(&node.id).copied();
         let node = node.id.clone();
-        self.act(Intent::Open {
-            node,
-            chat,
-            session: None,
-        });
+        self.act(Intent::Open { node, chat });
     }
 
     /// Shows the next (or previous) chat on the same node.
@@ -198,14 +192,13 @@ impl App {
 
     /// Does the terminal's part of what the core says comes next.
     fn apply(&mut self, next: Next) {
-        let Next { go, prompt } = next;
+        let Next { go, prompt, sent } = next;
         if let Some((id, edit)) = prompt {
-            let view = self.view(id);
-            // The line was taken: back to the bottom of its thread.
-            if edit == Edit::Clear {
-                view.scroll = 0;
-            }
-            view.edit(edit);
+            self.view(id).edit(edit);
+        }
+        // A prompt sent: back to the bottom of its thread.
+        if let Some(id) = sent {
+            self.view(id).scroll = 0;
         }
         match go {
             Some(Go::Chat(id)) => self.show(id),
@@ -664,6 +657,19 @@ pub(crate) mod tests {
         assert_eq!(input(&mut app), "/agen");
         app.on_key(key(KeyCode::Up));
         assert_eq!(input(&mut app), "/agen");
+    }
+
+    #[test]
+    fn only_a_prompt_sent_scrolls_back_to_the_bottom() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Enter));
+        let scroll = |app: &mut App| app.shown().unwrap().1.scroll;
+        app.shown().unwrap().1.scroll = 5;
+        type_text(&mut app, "/help");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(scroll(&mut app), 5, "a command keeps the place read");
+        send(&mut app, "hi");
+        assert_eq!(scroll(&mut app), 0);
     }
 
     #[test]

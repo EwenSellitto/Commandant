@@ -134,7 +134,7 @@ impl State {
     }
 
     /// Opens a new chat on `node` on the agent's session `session_id`, or a
-    /// new one if empty, whatever state the node is in.
+    /// new one if empty.
     fn open_session(&mut self, node: &str, session_id: String) -> Outcome {
         let Some(node) = self.node(node).cloned() else {
             return Outcome::default();
@@ -149,12 +149,10 @@ impl State {
 
     pub fn intent(&mut self, intent: Intent) -> Outcome {
         match intent {
-            Intent::Open {
-                node,
-                session: Some(session_id),
-                ..
-            } => self.open_session(&node, session_id),
-            Intent::Open { node, chat, .. } => self.open(&node, chat),
+            Intent::Open { node, chat } => self.open(&node, chat),
+            Intent::OpenSession { node, session } => {
+                self.open_session(&node, session.unwrap_or_default())
+            }
             Intent::NewChat(id) => self.another_chat(id),
             Intent::Sessions(id) => {
                 let Some(chat) = self.chat(id) else {

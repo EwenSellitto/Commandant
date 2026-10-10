@@ -8,6 +8,8 @@ use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
+use commandant_client_core::chat::{self, Activity, Chat, Role, Unseen};
+use commandant_client_core::{Ask, ChatId};
 use commandant_common::or;
 
 use super::app::{App, Screen};
@@ -21,8 +23,6 @@ mod tests;
 
 use self::lists::{draw_dialog, draw_picker, draw_suggestions};
 use self::nodes::draw_nodes;
-use commandant_client_core::chat::{self, Activity, Chat, Role, Unseen};
-use commandant_client_core::{Ask, ChatId};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// The prompt's slab.

@@ -13,11 +13,11 @@ use super::{ChatId, Choose};
 pub enum Intent {
     /// Show one of a node's chats: `chat`, the one the front end last
     /// showed, if it is still open, else its newest, else a new one.
-    Open {
+    Open { node: String, chat: Option<ChatId> },
+    /// A new chat on a node, whatever state it is in, on one of its agent's
+    /// sessions or else a new one: what a front end starts on.
+    OpenSession {
         node: String,
-        chat: Option<ChatId>,
-        /// Rather, a new chat on this session of the agent's, or on a new
-        /// one if empty: what a front end is started on.
         session: Option<String>,
     },
     /// Another chat on the same node, with the same settings.

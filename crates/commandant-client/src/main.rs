@@ -5,10 +5,9 @@ mod tui;
 
 use anyhow::Result;
 use clap::Parser;
-use tracing_subscriber::EnvFilter;
-
 use commandant_client_core::config::{self, Client};
 use tokio::runtime::{self, Handle};
+use tracing_subscriber::EnvFilter;
 
 use crate::cli::{Cli, ClientArgs, Command, NodeCommand, TaskCommand, TokenCommand};
 

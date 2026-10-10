@@ -1,5 +1,6 @@
 //! The node list: what each node runs, and how many of its chats are open.
 
+use commandant_client_core::lacks_agent;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Style, Stylize};
@@ -8,7 +9,6 @@ use ratatui::widgets::{List, ListItem, ListState};
 
 use super::{MUTED, SELECTED, dotted, facts, hints, spinner, status_dot};
 use crate::tui::app::App;
-use commandant_client_core::lacks_agent;
 
 /// The node list: what each runs, and how many of its chats are open here.
 pub(super) fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {

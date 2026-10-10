@@ -999,7 +999,7 @@ mod agents {
     struct Cluster {
         client: ControlClient,
         /// Where a client core finds the server.
-        link: Client,
+        connection: Client,
         fake: FakeOpencode,
         worker: JoinHandle<anyhow::Result<()>>,
         _stop: oneshot::Sender<()>,
@@ -1021,13 +1021,13 @@ mod agents {
         let mut client = connect_control(&addr, &admin_token).await.unwrap();
         let node = wait_for_node(&mut client, true).await;
         assert_eq!(node.harnesses, ["opencode"]);
-        let link = Client {
+        let connection = Client {
             addr,
             token: admin_token,
         };
         Cluster {
             client,
-            link,
+            connection,
             fake,
             worker,
             _stop: stop,
@@ -1258,15 +1258,14 @@ mod agents {
 
     /// A client core on the cluster's server, with a chat open on its node,
     /// as a front end starts one.
-    async fn core_with_a_chat(link: &Client) -> (Core, Updates, ChatId) {
+    async fn core_with_a_chat(connection: &Client) -> (Core, Updates, ChatId) {
         let handle = tokio::runtime::Handle::current();
-        let (mut core, updates) = Core::start(link, Settings::default(), handle)
+        let (mut core, updates) = Core::start(connection, Settings::default(), handle)
             .await
             .unwrap();
         let node = core.nodes()[0].id.clone();
-        let open = Intent::Open {
+        let open = Intent::OpenSession {
             node,
-            chat: None,
             session: None,
         };
         let Some(Go::Chat(chat)) = core.act(open).go else {
@@ -1299,7 +1298,7 @@ mod agents {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_core_sends_a_prompt_and_shows_the_reply() {
         let cluster = cluster().await;
-        let (mut core, mut updates, chat) = core_with_a_chat(&cluster.link).await;
+        let (mut core, mut updates, chat) = core_with_a_chat(&cluster.connection).await;
         core.act(Intent::Submit(chat, "hello".into()));
         assert!(working(&core, chat));
         let idle = |core: &Core| !working(core, chat);
@@ -1320,7 +1319,7 @@ mod agents {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_core_cancels_a_turn_and_its_tasks_when_shut_down() {
         let cluster = cluster().await;
-        let (mut core, mut updates, chat) = core_with_a_chat(&cluster.link).await;
+        let (mut core, mut updates, chat) = core_with_a_chat(&cluster.connection).await;
         core.act(Intent::Submit(chat, "hold it".into()));
         let session = cluster.fake.wait_held(1).await.remove(0);
         core.act(Intent::Cancel(chat));

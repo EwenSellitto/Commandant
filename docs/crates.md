@@ -14,7 +14,7 @@ flowchart TD
     PROTO["commandant-proto<br/>gRPC contract"]
     COMMON["commandant-common"]
     SERVER --> ORCH & WORK
-    CLIENT --> CORE
+    CLIENT --> CORE & PROTO
     CORE --> PROTO
     ORCH --> PROTO
     WORK --> PROTO

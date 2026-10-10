@@ -11,7 +11,6 @@ fn open(state: &mut State, node: &str) -> Outcome {
     state.intent(Intent::Open {
         node: node.into(),
         chat: None,
-        session: None,
     })
 }
 
@@ -85,7 +84,6 @@ fn a_node_opens_on_its_chat_or_a_new_one() {
     let again = state.intent(Intent::Open {
         node: "n2".into(),
         chat: Some(id),
-        session: None,
     });
     assert_eq!(again.go, Some(Go::Chat(id)));
     assert_eq!(state.chats.len(), 1);
@@ -95,20 +93,19 @@ fn a_node_opens_on_its_chat_or_a_new_one() {
 #[test]
 fn a_front_end_starts_on_a_new_chat_on_the_session_asked_for() {
     let mut state = state();
-    let open = |state: &mut State, session: &str| {
-        state.intent(Intent::Open {
+    let open = |state: &mut State, session: Option<&str>| {
+        state.intent(Intent::OpenSession {
             node: "n2".into(),
-            chat: None,
-            session: Some(session.into()),
+            session: session.map(Into::into),
         })
     };
-    let first = shown(&open(&mut state, "ses_a"));
+    let first = shown(&open(&mut state, Some("ses_a")));
     assert_eq!(chat(&state, first).settings.session_id, "ses_a");
     // Each time, beside the chats already open.
-    let second = shown(&open(&mut state, ""));
+    let second = shown(&open(&mut state, None));
     assert_ne!(first, second);
     assert_eq!(chat(&state, second).settings.session_id, "");
-    assert!(open(&mut state, "ses_a").go.is_some());
+    assert!(open(&mut state, Some("ses_a")).go.is_some());
     assert_eq!(state.chats.len(), 3);
 }
 
@@ -317,7 +314,6 @@ fn chats_follow_their_node() {
     let reopened = state.intent(Intent::Open {
         node: "n1".into(),
         chat: None,
-        session: None,
     });
     assert_eq!(reopened.go, Some(Go::Chat(id)));
     assert!(
@@ -587,7 +583,6 @@ fn a_node_that_lost_its_agent_offers_one_again_then_refreshes_its_chats() {
     let open_it = Intent::Open {
         node: "n1".into(),
         chat: Some(id),
-        session: None,
     };
     let outcome = state.intent(open_it.clone());
     assert!(outcome.go.is_none(), "not the stale chat");

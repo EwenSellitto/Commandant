@@ -3,9 +3,8 @@
 //!
 //! [`Ask::Choose`]: commandant_client_core::Ask::Choose
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
 use commandant_client_core::{Choice, Choices, Intent, Scope};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Rows moved by PageUp / PageDown.
 const PAGE: usize = 10;

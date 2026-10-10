@@ -1,15 +1,14 @@
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
-use ratatui::buffer::Buffer;
-
-use ratatui::style::Modifier;
-
-use super::*;
-use crate::tui::app::tests::{app, ask_for_a_key, press};
 use commandant_client_core::state::fixtures::{bare, output};
 use commandant_client_core::{Core, Scope, Update};
 use commandant_proto::OutputStream;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+use ratatui::style::Modifier;
+
+use super::*;
+use crate::tui::app::tests::{app, ask_for_a_key, press};
 
 /// Where `text` isn't.
 fn absent(buf: &Buffer, text: &str) -> bool {

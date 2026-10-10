@@ -29,7 +29,6 @@ pub struct Core {
     /// Where calls go; an offline core has none.
     server: Option<Server>,
     /// The calls an offline core would have made, for a front end's tests.
-    #[cfg(any(test, feature = "test-support"))]
     kept: Vec<Effect>,
 }
 
@@ -38,6 +37,7 @@ pub struct Core {
 pub struct Updates(mpsc::UnboundedReceiver<Update>);
 
 impl Updates {
+    /// The next one, once it comes; `None` once the core is gone.
     pub async fn next(&mut self) -> Option<Update> {
         self.0.recv().await
     }
@@ -55,6 +55,8 @@ pub struct Next {
     pub go: Option<Go>,
     /// What a chat's prompt becomes.
     pub prompt: Option<(ChatId, Edit)>,
+    /// The chat whose prompt was just sent, if one was.
+    pub sent: Option<ChatId>,
 }
 
 impl Core {
@@ -69,7 +71,6 @@ impl Core {
         let core = Self {
             state: State::new(nodes, defaults),
             server: Some(server),
-            #[cfg(any(test, feature = "test-support"))]
             kept: Vec::new(),
         };
         Ok((core, Updates(updates)))
@@ -102,16 +103,17 @@ impl Core {
             go,
             prompt,
         } = outcome;
+        let sent = effects.iter().find_map(|effect| match effect {
+            Effect::Send(id, _) => Some(*id),
+            _ => None,
+        });
         for effect in effects {
             match &self.server {
                 Some(server) => server.call(effect),
-                #[cfg(any(test, feature = "test-support"))]
                 None => self.kept.push(effect),
-                #[cfg(not(any(test, feature = "test-support")))]
-                None => {}
             }
         }
-        Next { go, prompt }
+        Next { go, prompt, sent }
     }
 
     /// The nodes, as last listed.

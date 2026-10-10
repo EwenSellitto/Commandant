@@ -1,10 +1,9 @@
 //! What the terminal keeps of a chat (its prompt, where the thread is
 //! scrolled) and what keys in it ask for.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
 use commandant_client_core::chat::Chat;
 use commandant_client_core::{Edit, Intent, Scope};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Lines moved by PageUp / PageDown.
 const PAGE: u16 = 10;

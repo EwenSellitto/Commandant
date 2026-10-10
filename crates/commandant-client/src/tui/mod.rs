@@ -42,10 +42,9 @@ pub async fn run(client: &Client, args: TuiArgs, handle: Handle) -> Result<()> {
     };
     let (core, mut updates) = Core::start(client, defaults, handle).await?;
     let first = match (args.node.as_deref(), args.session) {
-        (Some(needle), session) => Some(Intent::Open {
+        (Some(needle), session) => Some(Intent::OpenSession {
             node: find_node(core.nodes(), needle)?.id,
-            chat: None,
-            session: Some(session.unwrap_or_default()),
+            session,
         }),
         (None, Some(_)) => bail!("--session needs the node it is on"),
         (None, None) => None,

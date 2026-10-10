@@ -68,135 +68,132 @@ impl Server {
 
     /// Starts the call an effect asks for.
     pub(crate) fn call(&self, effect: Effect) {
-        call(effect, self.control.clone(), &self.handle, self.tx.clone());
+        let (mut control, handle, tx) = (self.control.clone(), &self.handle, self.tx.clone());
+        match effect {
+            Effect::Send(chat, request) => {
+                handle.spawn(stream_prompt(control, chat, request, tx));
+            }
+            Effect::FetchOptions { node, after } => {
+                handle.spawn(async move {
+                    tokio::time::sleep(after).await;
+                    let request = GetAgentOptionsRequest { node: node.clone() };
+                    let options = control
+                        .get_agent_options(request)
+                        .await
+                        .map(tonic::Response::into_inner)
+                        .map_err(|status| Failure {
+                            message: status.message().to_string(),
+                            transient: matches!(
+                                status.code(),
+                                tonic::Code::DeadlineExceeded | tonic::Code::Unavailable
+                            ),
+                        });
+                    let _ = tx.send(Update::Options(node, options));
+                });
+            }
+            Effect::SwitchMcp {
+                chat,
+                node,
+                name,
+                connect,
+            } => {
+                let request = SwitchMcpServerRequest {
+                    node: node.clone(),
+                    name: name.clone(),
+                    connect,
+                };
+                let call = async move { control.switch_mcp_server(request).await };
+                spawn_ask(handle, tx, call, move |options| Update::McpSwitched {
+                    chat,
+                    node,
+                    name,
+                    options,
+                });
+            }
+            Effect::FetchSessions(node) => {
+                let request = ListAgentSessionsRequest { node: node.clone() };
+                let call = async move { control.list_agent_sessions(request).await };
+                spawn_ask(handle, tx, call, |sessions| {
+                    Update::Sessions(node, sessions.map(|s| s.sessions))
+                });
+            }
+            Effect::FetchHistory {
+                chat,
+                node,
+                session_id,
+            } => {
+                let request = GetSessionHistoryRequest { node, session_id };
+                let call = async move { control.get_session_history(request).await };
+                spawn_ask(handle, tx, call, move |history| {
+                    Update::Chat(chat, Message::History(history.map(|h| h.entries)))
+                });
+            }
+            Effect::PrepareProject {
+                chat,
+                node,
+                repository,
+            } => {
+                let request = PrepareProjectRequest { node, repository };
+                let call = async move { control.prepare_project(request).await };
+                spawn_ask(handle, tx, call, move |ready| {
+                    Update::Chat(chat, Message::Project(ready))
+                });
+            }
+            Effect::FetchProjects { chat, node } => {
+                let request = ListProjectsRequest { node };
+                let call = async move { control.list_projects(request).await };
+                spawn_ask(handle, tx, call, move |projects| {
+                    Update::Chat(chat, Message::Projects(projects.map(|p| p.projects)))
+                });
+            }
+            Effect::FetchProviders { chat, node } => {
+                let request = ListProvidersRequest { node };
+                let call = async move { control.list_providers(request).await };
+                spawn_ask(handle, tx, call, move |providers| {
+                    Update::Chat(chat, Message::Providers(providers.map(|p| p.providers)))
+                });
+            }
+            Effect::Authenticate {
+                chat,
+                node,
+                provider,
+                action,
+            } => {
+                let request = AuthenticateProviderRequest {
+                    node,
+                    provider,
+                    action: Some(action),
+                };
+                let call = async move { control.authenticate_provider(request).await };
+                spawn_ask(handle, tx, call, move |result| {
+                    Update::Chat(chat, Message::Auth(result))
+                });
+            }
+            Effect::Cancel(chat, task_id) => {
+                handle.spawn(async move {
+                    if let Err(status) = control.cancel_task(CancelTaskRequest { task_id }).await {
+                        let failed = Message::Failed(status.message().to_string());
+                        let _ = tx.send(Update::Chat(chat, failed));
+                    }
+                });
+            }
+            Effect::StartHarness { node, harness } => {
+                let request = StartHarnessRequest {
+                    node: node.clone(),
+                    harness,
+                };
+                let call = async move { control.start_harness(request).await };
+                spawn_ask(handle, tx, call, |started| {
+                    Update::HarnessStarted(node, started)
+                });
+            }
+        }
     }
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
         self.poll.abort();
-    }
-}
-
-fn call(effect: Effect, mut control: ControlClient, handle: &Handle, tx: Tx) {
-    match effect {
-        Effect::Send(chat, request) => {
-            handle.spawn(stream_prompt(control, chat, request, tx));
-        }
-        Effect::FetchOptions { node, after } => {
-            handle.spawn(async move {
-                tokio::time::sleep(after).await;
-                let request = GetAgentOptionsRequest { node: node.clone() };
-                let options = control
-                    .get_agent_options(request)
-                    .await
-                    .map(tonic::Response::into_inner)
-                    .map_err(|status| Failure {
-                        message: status.message().to_string(),
-                        transient: matches!(
-                            status.code(),
-                            tonic::Code::DeadlineExceeded | tonic::Code::Unavailable
-                        ),
-                    });
-                let _ = tx.send(Update::Options(node, options));
-            });
-        }
-        Effect::SwitchMcp {
-            chat,
-            node,
-            name,
-            connect,
-        } => {
-            let request = SwitchMcpServerRequest {
-                node: node.clone(),
-                name: name.clone(),
-                connect,
-            };
-            let call = async move { control.switch_mcp_server(request).await };
-            spawn_ask(handle, tx, call, move |options| Update::McpSwitched {
-                chat,
-                node,
-                name,
-                options,
-            });
-        }
-        Effect::FetchSessions(node) => {
-            let request = ListAgentSessionsRequest { node: node.clone() };
-            let call = async move { control.list_agent_sessions(request).await };
-            spawn_ask(handle, tx, call, |sessions| {
-                Update::Sessions(node, sessions.map(|s| s.sessions))
-            });
-        }
-        Effect::FetchHistory {
-            chat,
-            node,
-            session_id,
-        } => {
-            let request = GetSessionHistoryRequest { node, session_id };
-            let call = async move { control.get_session_history(request).await };
-            spawn_ask(handle, tx, call, move |history| {
-                Update::Chat(chat, Message::History(history.map(|h| h.entries)))
-            });
-        }
-        Effect::PrepareProject {
-            chat,
-            node,
-            repository,
-        } => {
-            let request = PrepareProjectRequest { node, repository };
-            let call = async move { control.prepare_project(request).await };
-            spawn_ask(handle, tx, call, move |ready| {
-                Update::Chat(chat, Message::Project(ready))
-            });
-        }
-        Effect::FetchProjects { chat, node } => {
-            let request = ListProjectsRequest { node };
-            let call = async move { control.list_projects(request).await };
-            spawn_ask(handle, tx, call, move |projects| {
-                Update::Chat(chat, Message::Projects(projects.map(|p| p.projects)))
-            });
-        }
-        Effect::FetchProviders { chat, node } => {
-            let request = ListProvidersRequest { node };
-            let call = async move { control.list_providers(request).await };
-            spawn_ask(handle, tx, call, move |providers| {
-                Update::Chat(chat, Message::Providers(providers.map(|p| p.providers)))
-            });
-        }
-        Effect::Authenticate {
-            chat,
-            node,
-            provider,
-            action,
-        } => {
-            let request = AuthenticateProviderRequest {
-                node,
-                provider,
-                action: Some(action),
-            };
-            let call = async move { control.authenticate_provider(request).await };
-            spawn_ask(handle, tx, call, move |result| {
-                Update::Chat(chat, Message::Auth(result))
-            });
-        }
-        Effect::Cancel(chat, task_id) => {
-            handle.spawn(async move {
-                if let Err(status) = control.cancel_task(CancelTaskRequest { task_id }).await {
-                    let failed = Message::Failed(status.message().to_string());
-                    let _ = tx.send(Update::Chat(chat, failed));
-                }
-            });
-        }
-        Effect::StartHarness { node, harness } => {
-            let request = StartHarnessRequest {
-                node: node.clone(),
-                harness,
-            };
-            let call = async move { control.start_harness(request).await };
-            spawn_ask(handle, tx, call, |started| {
-                Update::HarnessStarted(node, started)
-            });
-        }
     }
 }
 

@@ -1,6 +1,7 @@
 //! What floats over the rest: the commands completing what is typed, the
 //! picker, and a question to confirm or read.
 
+use commandant_client_core::Ask;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -10,7 +11,6 @@ use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragra
 use super::{MUTED, PANEL, SELECTED, hints, spinner};
 use crate::tui::picker::Picker;
 use crate::tui::text;
-use commandant_client_core::Ask;
 
 /// The commands completing what is typed, on a panel at the bottom of
 /// `area`, just over the prompt.
