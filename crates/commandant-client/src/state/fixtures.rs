@@ -38,3 +38,21 @@ pub fn output(stream: OutputStream, data: &[u8]) -> Message {
         ..Default::default()
     }))
 }
+
+/// A model provider, signed out, to sign in to with `methods`.
+pub fn acme(methods: Vec<AuthMethod>) -> ModelProvider {
+    ModelProvider {
+        id: "acme".into(),
+        name: "Acme".into(),
+        methods,
+        ..Default::default()
+    }
+}
+
+pub fn method(label: &str, oauth: bool, index: u32) -> AuthMethod {
+    AuthMethod {
+        label: label.into(),
+        oauth,
+        index,
+    }
+}

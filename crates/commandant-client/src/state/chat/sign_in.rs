@@ -19,11 +19,12 @@ impl Chat {
     /// kept out of the thread.
     pub(in crate::state) fn enter(&mut self, text: &str) -> Outcome {
         let text = text.trim();
-        if text.is_empty() || !self.entering() {
-            return Outcome::default();
-        }
-        let Some(Ask::Enter { wanted, .. }) = self.ask.take() else {
-            return Outcome::default();
+        let wanted = match self.ask.take() {
+            Some(Ask::Enter { wanted, .. }) if !text.is_empty() => wanted,
+            asked => {
+                self.ask = asked;
+                return Outcome::default();
+            }
         };
         let (provider, action) = match wanted {
             Wanted::ApiKey { provider } => (provider, auth_action::Action::ApiKey(text.into())),
@@ -39,16 +40,24 @@ impl Chat {
         self.authenticate(provider, None, doing, action).into()
     }
 
-    /// Asks for the API key to sign in to `provider` with.
-    pub(super) fn ask_for_key(&mut self, provider: String) {
-        let name = self.provider_name(&provider);
-        self.info(&format!(
-            "paste the API key for {name} and press Enter (Esc to cancel)"
-        ));
+    /// Asks for the line `wanted`, saying where to find it; a key is
+    /// never shown.
+    pub(super) fn ask_for(&mut self, wanted: Wanted) {
+        let (label, secret) = match &wanted {
+            Wanted::ApiKey { provider } => {
+                let label = format!("the API key for {}", self.provider_name(provider));
+                self.info(&format!("paste {label} and press Enter (Esc to cancel)"));
+                (label, true)
+            }
+            Wanted::Code { .. } => {
+                self.info("then paste the code it shows here");
+                ("the code the page shows".to_string(), false)
+            }
+        };
         self.put(Ask::Enter {
-            label: format!("the API key for {name}"),
-            secret: true,
-            wanted: Wanted::ApiKey { provider },
+            label,
+            secret,
+            wanted,
         });
     }
 
@@ -163,12 +172,7 @@ impl Chat {
         }
         self.info(&format!("open {}", result.url));
         if result.needs_code {
-            self.info("then paste the code it shows here");
-            self.put(Ask::Enter {
-                label: "the code the page shows".into(),
-                secret: false,
-                wanted: Wanted::Code { provider, index },
-            });
+            self.ask_for(Wanted::Code { provider, index });
             return None;
         }
         // A redirect back to the node's loopback only works in a browser there.

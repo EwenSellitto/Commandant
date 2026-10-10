@@ -52,10 +52,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area().inner(ratatui::layout::Margin::new(1, 0));
     let Screen::Chat(id) = app.screen else {
         draw_nodes(frame, app, area);
-        if let Some(picker) = &app.picker {
-            draw_picker(frame, Color::Cyan, picker);
-        }
-        draw_dialog(frame, Color::Cyan, app.state.ask(Scope::App));
+        draw_asks(frame, app, Color::Cyan, &[Scope::App]);
         return;
     };
     let [header, tabs, thread, status, input, footer] = Layout::vertical([
@@ -84,14 +81,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         accent,
         thread,
     );
-    if let Some(picker) = &view.picker {
-        draw_picker(frame, accent, picker);
+    draw_asks(frame, app, accent, &[Scope::Chat(id), Scope::App]);
+}
+
+/// What is asked in each of `scopes`, the last over the others.
+fn draw_asks(frame: &mut Frame, app: &App, accent: Color, scopes: &[Scope]) {
+    for &scope in scopes {
+        match app.pickers.get(&scope) {
+            Some(picker) => draw_picker(frame, accent, picker),
+            None => draw_dialog(frame, accent, app.state.ask(scope)),
+        }
     }
-    draw_dialog(frame, accent, chat.ask());
-    if let Some(picker) = &app.picker {
-        draw_picker(frame, accent, picker);
-    }
-    draw_dialog(frame, accent, app.state.ask(Scope::App));
 }
 
 /// The node's chats, the shown one highlighted; the others say whether they

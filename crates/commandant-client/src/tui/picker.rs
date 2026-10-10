@@ -5,17 +5,10 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::state::{Choice, Choices, Choose};
+use crate::state::{Choice, Choices, Intent, Scope};
 
 /// Rows moved by PageUp / PageDown.
 const PAGE: usize = 10;
-
-/// What a key did to the picker.
-pub enum Outcome {
-    Open,
-    Closed,
-    Chosen(Choose),
-}
 
 pub struct Picker {
     /// What it offers, as the state last had it.
@@ -49,18 +42,15 @@ impl Picker {
         picker
     }
 
-    /// Makes the picker in `slot` show `pick`: a new one as it opens, the
-    /// same one, its filter kept, as its choices change.
-    pub fn sync(slot: &mut Option<Self>, pick: Option<&Choices>) {
-        let Some(pick) = pick else {
-            *slot = None;
-            return;
-        };
-        match slot {
-            Some(shown) if shown.pick.revision == pick.revision => {}
-            Some(shown) if shown.pick.id == pick.id => *slot = Some(Self::new(pick, &shown.filter)),
-            _ => *slot = Some(Self::new(pick, &pick.filter)),
-        }
+    /// The picker to show `pick` with, given the one `shown`: a new one as
+    /// it opens, the same one, its filter kept, as its choices change.
+    pub fn sync(shown: Option<Self>, pick: Option<&Choices>) -> Option<Self> {
+        let pick = pick?;
+        Some(match shown {
+            Some(shown) if shown.pick.revision == pick.revision => shown,
+            Some(shown) if shown.pick.id == pick.id => Self::new(pick, &shown.filter),
+            _ => Self::new(pick, &pick.filter),
+        })
     }
 
     pub fn title(&self) -> &'static str {
@@ -85,14 +75,14 @@ impl Picker {
         self.pick.choices.len()
     }
 
-    pub fn on_key(&mut self, key: KeyEvent) -> Outcome {
+    /// What a key says to the question asked in `scope`; nothing while
+    /// the picker stays open.
+    pub fn on_key(&mut self, scope: Scope, key: KeyEvent) -> Option<Intent> {
         match key.code {
-            KeyCode::Esc => return Outcome::Closed,
+            KeyCode::Esc => return Some(Intent::Dismiss(scope)),
             KeyCode::Enter => {
-                return match self.shown().nth(self.selected) {
-                    Some(choice) => Outcome::Chosen(choice.value.clone()),
-                    None => Outcome::Open,
-                };
+                let choice = self.shown().nth(self.selected)?;
+                return Some(Intent::Choose(scope, choice.value.clone()));
             }
             KeyCode::Up => self.selected = self.selected.saturating_sub(1),
             KeyCode::Down => self.move_down(1),
@@ -112,7 +102,7 @@ impl Picker {
             }
             _ => {}
         }
-        Outcome::Open
+        None
     }
 
     fn move_down(&mut self, rows: usize) {
@@ -141,6 +131,7 @@ impl Picker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::Choose;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::from(code)
@@ -165,57 +156,66 @@ mod tests {
         let current = Some(Choose::Model("openai/gpt-6".into()));
         let mut picker = Picker::new(&Choices::new("Model", choices, current), "");
         assert_eq!(picker.selected, 3);
+        let mut press = |code| picker.on_key(Scope::App, key(code));
 
         for c in "anth son".chars() {
-            picker.on_key(key(KeyCode::Char(c)));
+            assert_eq!(press(KeyCode::Char(c)), None);
+        }
+        for code in [KeyCode::Backspace, KeyCode::Backspace, KeyCode::Backspace] {
+            press(code);
+        }
+        press(KeyCode::Down);
+        press(KeyCode::Down);
+        let haiku = Choose::Model("anthropic/claude-haiku-4-5".into());
+        assert_eq!(
+            press(KeyCode::Enter),
+            Some(Intent::Choose(Scope::App, haiku))
+        );
+
+        for c in "zzz".chars() {
+            press(KeyCode::Char(c));
+        }
+        assert_eq!(press(KeyCode::Enter), None, "nothing to choose");
+        assert_eq!(press(KeyCode::Esc), Some(Intent::Dismiss(Scope::App)));
+        assert_eq!(picker.shown_len(), 0);
+    }
+
+    #[test]
+    fn narrows_by_every_word_typed() {
+        let choices = vec![
+            model("a", "Claude Sonnet 5", "Anthropic"),
+            model("b", "Claude Haiku 4.5", "Anthropic"),
+        ];
+        let mut picker = Picker::new(&Choices::new("Model", choices, None), "");
+        for c in "anth son".chars() {
+            picker.on_key(Scope::App, key(KeyCode::Char(c)));
         }
         let labels: Vec<_> = picker.shown().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, ["Claude Sonnet 5"]);
-
-        picker.on_key(key(KeyCode::Backspace));
-        picker.on_key(key(KeyCode::Backspace));
-        picker.on_key(key(KeyCode::Backspace));
-        picker.on_key(key(KeyCode::Down));
-        picker.on_key(key(KeyCode::Down));
-        assert!(matches!(
-            picker.on_key(key(KeyCode::Enter)),
-            Outcome::Chosen(Choose::Model(id)) if id == "anthropic/claude-haiku-4-5"
-        ));
-
-        for c in "zzz".chars() {
-            picker.on_key(key(KeyCode::Char(c)));
-        }
-        assert_eq!(picker.shown_len(), 0);
-        assert!(matches!(picker.on_key(key(KeyCode::Enter)), Outcome::Open));
-        assert!(matches!(picker.on_key(key(KeyCode::Esc)), Outcome::Closed));
     }
 
     #[test]
     fn a_filter_given_up_front_narrows_like_typing() {
         let choices = vec![model("1", "one", "first"), model("2", "two", "second")];
         let pick = Choices::new("Numbers", choices, None).with_filter("SEC");
-        let mut slot = None;
-        Picker::sync(&mut slot, Some(&pick));
-        let picker = slot.as_ref().unwrap();
+        let picker = Picker::sync(None, Some(&pick)).unwrap();
         assert_eq!((picker.filter.as_str(), picker.shown_len()), ("SEC", 1));
     }
 
     #[test]
     fn a_picker_follows_its_pick() {
         let pick = Choices::new("Numbers", vec![model("1", "one", "")], None);
-        let mut slot = None;
-        Picker::sync(&mut slot, Some(&pick));
-        slot.as_mut().unwrap().filter = "on".into();
+        let mut shown = Picker::sync(None, Some(&pick)).unwrap();
+        shown.filter = "on".into();
 
         // Revised, it keeps what was typed; another one starts afresh.
         let mut revised = Choices::new("Numbers", vec![model("2", "two", "")], None);
         revised.id = pick.id;
-        Picker::sync(&mut slot, Some(&revised));
-        assert_eq!(slot.as_ref().unwrap().filter, "on");
-        assert_eq!(slot.as_ref().unwrap().total(), 1);
-        Picker::sync(&mut slot, Some(&Choices::new("Other", Vec::new(), None)));
-        assert_eq!(slot.as_ref().unwrap().filter, "");
-        Picker::sync(&mut slot, None);
-        assert!(slot.is_none());
+        let shown = Picker::sync(Some(shown), Some(&revised)).unwrap();
+        assert_eq!((shown.filter.as_str(), shown.total()), ("on", 1));
+        let other = Choices::new("Other", Vec::new(), None);
+        let shown = Picker::sync(Some(shown), Some(&other)).unwrap();
+        assert_eq!(shown.filter, "");
+        assert!(Picker::sync(Some(shown), None).is_none());
     }
 }

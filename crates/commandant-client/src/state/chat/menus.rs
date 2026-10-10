@@ -6,7 +6,7 @@ use std::sync::Arc;
 use commandant_proto::*;
 
 use super::Chat;
-use crate::state::{Ask, Choice, Choices, Choose, Edit, Effect, Outcome};
+use crate::state::{Ask, Choice, Choices, Choose, Edit, Effect, Outcome, Wanted};
 use commandant_common::or;
 
 /// What a chat offers to choose from.
@@ -178,7 +178,7 @@ impl Chat {
             Choose::SignIn {
                 provider,
                 oauth: None,
-            } => self.ask_for_key(provider),
+            } => self.ask_for(Wanted::ApiKey { provider }),
             Choose::SignIn {
                 provider,
                 oauth: Some(index),

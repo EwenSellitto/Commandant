@@ -93,9 +93,9 @@ SQLite or libgit2 in `commandant`. Code used by several crates goes in
 | `state/chat/` | One chat: its session, settings, thread and line language (`/model`, `/project`, the agent's `/skill`); what it offers to choose, provider sign-in and projects in their own files |
 | `tui/mod.rs` | The TUI's event loop: draws, reads keys, makes the calls effects ask for |
 | `tui/app.rs` | The screen shown, the highlighted node, the last chat per node; routes keys to intents |
-| `tui/chat.rs` | A chat's prompt (editing, history recall, completion highlight), scroll and picker as shown |
+| `tui/chat.rs` | A chat's prompt (editing, history recall, completion highlight) and scroll |
 | `tui/ui/`, `tui/text.rs` | Drawing, and markdown styling |
-| `tui/picker.rs`, `tui/dialog.rs` | The floating list to answer a choose-ask with, and the panel for a confirm- or show-ask; an enter-ask is typed in the prompt |
+| `tui/asks.rs`, `tui/picker.rs` | What keys say to an ask: the floating list for a choose-ask, a panel for a confirm- or show-ask; an enter-ask is typed in the prompt. The app's and each chat's picker are shown from one map |
 
 ## Other files
 

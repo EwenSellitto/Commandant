@@ -1,10 +1,8 @@
 //! What the terminal keeps of a chat (its prompt, where the thread is
-//! scrolled, its picker as shown) and what keys in it ask for.
+//! scrolled) and what keys in it ask for.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::dialog;
-use super::picker::{Outcome as Picked, Picker};
 use crate::state::chat::Chat;
 use crate::state::{Edit, Intent, Scope};
 
@@ -22,8 +20,6 @@ pub struct ChatView {
     /// was being typed before, to come back to.
     recalled: Option<usize>,
     draft: String,
-    /// The chat's picker, as shown.
-    pub picker: Option<Picker>,
 }
 
 impl ChatView {
@@ -53,18 +49,6 @@ impl ChatView {
     /// Edits the prompt, or says what the key asks of the chat.
     pub fn on_key(&mut self, chat: &Chat, key: KeyEvent) -> Option<Intent> {
         let id = chat.id;
-        if let Some(picker) = &mut self.picker {
-            let intent = match picker.on_key(key) {
-                Picked::Open => return None,
-                Picked::Closed => Intent::Dismiss(Scope::Chat(id)),
-                Picked::Chosen(choice) => Intent::Choose(Scope::Chat(id), choice),
-            };
-            self.picker = None;
-            return Some(intent);
-        }
-        if let Some(ask) = chat.ask().filter(|a| dialog::shown(a)) {
-            return dialog::on_key(ask, Scope::Chat(id), key);
-        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let suggestions = self.suggestions(chat);
         let completing = !suggestions.is_empty();

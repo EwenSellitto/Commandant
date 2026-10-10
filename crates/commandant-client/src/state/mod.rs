@@ -52,8 +52,6 @@ pub struct State {
     /// What the app asks, when it does: which session, or which harness to
     /// start. A chat asks its own.
     ask: Option<Ask>,
-    /// The chat that asked for the node's sessions.
-    sessions_of: Option<ChatId>,
     /// A remark about the nodes.
     pub notice: String,
     /// Nodes starting a harness, which can take minutes.
@@ -169,16 +167,10 @@ impl State {
                 said.and(then)
             }
             Intent::Choose(Scope::App, choice) => self.choose(choice),
-            Intent::Choose(Scope::Chat(id), choice) => {
-                let chosen = self.chat_mut(id).map(|c| c.choose(choice));
-                self.fetch_once(chosen.unwrap_or_default())
-            }
+            Intent::Choose(Scope::Chat(id), choice) => self.in_chat(id, |c| c.choose(choice)),
             // The app asks for no line yet.
             Intent::Enter(Scope::App, _) => Outcome::default(),
-            Intent::Enter(Scope::Chat(id), text) => {
-                let entered = self.chat_mut(id).map(|c| c.enter(&text));
-                entered.unwrap_or_default()
-            }
+            Intent::Enter(Scope::Chat(id), text) => self.in_chat(id, |c| c.enter(&text)),
             Intent::Confirm(scope) => match self.ask(scope) {
                 Some(Ask::Confirm { yes, .. }) => {
                     let yes = yes.clone();
@@ -188,31 +180,24 @@ impl State {
             },
             Intent::Dismiss(Scope::App) => {
                 self.ask = None;
-                self.sessions_of = None;
                 Outcome::default()
             }
-            Intent::Dismiss(Scope::Chat(id)) => {
-                if let Some(chat) = self.chat_mut(id) {
-                    chat.dismiss();
-                }
-                Outcome::default()
-            }
-            Intent::Cancel(id) => self.chat_mut(id).and_then(Chat::cancel).into(),
-            Intent::CycleAgent(id, step) => {
-                let effect = self.chat_mut(id).and_then(|c| c.cycle_agent(step));
-                self.fetch_once(effect.into())
-            }
-            Intent::CycleEffort(id) => {
-                let effect = self.chat_mut(id).and_then(Chat::cycle_effort);
-                self.fetch_once(effect.into())
-            }
-            Intent::Seen(id) => {
-                if let Some(chat) = self.chat_mut(id) {
-                    chat.unseen = None;
-                }
-                Outcome::default()
-            }
+            Intent::Dismiss(Scope::Chat(id)) => self.in_chat(id, Chat::dismiss),
+            Intent::Cancel(id) => self.in_chat(id, Chat::cancel),
+            Intent::CycleAgent(id, step) => self.in_chat(id, |c| c.cycle_agent(step)),
+            Intent::CycleEffort(id) => self.in_chat(id, Chat::cycle_effort),
+            Intent::Seen(id) => self.in_chat(id, |c| c.unseen = None),
         }
+    }
+
+    /// What `act` comes to in the chat `id`, if it is open.
+    fn in_chat<T: Into<Outcome>>(
+        &mut self,
+        id: ChatId,
+        act: impl FnOnce(&mut Chat) -> T,
+    ) -> Outcome {
+        let outcome = self.chat_mut(id).map(|c| act(c).into());
+        self.fetch_once(outcome.unwrap_or_default())
     }
 
     /// Drops requests for options a node is already answering.
@@ -386,22 +371,30 @@ impl State {
         let mut sessions = Choices::new(SESSIONS, choices, Some(Choose::Chat(from)));
         sessions.loading = loading;
         // Still open: the same question, with what the node has said since.
-        if let Some(open) = self
-            .ask
-            .as_ref()
-            .and_then(Ask::choices)
-            .filter(|_| self.sessions_of == Some(from))
+        if self.sessions_from() == Some(from)
+            && let Some(open) = self.ask.as_ref().and_then(Ask::choices)
         {
             sessions = sessions.revise(open);
         }
         self.ask = Some(sessions.into());
-        self.sessions_of = Some(from);
+    }
+
+    /// The chat that asked for its node's sessions, while they are offered.
+    fn sessions_from(&self) -> Option<ChatId> {
+        match self.ask.as_ref()?.choices()? {
+            Choices {
+                title: SESSIONS,
+                current: Some(Choose::Chat(from)),
+                ..
+            } => Some(*from),
+            _ => None,
+        }
     }
 
     /// Does what the app's question offered, which closes.
     fn choose(&mut self, choice: Choose) -> Outcome {
+        let from = self.sessions_from();
         self.ask = None;
-        let from = self.sessions_of.take();
         match choice {
             Choose::NewSession => from.map_or_else(Outcome::default, |id| self.another_chat(id)),
             Choose::Chat(id) => Outcome::go(Go::Chat(id)),
@@ -459,11 +452,8 @@ impl State {
     /// Takes in what a background call reports, which may call for more.
     pub fn update(&mut self, update: Update) -> Outcome {
         match update {
-            Update::Chat(id, message) => {
-                let effect = self.chat_mut(id).and_then(|c| c.on_message(message));
-                // Signing in asks for the options again, maybe while they're being asked for.
-                self.fetch_once(effect.into())
-            }
+            // Signing in asks for the options again, maybe while they're being asked for.
+            Update::Chat(id, message) => self.in_chat(id, |c| c.on_message(message)),
             Update::Options(node, Err(failure)) if failure.transient => {
                 // Busy starting its agent, say: ask again before saying so.
                 let tries = self.retries.entry(node.clone()).or_default();
@@ -548,12 +538,7 @@ impl State {
                 outcome
             }
             Update::Sessions(node, sessions) => {
-                let picking = self
-                    .ask
-                    .as_ref()
-                    .and_then(Ask::choices)
-                    .is_some_and(|c| c.title == SESSIONS);
-                let from = self.sessions_of.filter(|_| picking);
+                let from = self.sessions_from();
                 match sessions {
                     Ok(sessions) => {
                         self.saved.insert(node.clone(), sessions);

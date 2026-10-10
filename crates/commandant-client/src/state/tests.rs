@@ -1,5 +1,5 @@
 use super::chat::{Message, Role, Unseen};
-use super::fixtures::{bare, node, output, started};
+use super::fixtures::{acme, bare, method, node, output, started};
 use super::*;
 
 fn state() -> State {
@@ -624,16 +624,7 @@ fn a_chat_asks_for_a_key_on_its_own_and_one_thing_at_a_time() {
     let id = chat_on(&mut state, "n1");
     let other = chat_on(&mut state, "n2");
     let providers = || {
-        let method = AuthMethod {
-            label: "API key".into(),
-            ..Default::default()
-        };
-        let acme = ModelProvider {
-            id: "acme".into(),
-            name: "Acme".into(),
-            methods: vec![method],
-            ..Default::default()
-        };
+        let acme = acme(vec![method("API key", false, 0)]);
         Update::Chat(id, Message::Providers(Ok(vec![acme])))
     };
     state.intent(Intent::Submit(id, "/providers".into()));

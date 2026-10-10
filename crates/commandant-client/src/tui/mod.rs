@@ -6,8 +6,8 @@
 //! reply to the next so the conversation continues.
 
 mod app;
+mod asks;
 mod chat;
-mod dialog;
 mod picker;
 mod text;
 mod ui;

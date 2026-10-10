@@ -1,5 +1,5 @@
 use super::*;
-use crate::state::fixtures::{output, started};
+use crate::state::fixtures::{acme, method, output, started};
 use crate::state::{Ask, Choose, Edit, Wanted};
 
 fn chat() -> Chat {
@@ -415,20 +415,14 @@ fn listed(app: &mut Chat) {
         effect(command(app, "/providers")),
         Some(Effect::FetchProviders { .. })
     ));
-    let method = |label: &str, oauth: bool, index: u32| AuthMethod {
-        label: label.into(),
-        oauth,
-        index,
-    };
+    let methods = vec![
+        method("Browser", true, 0),
+        method("Code", true, 1),
+        method("API key", false, 2),
+    ];
     let providers = vec![ModelProvider {
-        id: "acme".into(),
-        name: "Acme".into(),
         connected: true,
-        methods: vec![
-            method("Browser", true, 0),
-            method("Code", true, 1),
-            method("API key", false, 2),
-        ],
+        ..acme(methods)
     }];
     assert!(app.on_message(Message::Providers(Ok(providers))).is_none());
     assert!(app.ask().is_some(), "the providers come in a picker");

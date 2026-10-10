@@ -91,6 +91,13 @@ impl Outcome {
     }
 }
 
+/// Nothing more to do.
+impl From<()> for Outcome {
+    fn from(_: ()) -> Self {
+        Self::default()
+    }
+}
+
 impl From<Effect> for Outcome {
     fn from(effect: Effect) -> Self {
         Some(effect).into()
