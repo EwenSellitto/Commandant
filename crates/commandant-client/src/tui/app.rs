@@ -1,6 +1,6 @@
 //! The terminal's side of the client: which screen is shown, the
-//! highlighted node, each chat's prompt, the pickers as shown, and what keys
-//! ask of the [`Core`].
+//! highlighted node, each chat's prompt, the pickers and the help as shown,
+//! and what keys ask of the [`Core`].
 
 use std::collections::HashMap;
 
@@ -9,7 +9,8 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::asks;
 use super::chat::ChatView;
-use super::picker::Picker;
+use super::help::{Does, Help};
+use super::picker::{Picked, Picker};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Screen {
@@ -30,6 +31,8 @@ pub struct App {
     pub views: HashMap<ChatId, ChatView>,
     /// The pickers of the app and its chats, as shown.
     pub pickers: HashMap<Scope, Picker>,
+    /// The help, open over everything else.
+    pub help: Option<Help>,
     /// Set once the person has asked to leave.
     pub quit: bool,
 }
@@ -49,6 +52,7 @@ impl App {
             last: HashMap::new(),
             views: HashMap::new(),
             pickers: HashMap::new(),
+            help: None,
             quit: false,
         }
     }
@@ -105,6 +109,18 @@ impl App {
             self.quit = true;
             return;
         }
+        if let Some(help) = &mut self.help {
+            if let Some(picked) = help.list.on_key(key) {
+                self.help = None;
+                if let Picked::Chosen(entry) = picked {
+                    self.follow_help(entry.does);
+                }
+            }
+            return;
+        }
+        if key.code == KeyCode::F(1) {
+            return self.open_help();
+        }
         // A question takes the keys, the one on top first; a line asked for
         // is typed in the prompt.
         for scope in self.scopes() {
@@ -142,8 +158,37 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => self.selected = (self.selected + 1).min(last),
             KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('?') => self.open_help(),
             KeyCode::Enter => self.open_selected_node(),
             _ => {}
+        }
+    }
+
+    /// Shows what every command and key of the screen shown does.
+    fn open_help(&mut self) {
+        self.help = Some(self.chat().map_or_else(Help::nodes, Help::chat));
+    }
+
+    /// Does what was chosen in the help.
+    fn follow_help(&mut self, does: Does) {
+        match does {
+            Does::Press(key) => self.on_key(key),
+            Does::Run(line) => {
+                if let Screen::Chat(id) = self.screen {
+                    // The line isn't the prompt's: what is typed there stays.
+                    let next = self.core.act(Intent::Submit(id, line));
+                    self.apply(Next {
+                        prompt: None,
+                        ..next
+                    });
+                }
+            }
+            Does::Start(line) => {
+                if let Some((_, view)) = self.shown() {
+                    view.input.set(&line);
+                }
+            }
+            Does::Nothing => {}
         }
     }
 
@@ -204,6 +249,7 @@ impl App {
             Some(Go::Chat(id)) => self.show(id),
             Some(Go::Nodes) => self.show_nodes(),
             Some(Go::Quit) => self.quit = true,
+            Some(Go::Help) => self.open_help(),
             // Still looking at it: open it.
             Some(Go::Ready(node)) => {
                 let selected = self.core.nodes().get(self.selected).map(|n| &n.id);
@@ -499,7 +545,7 @@ pub(crate) mod tests {
         assert!(matches!(app.screen, Screen::Chat(_)));
 
         // Its keys went to its filter; cleared, they move in it and choose.
-        assert_eq!(chat_picker(&app).unwrap().filter, "nogw");
+        assert_eq!(chat_picker(&app).unwrap().list.filter, "nogw");
         app.on_key(ctrl('u'));
         app.on_key(key(KeyCode::Down));
         app.on_key(key(KeyCode::Enter));
@@ -513,7 +559,7 @@ pub(crate) mod tests {
         app.on_key(key(KeyCode::Enter));
         app.on_key(ctrl('o'));
         type_text(&mut app, "about");
-        assert_eq!(app.pickers.get(&Scope::App).unwrap().shown_len(), 0);
+        assert_eq!(app.pickers.get(&Scope::App).unwrap().list.shown_len(), 0);
         let saved = |id: &str| AgentSession {
             id: id.into(),
             title: format!("about {id}"),
@@ -524,7 +570,10 @@ pub(crate) mod tests {
             Ok(vec![saved("a"), saved("b")]),
         ));
         let picker = app.pickers.get(&Scope::App).unwrap();
-        assert_eq!((picker.filter.as_str(), picker.shown_len()), ("about", 2));
+        assert_eq!(
+            (picker.list.filter.as_str(), picker.list.shown_len()),
+            ("about", 2)
+        );
         assert!(!picker.loading());
 
         // "+ New session" is a new chat.
@@ -667,9 +716,49 @@ pub(crate) mod tests {
         app.shown().unwrap().1.scroll = 5;
         type_text(&mut app, "/help");
         app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Esc));
         assert_eq!(scroll(&mut app), 5, "a command keeps the place read");
         send(&mut app, "hi");
         assert_eq!(scroll(&mut app), 0);
+    }
+
+    #[test]
+    fn the_help_does_what_is_chosen_in_it() {
+        let mut app = app();
+        assert!(app.help.is_none());
+        app.on_key(KeyEvent::from(KeyCode::Char('?')));
+        assert!(app.help.is_some(), "on the nodes too");
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Enter));
+
+        with_agents(&mut app);
+        type_text(&mut app, "/?");
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.help.is_some());
+        assert_eq!(input(&mut app), "");
+        // A command chosen runs, and what was being typed stays.
+        app.on_key(key(KeyCode::Esc));
+        type_text(&mut app, "draft");
+        app.on_key(key(KeyCode::F(1)));
+        type_text(&mut app, "choose an agent");
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.help.is_none());
+        assert_eq!(chat_picker(&app).unwrap().title(), "Agent");
+        assert_eq!(input(&mut app), "draft");
+
+        // One of the agent's is started, for its arguments.
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::F(1)));
+        type_text(&mut app, "/review");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(input(&mut app), "/review ");
+
+        // A key chosen is pressed.
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::F(1)));
+        type_text(&mut app, "clear the prompt");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(input(&mut app), "");
     }
 
     #[test]

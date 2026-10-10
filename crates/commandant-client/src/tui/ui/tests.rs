@@ -289,3 +289,21 @@ fn a_question_to_confirm_or_read_floats_over_the_rest() {
     find(&buf, "Remove box-n1?");
     find(&buf, "enter yes");
 }
+
+#[test]
+fn the_help_floats_over_the_rest_and_narrows_as_typed() {
+    let mut app = app();
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    app.on_key(KeyEvent::from(KeyCode::F(1)));
+    let buf = render(&mut app);
+    find(&buf, "Help");
+    find(&buf, "what every command and key does");
+    find(&buf, "enter do it");
+    for c in "scroll".chars() {
+        app.on_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    let buf = render(&mut app);
+    find(&buf, "PgUp PgDn");
+    find(&buf, "1 of ");
+    assert!(absent(&buf, "what every command and key does"));
+}

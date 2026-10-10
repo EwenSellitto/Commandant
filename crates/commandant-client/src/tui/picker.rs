@@ -1,5 +1,5 @@
-//! The floating window for answering an [`Ask::Choose`] narrowed down by
-//! typing.
+//! A list narrowed down by typing, and the floating window for answering
+//! an [`Ask::Choose`] with one.
 //!
 //! [`Ask::Choose`]: commandant_client_core::Ask::Choose
 
@@ -9,60 +9,60 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// Rows moved by PageUp / PageDown.
 const PAGE: usize = 10;
 
-pub struct Picker {
-    /// What it offers, as the state last had it.
-    choices: Choices,
+/// What a [`Filtered`] shows of a row, and what typing narrows it down by.
+pub trait Row: Clone {
+    fn label(&self) -> &str;
+    /// Said after the label.
+    fn detail(&self) -> &str;
+}
+
+impl Row for Choice {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
+/// Rows narrowed down by typing, one of them highlighted.
+pub struct Filtered<R> {
+    rows: Vec<R>,
     pub filter: String,
-    /// Indexes into the choices that match the filter.
+    /// Indexes into the rows that match the filter.
     shown: Vec<usize>,
     /// Position in `shown`.
     pub selected: usize,
 }
 
-impl Picker {
-    /// Shows `choices` narrowed down by `filter`, as if it had been typed;
-    /// unfiltered, on the current choice.
-    fn new(choices: &Choices, filter: &str) -> Self {
-        let current = choices.current.as_ref();
-        let selected = current
-            .and_then(|current| choices.choices.iter().position(|c| &c.value == current))
-            .unwrap_or(0);
-        let mut picker = Self {
-            shown: (0..choices.choices.len()).collect(),
-            choices: choices.clone(),
+/// What a key that closes a [`Filtered`] says.
+#[derive(Debug, PartialEq)]
+pub enum Picked<R> {
+    Closed,
+    Chosen(R),
+}
+
+impl<R: Row> Filtered<R> {
+    /// `rows` narrowed down by `filter`, as if it had been typed;
+    /// unfiltered, on row `selected`.
+    pub fn new(rows: Vec<R>, filter: &str, selected: usize) -> Self {
+        let mut list = Self {
+            shown: (0..rows.len()).collect(),
+            rows,
             filter: String::new(),
             selected,
         };
         if !filter.is_empty() {
-            picker.filter = filter.to_string();
-            picker.refilter();
+            list.filter = filter.to_string();
+            list.refilter();
         }
-        picker
+        list
     }
 
-    /// The picker to show `choices` with, given the one `shown`: a new one as
-    /// it opens, the same one, its filter kept, as its choices change.
-    pub fn sync(shown: Option<Self>, choices: Option<&Choices>) -> Option<Self> {
-        let choices = choices?;
-        Some(match shown {
-            Some(shown) if shown.choices.revision == choices.revision => shown,
-            Some(shown) if shown.choices.id == choices.id => Self::new(choices, &shown.filter),
-            _ => Self::new(choices, &choices.filter),
-        })
-    }
-
-    pub fn title(&self) -> &'static str {
-        self.choices.title
-    }
-
-    /// More choices are on their way.
-    pub fn loading(&self) -> bool {
-        self.choices.loading
-    }
-
-    /// The choices that match the filter, in order.
-    pub fn shown(&self) -> impl Iterator<Item = &Choice> {
-        self.shown.iter().map(|&i| &self.choices.choices[i])
+    /// The rows that match the filter, in order.
+    pub fn shown(&self) -> impl Iterator<Item = &R> {
+        self.shown.iter().map(|&i| &self.rows[i])
     }
 
     pub fn shown_len(&self) -> usize {
@@ -70,17 +70,16 @@ impl Picker {
     }
 
     pub fn total(&self) -> usize {
-        self.choices.choices.len()
+        self.rows.len()
     }
 
-    /// What a key says to the question asked in `scope`; nothing while
-    /// the picker stays open.
-    pub fn on_key(&mut self, scope: Scope, key: KeyEvent) -> Option<Intent> {
+    /// What a key says to the list; nothing while it stays open.
+    pub fn on_key(&mut self, key: KeyEvent) -> Option<Picked<R>> {
         match key.code {
-            KeyCode::Esc => return Some(Intent::Dismiss(scope)),
+            KeyCode::Esc => return Some(Picked::Closed),
             KeyCode::Enter => {
-                let choice = self.shown().nth(self.selected)?;
-                return Some(Intent::Choose(scope, choice.value.clone()));
+                let row = self.shown().nth(self.selected)?;
+                return Some(Picked::Chosen(row.clone()));
             }
             KeyCode::Up => self.selected = self.selected.saturating_sub(1),
             KeyCode::Down => self.move_down(1),
@@ -108,21 +107,74 @@ impl Picker {
         self.selected = (self.selected + rows).min(last);
     }
 
-    /// Keeps the choices whose label or detail has every word of the filter.
+    /// Keeps the rows whose label or detail has every word of the filter.
     fn refilter(&mut self) {
         let words: Vec<String> = self
             .filter
             .split_whitespace()
             .map(str::to_lowercase)
             .collect();
-        let choices = &self.choices.choices;
-        self.shown = (0..choices.len())
+        let rows = &self.rows;
+        self.shown = (0..rows.len())
             .filter(|&i| {
-                let haystack = format!("{} {}", choices[i].label, choices[i].detail).to_lowercase();
+                let haystack = format!("{} {}", rows[i].label(), rows[i].detail()).to_lowercase();
                 words.iter().all(|word| haystack.contains(word))
             })
             .collect();
         self.selected = 0;
+    }
+}
+
+/// An [`Ask::Choose`](commandant_client_core::Ask::Choose), as shown.
+pub struct Picker {
+    /// What it offers, as the state last had it; its choices are the list's.
+    choices: Choices,
+    pub list: Filtered<Choice>,
+}
+
+impl Picker {
+    /// Shows `choices` narrowed down by `filter`, as if it had been typed;
+    /// unfiltered, on the current choice.
+    fn new(choices: &Choices, filter: &str) -> Self {
+        let mut choices = choices.clone();
+        let rows = std::mem::take(&mut choices.choices);
+        let current = choices.current.as_ref();
+        let selected = current
+            .and_then(|current| rows.iter().position(|c| &c.value == current))
+            .unwrap_or(0);
+        Self {
+            list: Filtered::new(rows, filter, selected),
+            choices,
+        }
+    }
+
+    /// The picker to show `choices` with, given the one `shown`: a new one as
+    /// it opens, the same one, its filter kept, as its choices change.
+    pub fn sync(shown: Option<Self>, choices: Option<&Choices>) -> Option<Self> {
+        let choices = choices?;
+        Some(match shown {
+            Some(shown) if shown.choices.revision == choices.revision => shown,
+            Some(shown) if shown.choices.id == choices.id => Self::new(choices, &shown.list.filter),
+            _ => Self::new(choices, &choices.filter),
+        })
+    }
+
+    pub fn title(&self) -> &'static str {
+        self.choices.title
+    }
+
+    /// More choices are on their way.
+    pub fn loading(&self) -> bool {
+        self.choices.loading
+    }
+
+    /// What a key says to the question asked in `scope`; nothing while
+    /// the picker stays open.
+    pub fn on_key(&mut self, scope: Scope, key: KeyEvent) -> Option<Intent> {
+        Some(match self.list.on_key(key)? {
+            Picked::Closed => Intent::Dismiss(scope),
+            Picked::Chosen(choice) => Intent::Choose(scope, choice.value),
+        })
     }
 }
 
@@ -153,7 +205,7 @@ mod tests {
         ];
         let current = Some(Choose::Model("openai/gpt-6".into()));
         let mut picker = Picker::new(&Choices::new("Model", choices, current), "");
-        assert_eq!(picker.selected, 3);
+        assert_eq!(picker.list.selected, 3);
         let mut press = |code| picker.on_key(Scope::App, key(code));
 
         for c in "anth son".chars() {
@@ -175,7 +227,7 @@ mod tests {
         }
         assert_eq!(press(KeyCode::Enter), None, "nothing to choose");
         assert_eq!(press(KeyCode::Esc), Some(Intent::Dismiss(Scope::App)));
-        assert_eq!(picker.shown_len(), 0);
+        assert_eq!(picker.list.shown_len(), 0);
     }
 
     #[test]
@@ -188,7 +240,7 @@ mod tests {
         for c in "anth son".chars() {
             picker.on_key(Scope::App, key(KeyCode::Char(c)));
         }
-        let labels: Vec<_> = picker.shown().map(|c| c.label.as_str()).collect();
+        let labels: Vec<_> = picker.list.shown().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, ["Claude Sonnet 5"]);
     }
 
@@ -197,23 +249,26 @@ mod tests {
         let choices = vec![model("1", "one", "first"), model("2", "two", "second")];
         let pick = Choices::new("Numbers", choices, None).with_filter("SEC");
         let picker = Picker::sync(None, Some(&pick)).unwrap();
-        assert_eq!((picker.filter.as_str(), picker.shown_len()), ("SEC", 1));
+        assert_eq!(
+            (picker.list.filter.as_str(), picker.list.shown_len()),
+            ("SEC", 1)
+        );
     }
 
     #[test]
     fn a_picker_follows_its_pick() {
         let pick = Choices::new("Numbers", vec![model("1", "one", "")], None);
         let mut shown = Picker::sync(None, Some(&pick)).unwrap();
-        shown.filter = "on".into();
+        shown.list.filter = "on".into();
 
         // Revised, it keeps what was typed; another one starts afresh.
         let mut revised = Choices::new("Numbers", vec![model("2", "two", "")], None);
         revised.id = pick.id;
         let shown = Picker::sync(Some(shown), Some(&revised)).unwrap();
-        assert_eq!((shown.filter.as_str(), shown.total()), ("on", 1));
+        assert_eq!((shown.list.filter.as_str(), shown.list.total()), ("on", 1));
         let other = Choices::new("Other", Vec::new(), None);
         let shown = Picker::sync(Some(shown), Some(&other)).unwrap();
-        assert_eq!(shown.filter, "");
+        assert_eq!(shown.list.filter, "");
         assert!(Picker::sync(Some(shown), None).is_none());
     }
 }

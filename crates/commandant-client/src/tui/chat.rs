@@ -207,7 +207,7 @@ impl Input {
     }
 
     /// Replaces the text, the cursor at its end.
-    fn set(&mut self, text: &str) {
+    pub fn set(&mut self, text: &str) {
         self.text = text.to_string();
         self.end();
     }

@@ -14,6 +14,7 @@ use commandant_common::or;
 
 use super::app::{App, Screen};
 use super::chat::ChatView;
+use super::help::KEYS;
 use super::text::{self, MUTED};
 
 mod lists;
@@ -21,7 +22,7 @@ mod nodes;
 #[cfg(test)]
 mod tests;
 
-use self::lists::{draw_dialog, draw_picker, draw_suggestions};
+use self::lists::{draw_dialog, draw_help, draw_picker, draw_suggestions};
 use self::nodes::draw_nodes;
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -84,13 +85,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_asks(frame, app, accent);
 }
 
-/// What is asked on screen, the one on top drawn last.
+/// What is asked on screen, the one on top drawn last, then the help over
+/// it all.
 fn draw_asks(frame: &mut Frame, app: &App, accent: Color) {
     for scope in app.scopes().into_iter().rev() {
         match app.pickers.get(&scope) {
             Some(picker) => draw_picker(frame, accent, picker),
             None => draw_dialog(frame, accent, app.core.ask(scope)),
         }
+    }
+    if let Some(help) = &app.help {
+        draw_help(frame, accent, help);
     }
 }
 
@@ -297,7 +302,7 @@ fn welcome(chat: &Chat) -> Vec<Line<'static>> {
         ]),
         Line::default(),
     ];
-    let keys = chat::KEYS.iter().map(|&(k, d)| (k.to_string(), d));
+    let keys = KEYS.iter().map(|&(k, d, _)| (k.to_string(), d));
     let commands = chat::COMMANDS[1..8]
         .iter()
         .map(|&(n, d)| (format!("/{n}"), d));
@@ -310,8 +315,10 @@ fn welcome(chat: &Chat) -> Vec<Line<'static>> {
     lines.push(Line::default());
     lines.push(Line::from(vec![
         Span::raw(INDENT),
+        "F1".bold(),
+        " or ".fg(MUTED),
         "/help".bold(),
-        " for every command and key".fg(MUTED),
+        " to find any command or key".fg(MUTED),
     ]));
     lines
 }

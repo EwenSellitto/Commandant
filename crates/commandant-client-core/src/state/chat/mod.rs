@@ -20,7 +20,7 @@ mod sign_in;
 mod tests;
 
 pub(in crate::state) use self::commands::AppCommand;
-pub use self::commands::{COMMANDS, KEYS};
+pub use self::commands::{ALIASES, COMMANDS};
 pub use self::format::{count, dollars, elapsed};
 use self::menus::Menu;
 use self::sign_in::SigningIn;

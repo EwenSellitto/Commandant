@@ -331,6 +331,8 @@ fn the_apps_commands_go_to_the_app() {
         ("/sessions", AppCommand::Sessions),
         ("/nodes", AppCommand::Nodes),
         ("/close", AppCommand::Close),
+        ("/help", AppCommand::Help),
+        ("/?", AppCommand::Help),
     ] {
         let (outcome, command) = app.submit(text);
         assert_eq!(command, Some(expected), "{text}");
@@ -649,13 +651,10 @@ fn projects_are_browsed_joined_or_copied() {
 }
 
 #[test]
-fn help_lists_every_command_and_key() {
-    let mut app = with_options();
-    let outcome = command(&mut app, "/help");
-    assert!(outcome.effects.is_empty());
-    assert_eq!(outcome.prompt, Some((app.id, Edit::Clear)));
-    let help = &app.thread.last().unwrap().text;
-    for needle in ["/providers", "/review", "Ctrl-T", "/quit"] {
-        assert!(help.contains(needle), "{needle} missing from {help}");
-    }
+fn the_agents_commands_are_known_once_loaded() {
+    assert_eq!(chat().agent_commands().count(), 0);
+    let app = with_options();
+    let commands: Vec<_> = app.agent_commands().collect();
+    assert_eq!(commands, [("review", "Review the changes")]);
+    assert!(app.is_command("review") && app.is_command("login"));
 }

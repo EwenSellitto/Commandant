@@ -176,6 +176,7 @@ impl State {
                     Some(AppCommand::Sessions) => self.intent(Intent::Sessions(id)),
                     Some(AppCommand::Nodes) => Outcome::go(Go::Nodes),
                     Some(AppCommand::Close) => self.close(id),
+                    Some(AppCommand::Help) => Outcome::go(Go::Help),
                 };
                 said.and(then)
             }

@@ -59,6 +59,8 @@ pub enum Go {
     Chat(ChatId),
     Nodes,
     Quit,
+    /// What every command and key does.
+    Help,
     /// The node hosts an agent now: worth opening, if it is the one in view.
     Ready(String),
 }
