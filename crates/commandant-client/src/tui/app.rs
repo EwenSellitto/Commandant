@@ -175,8 +175,7 @@ impl App {
     }
 
     pub fn on_update(&mut self, update: Update) {
-        let nodes = self.core.nodes();
-        let selected = nodes.get(self.selected).map(|n| n.id.clone());
+        let selected = self.core.nodes().get(self.selected).map(|n| n.id.clone());
         let next = self.core.on_update(update);
         // Keep the same node highlighted.
         let nodes = self.core.nodes();
@@ -288,7 +287,7 @@ pub(crate) mod tests {
     }
 
     /// The calls pressing `key` has the core make.
-    fn press(app: &mut App, key: KeyEvent) -> Vec<Effect> {
+    pub(crate) fn press(app: &mut App, key: KeyEvent) -> Vec<Effect> {
         app.core.take_effects();
         app.on_key(key);
         app.core.take_effects()

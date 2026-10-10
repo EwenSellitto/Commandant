@@ -3,11 +3,13 @@
 
 use std::time::Duration;
 
+use anyhow::Result;
 use commandant_proto::*;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
-use tokio::task::JoinSet;
+use tokio::task::{AbortHandle, JoinSet};
 
+use crate::config::Client;
 use crate::state::chat::Message;
 use crate::state::{ChatId, Effect, Failure, Update};
 
@@ -16,15 +18,67 @@ const NODE_REFRESH: Duration = Duration::from_secs(5);
 
 type Tx = mpsc::UnboundedSender<Update>;
 
-/// Starts the call an effect asks for, on `handle`. A cancel that fails is
-/// told to `chat`, if it was that chat's task.
-pub(crate) fn make(
-    effect: Effect,
-    chat: Option<ChatId>,
-    mut control: ControlClient,
-    handle: &Handle,
+/// The server, as a core calls it.
+pub(crate) struct Server {
+    control: ControlClient,
+    /// Where calls are made.
+    handle: Handle,
+    /// Where what they come to goes.
     tx: Tx,
-) {
+    /// Keeps the nodes' details current.
+    poll: AbortHandle,
+}
+
+impl Server {
+    /// Connects, on `handle`, and lists the nodes; what calls come to will
+    /// arrive on the receiver.
+    pub(crate) async fn connect(
+        client: &Client,
+        handle: Handle,
+    ) -> Result<(Self, Vec<NodeInfo>, mpsc::UnboundedReceiver<Update>)> {
+        let client = client.clone();
+        // On the handle, so this can be awaited without a tokio runtime.
+        let connect = handle.spawn(async move {
+            let mut control = client.connect().await?;
+            let nodes = control.list_nodes(ListNodesRequest {}).await?;
+            anyhow::Ok((control, nodes.into_inner().nodes))
+        });
+        let (control, nodes) = connect.await??;
+        let (tx, rx) = mpsc::unbounded_channel();
+        let poll = handle
+            .spawn(poll_nodes(control.clone(), tx.clone()))
+            .abort_handle();
+        let server = Self {
+            control,
+            handle,
+            tx,
+            poll,
+        };
+        Ok((server, nodes, rx))
+    }
+
+    /// Stops polling, and cancels `task_ids`, waiting for the server to say so.
+    pub(crate) async fn shutdown(&self, task_ids: Vec<String>) {
+        self.poll.abort();
+        let _ = self
+            .handle
+            .spawn(cancel_all(self.control.clone(), task_ids))
+            .await;
+    }
+
+    /// Starts the call an effect asks for.
+    pub(crate) fn call(&self, effect: Effect) {
+        call(effect, self.control.clone(), &self.handle, self.tx.clone());
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.poll.abort();
+    }
+}
+
+fn call(effect: Effect, mut control: ControlClient, handle: &Handle, tx: Tx) {
     match effect {
         Effect::Send(chat, request) => {
             handle.spawn(stream_prompt(control, chat, request, tx));
@@ -125,11 +179,9 @@ pub(crate) fn make(
                 Update::Chat(chat, Message::Auth(result))
             });
         }
-        Effect::Cancel(task_id) => {
+        Effect::Cancel(chat, task_id) => {
             handle.spawn(async move {
-                if let Err(status) = control.cancel_task(CancelTaskRequest { task_id }).await
-                    && let Some(chat) = chat
-                {
+                if let Err(status) = control.cancel_task(CancelTaskRequest { task_id }).await {
                     let failed = Message::Failed(status.message().to_string());
                     let _ = tx.send(Update::Chat(chat, failed));
                 }
@@ -197,7 +249,7 @@ async fn stream_prompt(mut control: ControlClient, chat: ChatId, request: Prompt
 }
 
 /// Keeps the nodes' details (online, harnesses) current.
-pub(crate) async fn poll_nodes(mut control: ControlClient, tx: Tx) {
+async fn poll_nodes(mut control: ControlClient, tx: Tx) {
     let mut every = tokio::time::interval(NODE_REFRESH);
     every.tick().await;
     loop {
@@ -212,7 +264,7 @@ pub(crate) async fn poll_nodes(mut control: ControlClient, tx: Tx) {
 }
 
 /// Cancels every task in `task_ids`, and waits for the server to say so.
-pub(crate) async fn cancel_all(control: ControlClient, task_ids: Vec<String>) {
+async fn cancel_all(control: ControlClient, task_ids: Vec<String>) {
     let cancels: JoinSet<_> = task_ids
         .into_iter()
         .map(|task_id| {

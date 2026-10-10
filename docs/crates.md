@@ -106,7 +106,7 @@ server, which keeps the calls it would make.
 | File | |
 |---|---|
 | `lib.rs` | `Core`: starts on a working connection, takes intents and updates, makes the calls they ask for on the tokio runtime it is given, and is read through `&` accessors; `shutdown` cancels running tasks |
-| `calls.rs` | Every call to the server: prompt streams, questions to nodes, the 5-second node poll |
+| `calls.rs` | The connection to the server and every call made on it: prompt streams, questions to nodes, cancels, the 5-second node poll |
 | `config.rs` | Where clients find the server and token, and connecting |
 | `state/mod.rs` | What the client knows: the nodes and every chat |
 | `state/intent.rs`, `state/ask.rs` | What goes in (intents, updates) and comes out (effects, where to go, prompt edits); the asks (choose, enter, confirm, show), one per chat and one for the app |

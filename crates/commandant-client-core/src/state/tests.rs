@@ -299,7 +299,7 @@ fn cancelling_before_a_background_task_starts_still_cancels_it() {
     // Even if another chat is shown when the task starts.
     another(&mut state, id);
     let outcome = state.update(Update::Chat(id, started("t1")));
-    assert!(matches!(&outcome.effects[..], [Effect::Cancel(t)] if t == "t1"));
+    assert!(matches!(&outcome.effects[..], [Effect::Cancel(_, t)] if t == "t1"));
 }
 
 #[test]

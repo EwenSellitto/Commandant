@@ -15,11 +15,11 @@ pub use self::state::{
 };
 
 use anyhow::Result;
-use commandant_proto::*;
+use commandant_proto::NodeInfo;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
-use tokio::task::AbortHandle;
 
+use self::calls::Server;
 use self::config::Client;
 use self::state::{Outcome, State};
 
@@ -31,14 +31,6 @@ pub struct Core {
     /// The calls an offline core would have made, for a front end's tests.
     #[cfg(any(test, feature = "test-support"))]
     kept: Vec<Effect>,
-}
-
-struct Server {
-    control: ControlClient,
-    handle: Handle,
-    tx: mpsc::UnboundedSender<Update>,
-    /// Keeps the nodes' details current.
-    poll: AbortHandle,
 }
 
 /// What background calls report, for the front end to hand to
@@ -73,53 +65,14 @@ impl Core {
         defaults: Settings,
         handle: Handle,
     ) -> Result<(Self, Updates)> {
-        let client = client.clone();
-        let connect = handle.spawn(async move {
-            let mut control = client.connect().await?;
-            let nodes = control.list_nodes(ListNodesRequest {}).await?;
-            anyhow::Ok((control, nodes.into_inner().nodes))
-        });
-        let (control, nodes) = connect.await??;
-        let (tx, rx) = mpsc::unbounded_channel();
-        let poll = handle
-            .spawn(calls::poll_nodes(control.clone(), tx.clone()))
-            .abort_handle();
-        let server = Server {
-            control,
-            handle,
-            tx,
-            poll,
-        };
+        let (server, nodes, updates) = Server::connect(client, handle).await?;
         let core = Self {
             state: State::new(nodes, defaults),
             server: Some(server),
             #[cfg(any(test, feature = "test-support"))]
             kept: Vec::new(),
         };
-        Ok((core, Updates(rx)))
-    }
-
-    /// A core knowing `nodes` and no server: the calls it would make are
-    /// kept, for [`take_effects`](Self::take_effects).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn offline(nodes: Vec<NodeInfo>, defaults: Settings) -> Self {
-        Self {
-            state: State::new(nodes, defaults),
-            server: None,
-            kept: Vec::new(),
-        }
-    }
-
-    /// The calls an offline core would have made since last asked.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn take_effects(&mut self) -> Vec<Effect> {
-        std::mem::take(&mut self.kept)
-    }
-
-    /// Asks `ask` in `scope`, as the core will once it has a reason to.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn set_ask(&mut self, scope: Scope, ask: Ask) {
-        self.state.set_ask(scope, ask);
+        Ok((core, Updates(updates)))
     }
 
     /// Does what the person asks.
@@ -137,12 +90,9 @@ impl Core {
     /// Cancels the tasks still running, so no agent works for nobody, and
     /// stops calling the server.
     pub async fn shutdown(&mut self) {
-        let Some(server) = &self.server else {
-            return;
-        };
-        server.poll.abort();
-        let cancel = calls::cancel_all(server.control.clone(), self.state.running_tasks());
-        let _ = server.handle.spawn(cancel).await;
+        if let Some(server) = &self.server {
+            server.shutdown(self.state.running_tasks()).await;
+        }
     }
 
     /// Makes the calls an outcome asks for.
@@ -153,34 +103,15 @@ impl Core {
             prompt,
         } = outcome;
         for effect in effects {
-            self.call(effect);
+            match &self.server {
+                Some(server) => server.call(effect),
+                #[cfg(any(test, feature = "test-support"))]
+                None => self.kept.push(effect),
+                #[cfg(not(any(test, feature = "test-support")))]
+                None => {}
+            }
         }
         Next { go, prompt }
-    }
-
-    fn call(&mut self, effect: Effect) {
-        let Some(Server {
-            control,
-            handle,
-            tx,
-            ..
-        }) = &self.server
-        else {
-            #[cfg(any(test, feature = "test-support"))]
-            self.kept.push(effect);
-            return;
-        };
-        // A failed cancel is told to the chat whose task it was.
-        let chat = match &effect {
-            Effect::Cancel(task_id) => self
-                .state
-                .chats
-                .iter()
-                .find(|c| c.running_task().as_ref() == Some(task_id))
-                .map(|c| c.id),
-            _ => None,
-        };
-        calls::make(effect, chat, control.clone(), handle, tx.clone());
     }
 
     /// The nodes, as last listed.
@@ -224,11 +155,27 @@ impl Core {
     }
 }
 
-impl Drop for Core {
-    fn drop(&mut self) {
-        if let Some(server) = &self.server {
-            server.poll.abort();
+/// A core for front ends' tests.
+#[cfg(any(test, feature = "test-support"))]
+impl Core {
+    /// A core knowing `nodes` and no server: the calls it would make are
+    /// kept, for [`take_effects`](Self::take_effects).
+    pub fn offline(nodes: Vec<NodeInfo>, defaults: Settings) -> Self {
+        Self {
+            state: State::new(nodes, defaults),
+            server: None,
+            kept: Vec::new(),
         }
+    }
+
+    /// The calls an offline core would have made since last asked.
+    pub fn take_effects(&mut self) -> Vec<Effect> {
+        std::mem::take(&mut self.kept)
+    }
+
+    /// Asks `ask` in `scope`, as the core will once it has a reason to.
+    pub fn set_ask(&mut self, scope: Scope, ask: Ask) {
+        self.state.set_ask(scope, ask);
     }
 }
 

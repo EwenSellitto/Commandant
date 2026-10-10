@@ -94,7 +94,7 @@ impl Chat {
                     *task_id = Some(started.task_id.clone());
                     // Esc was pressed before the task had an id.
                     if *cancelling {
-                        return Some(Effect::Cancel(started.task_id));
+                        return Some(Effect::Cancel(self.id, started.task_id));
                     }
                 }
             }

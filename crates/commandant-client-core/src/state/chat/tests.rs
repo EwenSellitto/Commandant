@@ -110,7 +110,7 @@ fn cancelling_cancels_the_task_once() {
     let mut app = chat();
     send(&mut app, "hi");
     assert!(app.on_message(started("t1")).is_none());
-    assert!(matches!(app.cancel(), Some(Effect::Cancel(id)) if id == "t1"));
+    assert!(matches!(app.cancel(), Some(Effect::Cancel(_, id)) if id == "t1"));
     assert!(app.cancel().is_none());
 }
 
@@ -128,7 +128,7 @@ fn cancelling_before_the_task_starts_cancels_it_when_it_does() {
     ));
     assert!(matches!(
         app.on_message(started("t1")),
-        Some(Effect::Cancel(id)) if id == "t1"
+        Some(Effect::Cancel(_, id)) if id == "t1"
     ));
 }
 

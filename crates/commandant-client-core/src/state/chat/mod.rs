@@ -344,7 +344,9 @@ impl Chat {
             return None;
         }
         *cancelling = true;
-        task_id.clone().map(Effect::Cancel)
+        task_id
+            .clone()
+            .map(|task_id| Effect::Cancel(self.id, task_id))
     }
 
     pub fn info(&mut self, text: &str) {

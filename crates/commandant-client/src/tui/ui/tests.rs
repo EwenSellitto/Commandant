@@ -5,7 +5,7 @@ use ratatui::buffer::Buffer;
 use ratatui::style::Modifier;
 
 use super::*;
-use crate::tui::app::tests::{app, ask_for_a_key};
+use crate::tui::app::tests::{app, ask_for_a_key, press};
 use commandant_client_core::state::fixtures::{bare, output};
 use commandant_client_core::{Core, Scope, Update};
 use commandant_proto::OutputStream;
@@ -242,9 +242,7 @@ fn a_list_coming_while_a_key_is_typed_leaves_it_hidden() {
     assert!(absent(&buf, "Projects"), "it waits");
 
     // Enter still sends it as the key.
-    app.core.take_effects();
-    app.on_key(KeyEvent::from(KeyCode::Enter));
-    let effects = app.core.take_effects();
+    let effects = press(&mut app, KeyEvent::from(KeyCode::Enter));
     assert!(matches!(
         &effects[..],
         [commandant_client_core::Effect::Authenticate { .. }]

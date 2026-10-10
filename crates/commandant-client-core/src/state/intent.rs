@@ -123,7 +123,8 @@ impl From<Option<Effect>> for Outcome {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     Send(ChatId, PromptRequest),
-    Cancel(String),
+    /// Cancel the chat's task; a failure is told to the chat.
+    Cancel(ChatId, String),
     /// Ask a node what its agent offers, after a pause.
     FetchOptions {
         node: String,
