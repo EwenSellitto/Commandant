@@ -22,7 +22,7 @@ mod tests;
 use self::lists::{draw_dialog, draw_picker, draw_suggestions};
 use self::nodes::draw_nodes;
 use crate::state::chat::{self, Activity, Chat, Role, Unseen};
-use crate::state::{Ask, ChatId, Scope};
+use crate::state::{Ask, ChatId};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// The prompt's slab.
@@ -52,7 +52,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area().inner(ratatui::layout::Margin::new(1, 0));
     let Screen::Chat(id) = app.screen else {
         draw_nodes(frame, app, area);
-        draw_asks(frame, app, Color::Cyan, &[Scope::App]);
+        draw_asks(frame, app, Color::Cyan);
         return;
     };
     let [header, tabs, thread, status, input, footer] = Layout::vertical([
@@ -81,12 +81,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         accent,
         thread,
     );
-    draw_asks(frame, app, accent, &[Scope::Chat(id), Scope::App]);
+    draw_asks(frame, app, accent);
 }
 
-/// What is asked in each of `scopes`, the last over the others.
-fn draw_asks(frame: &mut Frame, app: &App, accent: Color, scopes: &[Scope]) {
-    for &scope in scopes {
+/// What is asked on screen, the one on top drawn last.
+fn draw_asks(frame: &mut Frame, app: &App, accent: Color) {
+    for scope in app.scopes().into_iter().rev() {
         match app.pickers.get(&scope) {
             Some(picker) => draw_picker(frame, accent, picker),
             None => draw_dialog(frame, accent, app.state.ask(scope)),

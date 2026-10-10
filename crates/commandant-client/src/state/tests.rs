@@ -638,7 +638,7 @@ fn a_chat_asks_for_a_key_on_its_own_and_one_thing_at_a_time() {
         provider: "acme".into(),
         oauth: None,
     };
-    state.intent(Intent::Choose(Scope::Chat(id), key.clone()));
+    state.intent(Intent::Choose(Scope::Chat(id), key));
     assert!(state.ask(Scope::Chat(id)).is_some_and(Ask::secret));
     assert!(
         state.ask(Scope::Chat(other)).is_none(),
@@ -651,15 +651,16 @@ fn a_chat_asks_for_a_key_on_its_own_and_one_thing_at_a_time() {
     assert!(state.ask(Scope::Chat(id)).is_some_and(Ask::secret));
     state.intent(Intent::Dismiss(Scope::App));
 
-    // Another question in the chat takes the key's place, and says so.
+    // A question coming late waits: the key is still asked for, and isn't
+    // chosen over.
     state.update(providers());
-    assert!(state.ask(Scope::Chat(id)).and_then(Ask::choices).is_some());
+    assert!(state.ask(Scope::Chat(id)).is_some_and(Ask::secret));
     let said = &chat(&state, id).thread.last().unwrap().text;
-    assert_eq!(said, "not signed in");
-    let ignored = state.intent(Intent::Enter(Scope::Chat(id), "sk-secret".into()));
-    assert!(ignored.effects.is_empty());
+    assert!(said.contains("finish signing in first"), "{said}");
+    let over = Intent::Choose(Scope::Chat(id), Choose::Provider("acme".into()));
+    assert!(state.intent(over).effects.is_empty());
+    assert!(state.ask(Scope::Chat(id)).is_some_and(Ask::secret));
 
-    state.intent(Intent::Choose(Scope::Chat(id), key));
     let outcome = state.intent(Intent::Enter(Scope::Chat(id), "sk-secret".into()));
     let [Effect::Authenticate { action, .. }] = &outcome.effects[..] else {
         panic!("the key is sent");

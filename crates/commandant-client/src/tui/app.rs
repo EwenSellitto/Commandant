@@ -54,6 +54,16 @@ impl App {
         }
     }
 
+    /// Where questions are shown on screen, the one on top first: the
+    /// app's, then the shown chat's.
+    pub fn scopes(&self) -> Vec<Scope> {
+        let mut scopes = vec![Scope::App];
+        if let Screen::Chat(id) = self.screen {
+            scopes.push(Scope::Chat(id));
+        }
+        scopes
+    }
+
     /// The chat on screen, if any.
     pub fn chat(&self) -> Option<&Chat> {
         match self.screen {
@@ -103,13 +113,10 @@ impl App {
             self.quit = true;
             return Vec::new();
         }
-        // A question takes the keys: the app's, else the shown chat's.
-        let chat = match self.screen {
-            Screen::Chat(id) => Some(Scope::Chat(id)),
-            Screen::Nodes => None,
-        };
-        for scope in [Some(Scope::App), chat].into_iter().flatten() {
-            if let Some(ask) = self.state.ask(scope).filter(|a| asks::takes_keys(a)) {
+        // A question takes the keys, the one on top first; a line asked for
+        // is typed in the prompt.
+        for scope in self.scopes() {
+            if let Some(ask) = self.state.ask(scope).filter(|a| !a.wants_line()) {
                 let intent = asks::on_key(ask, self.pickers.get_mut(&scope), scope, key);
                 return intent.map_or_else(Vec::new, |intent| self.act(intent));
             }

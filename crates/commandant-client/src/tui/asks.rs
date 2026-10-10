@@ -7,12 +7,6 @@ use crossterm::event::{KeyCode, KeyEvent};
 use super::picker::Picker;
 use crate::state::{Ask, Intent, Scope};
 
-/// Whether `ask` takes every key: all but a line asked for, which is typed
-/// in the chat's prompt.
-pub fn takes_keys(ask: &Ask) -> bool {
-    !matches!(ask, Ask::Enter { .. })
-}
-
 /// What a key says to `ask`, asked in `scope` and shown with `picker` when
 /// it is one to choose from; nothing while it stays open.
 pub fn on_key(

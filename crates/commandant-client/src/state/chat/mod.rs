@@ -235,13 +235,17 @@ impl Chat {
 
     /// Whether the chat asks for a line, which its prompt is then for.
     pub fn entering(&self) -> bool {
-        matches!(self.ask, Some(Ask::Enter { .. }))
+        self.ask.as_ref().is_some_and(Ask::wants_line)
     }
 
-    /// Asks `ask` instead of what was asked; a line asked for is no
-    /// longer waited for, which is said.
+    /// Asks `ask` instead of what was asked; but a line being typed, a key
+    /// say, is never pushed aside, so it stays hidden and goes where it was
+    /// asked for.
     fn put(&mut self, ask: impl Into<Ask>) {
-        self.dismiss();
+        if self.entering() {
+            self.info("finish signing in first (Esc to cancel), then ask again");
+            return;
+        }
         self.ask = Some(ask.into());
     }
 

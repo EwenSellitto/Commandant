@@ -12,7 +12,7 @@ const PAGE: usize = 10;
 
 pub struct Picker {
     /// What it offers, as the state last had it.
-    pick: Choices,
+    choices: Choices,
     pub filter: String,
     /// Indexes into the choices that match the filter.
     shown: Vec<usize>,
@@ -21,17 +21,16 @@ pub struct Picker {
 }
 
 impl Picker {
-    /// Shows `pick` narrowed down by `filter`, as if it had been typed;
+    /// Shows `choices` narrowed down by `filter`, as if it had been typed;
     /// unfiltered, on the current choice.
-    fn new(pick: &Choices, filter: &str) -> Self {
-        let choices = &pick.choices;
-        let current = pick.current.as_ref();
+    fn new(choices: &Choices, filter: &str) -> Self {
+        let current = choices.current.as_ref();
         let selected = current
-            .and_then(|current| choices.iter().position(|c| &c.value == current))
+            .and_then(|current| choices.choices.iter().position(|c| &c.value == current))
             .unwrap_or(0);
         let mut picker = Self {
-            shown: (0..choices.len()).collect(),
-            pick: pick.clone(),
+            shown: (0..choices.choices.len()).collect(),
+            choices: choices.clone(),
             filter: String::new(),
             selected,
         };
@@ -42,29 +41,29 @@ impl Picker {
         picker
     }
 
-    /// The picker to show `pick` with, given the one `shown`: a new one as
+    /// The picker to show `choices` with, given the one `shown`: a new one as
     /// it opens, the same one, its filter kept, as its choices change.
-    pub fn sync(shown: Option<Self>, pick: Option<&Choices>) -> Option<Self> {
-        let pick = pick?;
+    pub fn sync(shown: Option<Self>, choices: Option<&Choices>) -> Option<Self> {
+        let choices = choices?;
         Some(match shown {
-            Some(shown) if shown.pick.revision == pick.revision => shown,
-            Some(shown) if shown.pick.id == pick.id => Self::new(pick, &shown.filter),
-            _ => Self::new(pick, &pick.filter),
+            Some(shown) if shown.choices.revision == choices.revision => shown,
+            Some(shown) if shown.choices.id == choices.id => Self::new(choices, &shown.filter),
+            _ => Self::new(choices, &choices.filter),
         })
     }
 
     pub fn title(&self) -> &'static str {
-        self.pick.title
+        self.choices.title
     }
 
     /// More choices are on their way.
     pub fn loading(&self) -> bool {
-        self.pick.loading
+        self.choices.loading
     }
 
     /// The choices that match the filter, in order.
     pub fn shown(&self) -> impl Iterator<Item = &Choice> {
-        self.shown.iter().map(|&i| &self.pick.choices[i])
+        self.shown.iter().map(|&i| &self.choices.choices[i])
     }
 
     pub fn shown_len(&self) -> usize {
@@ -72,7 +71,7 @@ impl Picker {
     }
 
     pub fn total(&self) -> usize {
-        self.pick.choices.len()
+        self.choices.choices.len()
     }
 
     /// What a key says to the question asked in `scope`; nothing while
@@ -117,7 +116,7 @@ impl Picker {
             .split_whitespace()
             .map(str::to_lowercase)
             .collect();
-        let choices = &self.pick.choices;
+        let choices = &self.choices.choices;
         self.shown = (0..choices.len())
             .filter(|&i| {
                 let haystack = format!("{} {}", choices[i].label, choices[i].detail).to_lowercase();

@@ -151,6 +151,10 @@ impl Chat {
 
     /// Does what was chosen from the chat's question, which closes.
     pub(in crate::state) fn choose(&mut self, choice: Choose) -> Outcome {
+        // A line asked for is answered, or dismissed, not chosen over.
+        if self.entering() {
+            return Outcome::default();
+        }
         self.ask = None;
         match choice {
             Choose::Agent(agent) => self.settings.agent = agent,

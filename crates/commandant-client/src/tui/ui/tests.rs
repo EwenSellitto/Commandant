@@ -5,8 +5,8 @@ use ratatui::buffer::Buffer;
 use ratatui::style::Modifier;
 
 use super::*;
-use crate::state::Update;
 use crate::state::fixtures::{bare, output};
+use crate::state::{Scope, Update};
 use crate::tui::app::tests::{app, ask_for_a_key};
 use commandant_proto::OutputStream;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -213,6 +213,39 @@ fn an_api_key_is_masked_while_typed() {
     let buf = render(&mut app);
     find(&buf, "••••••");
     assert!(absent(&buf, "sk-abc"));
+}
+
+#[test]
+fn a_list_coming_while_a_key_is_typed_leaves_it_hidden() {
+    let mut app = app();
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    let id = app.state.chats[0].id;
+    // Asked for before the key, the projects come while it is typed.
+    for c in "/project".chars() {
+        app.on_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    ask_for_a_key(&mut app);
+    for c in "sk-abc".chars() {
+        app.on_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    let project = commandant_proto::Project {
+        name: "app".into(),
+        ..Default::default()
+    };
+    let listed = crate::state::chat::Message::Projects(Ok(vec![project]));
+    app.on_update(Update::Chat(id, listed));
+    let buf = render(&mut app);
+    find(&buf, "••••••");
+    assert!(absent(&buf, "sk-abc"));
+    assert!(absent(&buf, "Projects"), "it waits");
+
+    // Enter still sends it as the key.
+    let effects = app.on_key(KeyEvent::from(KeyCode::Enter));
+    assert!(matches!(
+        &effects[..],
+        [crate::state::Effect::Authenticate { .. }]
+    ));
 }
 
 #[test]

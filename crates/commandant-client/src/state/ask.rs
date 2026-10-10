@@ -33,7 +33,12 @@ pub enum Ask {
     },
     /// Something to read, or copy.
     #[allow(dead_code, reason = "nothing asks for one yet")]
-    Show { title: String, text: String },
+    Show {
+        /// What it is: "Link".
+        title: String,
+        /// What to read, or copy.
+        text: String,
+    },
 }
 
 impl Ask {
@@ -43,6 +48,11 @@ impl Ask {
             Self::Choose(choices) => Some(choices),
             _ => None,
         }
+    }
+
+    /// Whether this asks for a line, typed where a prompt would be.
+    pub fn wants_line(&self) -> bool {
+        matches!(self, Self::Enter { .. })
     }
 
     /// Whether this asks for a line that is never shown.
