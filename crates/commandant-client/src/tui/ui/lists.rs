@@ -8,9 +8,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 
 use super::{MUTED, PANEL, SELECTED, hints, spinner};
-use crate::state::Ask;
 use crate::tui::picker::Picker;
 use crate::tui::text;
+use commandant_client_core::Ask;
 
 /// The commands completing what is typed, on a panel at the bottom of
 /// `area`, just over the prompt.

@@ -21,8 +21,8 @@ mod tests;
 
 use self::lists::{draw_dialog, draw_picker, draw_suggestions};
 use self::nodes::draw_nodes;
-use crate::state::chat::{self, Activity, Chat, Role, Unseen};
-use crate::state::{Ask, ChatId};
+use commandant_client_core::chat::{self, Activity, Chat, Role, Unseen};
+use commandant_client_core::{Ask, ChatId};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// The prompt's slab.
@@ -65,7 +65,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .areas(area);
     draw_tabs(frame, app, id, tabs);
-    let (Some(chat), Some(view)) = (app.state.chat(id), app.views.get_mut(&id)) else {
+    let (Some(chat), Some(view)) = (app.core.chat(id), app.views.get_mut(&id)) else {
         return;
     };
     draw_header(frame, chat, header);
@@ -89,7 +89,7 @@ fn draw_asks(frame: &mut Frame, app: &App, accent: Color) {
     for scope in app.scopes().into_iter().rev() {
         match app.pickers.get(&scope) {
             Some(picker) => draw_picker(frame, accent, picker),
-            None => draw_dialog(frame, accent, app.state.ask(scope)),
+            None => draw_dialog(frame, accent, app.core.ask(scope)),
         }
     }
 }
@@ -101,13 +101,13 @@ fn draw_tabs(frame: &mut Frame, app: &App, shown: ChatId, area: Rect) {
         return;
     };
     let tabs: Vec<Vec<Span<'static>>> = app
-        .state
+        .core
         .chats_on(&node)
         .enumerate()
         .map(|(i, chat)| tab(i + 1, chat, chat.id == shown))
         .collect();
     let at = app
-        .state
+        .core
         .chats_on(&node)
         .position(|c| c.id == shown)
         .unwrap_or(0);

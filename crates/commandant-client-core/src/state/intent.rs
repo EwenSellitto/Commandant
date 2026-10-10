@@ -13,7 +13,13 @@ use super::{ChatId, Choose};
 pub enum Intent {
     /// Show one of a node's chats: `chat`, the one the front end last
     /// showed, if it is still open, else its newest, else a new one.
-    Open { node: String, chat: Option<ChatId> },
+    Open {
+        node: String,
+        chat: Option<ChatId>,
+        /// Rather, a new chat on this session of the agent's, or on a new
+        /// one if empty: what a front end is started on.
+        session: Option<String>,
+    },
     /// Another chat on the same node, with the same settings.
     NewChat(ChatId),
     /// Choose one of the chat's node's chats or saved sessions.
@@ -68,7 +74,7 @@ pub enum Edit {
 
 /// What an intent or an update comes to, beyond what the state keeps.
 #[derive(Default)]
-pub struct Outcome {
+pub(crate) struct Outcome {
     pub effects: Vec<Effect>,
     pub go: Option<Go>,
     pub prompt: Option<(ChatId, Edit)>,

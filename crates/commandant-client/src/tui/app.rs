@@ -1,17 +1,17 @@
 //! The terminal's side of the client: which screen is shown, the
 //! highlighted node, each chat's prompt, the pickers as shown, and what keys
-//! ask of the [`State`].
+//! ask of the [`Core`].
 
 use std::collections::HashMap;
 
-use commandant_proto::*;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::asks;
 use super::chat::ChatView;
 use super::picker::Picker;
-use crate::state::chat::{Chat, Settings};
-use crate::state::{Ask, ChatId, Effect, Go, Intent, Outcome, Scope, State, Update, cycle};
+use commandant_client_core::{
+    Ask, Chat, ChatId, Core, Edit, Go, Intent, Next, Scope, Update, cycle,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Screen {
@@ -21,13 +21,13 @@ pub enum Screen {
 }
 
 pub struct App {
-    pub state: State,
+    pub core: Core,
     pub screen: Screen,
     /// The highlighted row of the node list.
     pub selected: usize,
     /// The chat last shown on each node.
     last: HashMap<String, ChatId>,
-    /// What the terminal keeps of each chat, kept in step with the state's
+    /// What the terminal keeps of each chat, kept in step with the core's
     /// chats by [`sync`](Self::sync).
     pub views: HashMap<ChatId, ChatView>,
     /// The pickers of the app and its chats, as shown.
@@ -37,14 +37,15 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(nodes: Vec<NodeInfo>, defaults: Settings) -> Self {
+    pub fn new(core: Core) -> Self {
         // Start on the first node that can take a prompt.
-        let selected = nodes
+        let selected = core
+            .nodes()
             .iter()
             .position(|n| n.online && !n.harnesses.is_empty())
             .unwrap_or(0);
         Self {
-            state: State::new(nodes, defaults),
+            core,
             screen: Screen::default(),
             selected,
             last: HashMap::new(),
@@ -67,7 +68,7 @@ impl App {
     /// The chat on screen, if any.
     pub fn chat(&self) -> Option<&Chat> {
         match self.screen {
-            Screen::Chat(id) => self.state.chat(id),
+            Screen::Chat(id) => self.core.chat(id),
             Screen::Nodes => None,
         }
     }
@@ -82,43 +83,38 @@ impl App {
         let Screen::Chat(id) = self.screen else {
             return None;
         };
-        let chat = self.state.chat(id)?;
+        let chat = self.core.chat(id)?;
         Some((chat, self.views.entry(id).or_default()))
     }
 
-    /// Opens a chat on `node` with `settings`: the first shown on start.
-    pub fn open_node_with(&mut self, node: NodeInfo, settings: Settings) -> Vec<Effect> {
-        let outcome = self.state.open_with(node, settings);
-        self.apply(outcome)
-    }
-
-    pub fn on_input(&mut self, event: Event) -> Vec<Effect> {
+    pub fn on_input(&mut self, event: Event) {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
             Event::Paste(text) => {
                 if let Some((_, view)) = self.shown() {
                     view.paste(&text);
                 }
-                Vec::new()
             }
-            _ => Vec::new(),
+            _ => {}
         }
     }
 
-    pub fn on_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+    pub fn on_key(&mut self, key: KeyEvent) {
         self.sync();
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         if ctrl && matches!(key.code, KeyCode::Char('c' | 'd')) {
             self.quit = true;
-            return Vec::new();
+            return;
         }
         // A question takes the keys, the one on top first; a line asked for
         // is typed in the prompt.
         for scope in self.scopes() {
-            if let Some(ask) = self.state.ask(scope).filter(|a| !a.wants_line()) {
-                let intent = asks::on_key(ask, self.pickers.get_mut(&scope), scope, key);
-                return intent.map_or_else(Vec::new, |intent| self.act(intent));
+            if let Some(ask) = self.core.ask(scope).filter(|a| !a.wants_line()) {
+                if let Some(intent) = asks::on_key(ask, self.pickers.get_mut(&scope), scope, key) {
+                    self.act(intent);
+                }
+                return;
             }
         }
         let Some((chat, view)) = self.shown() else {
@@ -131,86 +127,86 @@ impl App {
             KeyCode::Char('w') if ctrl => Some(Intent::Close(id)),
             KeyCode::Char('g') if ctrl => {
                 self.show_nodes();
-                return Vec::new();
+                return;
             }
             KeyCode::Left if alt => return self.cycle_chat(-1),
             KeyCode::Right if alt => return self.cycle_chat(1),
             _ => view.on_key(chat, key),
         };
-        intent.map_or_else(Vec::new, |intent| self.act(intent))
+        if let Some(intent) = intent {
+            self.act(intent);
+        }
     }
 
-    fn on_node_key(&mut self, key: KeyEvent) -> Vec<Effect> {
-        let last = self.state.nodes.len().saturating_sub(1);
+    fn on_node_key(&mut self, key: KeyEvent) {
+        let last = self.core.nodes().len().saturating_sub(1);
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => self.selected = (self.selected + 1).min(last),
             KeyCode::Char('q') => self.quit = true,
-            KeyCode::Enter => return self.open_selected_node(),
+            KeyCode::Enter => self.open_selected_node(),
             _ => {}
         }
-        Vec::new()
     }
 
     /// Shows the highlighted node's last chat, or starts one.
-    fn open_selected_node(&mut self) -> Vec<Effect> {
-        let Some(node) = self.state.nodes.get(self.selected) else {
-            return Vec::new();
+    fn open_selected_node(&mut self) {
+        let Some(node) = self.core.nodes().get(self.selected) else {
+            return;
         };
         let chat = self.last.get(&node.id).copied();
         let node = node.id.clone();
-        self.act(Intent::Open { node, chat })
+        self.act(Intent::Open {
+            node,
+            chat,
+            session: None,
+        });
     }
 
     /// Shows the next (or previous) chat on the same node.
-    fn cycle_chat(&mut self, step: isize) -> Vec<Effect> {
+    fn cycle_chat(&mut self, step: isize) {
         let Some(chat) = self.chat() else {
-            return Vec::new();
+            return;
         };
-        let ids: Vec<ChatId> = self.state.chats_on(&chat.node.id).map(|c| c.id).collect();
+        let ids: Vec<ChatId> = self.core.chats_on(&chat.node.id).map(|c| c.id).collect();
         if let Some(next) = cycle(&ids, chat.id, step) {
             self.show(next);
         }
-        Vec::new()
     }
 
-    pub fn on_update(&mut self, update: Update) -> Vec<Effect> {
-        let selected = self.state.nodes.get(self.selected).map(|n| n.id.clone());
-        let outcome = self.state.update(update);
+    pub fn on_update(&mut self, update: Update) {
+        let nodes = self.core.nodes();
+        let selected = nodes.get(self.selected).map(|n| n.id.clone());
+        let next = self.core.on_update(update);
         // Keep the same node highlighted.
-        if let Some(at) = selected.and_then(|id| self.state.nodes.iter().position(|n| n.id == id)) {
+        let nodes = self.core.nodes();
+        if let Some(at) = selected.and_then(|id| nodes.iter().position(|n| n.id == id)) {
             self.selected = at;
         }
-        self.selected = self.selected.min(self.state.nodes.len().saturating_sub(1));
-        let effects = self.apply(outcome);
+        self.selected = self.selected.min(nodes.len().saturating_sub(1));
+        self.apply(next);
         // What happens in the chat on screen is seen as it happens.
         if let Screen::Chat(id) = self.screen {
-            self.state.intent(Intent::Seen(id));
+            self.core.act(Intent::Seen(id));
         }
-        effects
     }
 
-    /// Asks the state for something, and follows where that leads.
-    fn act(&mut self, intent: Intent) -> Vec<Effect> {
-        let outcome = self.state.intent(intent);
-        self.apply(outcome)
+    /// Asks the core for something, and follows where that leads.
+    pub fn act(&mut self, intent: Intent) {
+        let next = self.core.act(intent);
+        self.apply(next);
     }
 
-    /// Does the terminal's part of an outcome, and returns the calls to make.
-    fn apply(&mut self, outcome: Outcome) -> Vec<Effect> {
-        let Outcome {
-            mut effects,
-            go,
-            prompt,
-        } = outcome;
+    /// Does the terminal's part of what the core says comes next.
+    fn apply(&mut self, next: Next) {
+        let Next { go, prompt } = next;
         if let Some((id, edit)) = prompt {
-            self.view(id).edit(edit);
-        }
-        for effect in &effects {
-            // A prompt sent: back to the bottom of its thread.
-            if let Effect::Send(id, _) = effect {
-                self.view(*id).scroll = 0;
+            let view = self.view(id);
+            // The line was taken: back to the bottom of its thread.
+            if edit == Edit::Clear {
+                view.scroll = 0;
             }
+            view.edit(edit);
         }
         match go {
             Some(Go::Chat(id)) => self.show(id),
@@ -218,49 +214,48 @@ impl App {
             Some(Go::Quit) => self.quit = true,
             // Still looking at it: open it.
             Some(Go::Ready(node)) => {
-                let selected = self.state.nodes.get(self.selected).map(|n| &n.id);
+                let selected = self.core.nodes().get(self.selected).map(|n| &n.id);
                 if self.screen == Screen::Nodes && selected == Some(&node) {
-                    effects.extend(self.open_selected_node());
+                    self.open_selected_node();
                 }
             }
             None => {}
         }
         self.sync();
-        effects
     }
 
     fn show(&mut self, id: ChatId) {
-        let Some(chat) = self.state.chat(id) else {
+        let Some(chat) = self.core.chat(id) else {
             return;
         };
         self.last.insert(chat.node.id.clone(), id);
         self.screen = Screen::Chat(id);
-        self.state.intent(Intent::Seen(id));
+        self.core.act(Intent::Seen(id));
     }
 
     fn show_nodes(&mut self) {
         if let Some(chat) = self.chat()
-            && let Some(at) = self.state.nodes.iter().position(|n| n.id == chat.node.id)
+            && let Some(at) = self.core.nodes().iter().position(|n| n.id == chat.node.id)
         {
             self.selected = at;
         }
-        self.state.intent(Intent::Dismiss(Scope::App));
+        self.core.act(Intent::Dismiss(Scope::App));
         self.screen = Screen::Nodes;
     }
 
-    /// Shows what the state asks to choose, and forgets closed chats.
+    /// Shows what the core asks to choose, and forgets closed chats.
     pub fn sync(&mut self) {
-        let state = &self.state;
-        self.views.retain(|id, _| state.chat(*id).is_some());
-        for chat in &state.chats {
+        let core = &self.core;
+        self.views.retain(|id, _| core.chat(*id).is_some());
+        for chat in core.chats() {
             self.views.entry(chat.id).or_default();
         }
         let mut shown = std::mem::take(&mut self.pickers);
-        let chats = state.chats.iter().map(|c| Scope::Chat(c.id));
+        let chats = core.chats().iter().map(|c| Scope::Chat(c.id));
         self.pickers = std::iter::once(Scope::App)
             .chain(chats)
             .filter_map(|scope| {
-                let choices = state.ask(scope).and_then(Ask::choices);
+                let choices = core.ask(scope).and_then(Ask::choices);
                 Some((scope, Picker::sync(shown.remove(&scope), choices)?))
             })
             .collect();
@@ -270,13 +265,14 @@ impl App {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::state::Choose;
-    use crate::state::chat::Unseen;
-    use crate::state::fixtures::{acme, bare, method, node, started};
+    use commandant_client_core::chat::Unseen;
+    use commandant_client_core::state::fixtures::{acme, bare, method, node, started};
+    use commandant_client_core::{Choose, Effect, Settings};
+    use commandant_proto::*;
 
     pub(crate) fn app() -> App {
         let nodes = vec![node("n1", true), node("n2", true), node("n3", false)];
-        App::new(nodes, Settings::default())
+        App::new(Core::offline(nodes, Settings::default()))
     }
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -289,6 +285,20 @@ pub(crate) mod tests {
 
     fn alt(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::ALT)
+    }
+
+    /// The calls pressing `key` has the core make.
+    fn press(app: &mut App, key: KeyEvent) -> Vec<Effect> {
+        app.core.take_effects();
+        app.on_key(key);
+        app.core.take_effects()
+    }
+
+    /// The calls taking in `update` has the core make.
+    fn update(app: &mut App, update: Update) -> Vec<Effect> {
+        app.core.take_effects();
+        app.on_update(update);
+        app.core.take_effects()
     }
 
     fn type_text(app: &mut App, text: &str) {
@@ -313,7 +323,7 @@ pub(crate) mod tests {
     /// Sends `text` from the chat on screen and returns where it went.
     fn send(app: &mut App, text: &str) -> (ChatId, PromptRequest) {
         type_text(app, text);
-        match app.on_key(key(KeyCode::Enter)).pop() {
+        match press(app, key(KeyCode::Enter)).pop() {
             Some(Effect::Send(id, request)) => (id, request),
             _ => panic!("{text:?} should be sent"),
         }
@@ -325,7 +335,8 @@ pub(crate) mod tests {
             session_id: session_id.into(),
             ..Default::default()
         };
-        let message = crate::state::chat::Message::Task(task_event::Event::Finished(finished));
+        let message =
+            commandant_client_core::chat::Message::Task(task_event::Event::Finished(finished));
         app.on_update(Update::Chat(id, message));
     }
 
@@ -351,7 +362,7 @@ pub(crate) mod tests {
         let mut app = app();
         assert_eq!(app.screen, Screen::Nodes);
         app.on_key(key(KeyCode::Down));
-        let effects = app.on_key(key(KeyCode::Enter));
+        let effects = press(&mut app, key(KeyCode::Enter));
         assert!(matches!(&effects[..], [Effect::FetchSessions(n), _] if n == "n2"));
         assert_eq!(app.chat().unwrap().node.id, "n2");
 
@@ -359,15 +370,15 @@ pub(crate) mod tests {
         app.on_key(ctrl('g'));
         assert_eq!(app.screen, Screen::Nodes);
         app.on_key(key(KeyCode::Down));
-        assert!(app.on_key(key(KeyCode::Enter)).is_empty());
+        assert!(press(&mut app, key(KeyCode::Enter)).is_empty());
         assert_eq!(app.screen, Screen::Nodes);
-        assert_eq!(app.state.notice, "box-n3 is offline");
+        assert_eq!(app.core.notice(), "box-n3 is offline");
 
         // Going back to a node shows its chat again.
         app.on_key(key(KeyCode::Up));
         app.on_key(key(KeyCode::Enter));
-        assert_eq!(app.state.chats.len(), 1);
-        assert_eq!(app.screen, Screen::Chat(app.state.chats[0].id));
+        assert_eq!(app.core.chats().len(), 1);
+        assert_eq!(app.screen, Screen::Chat(app.core.chats()[0].id));
     }
 
     #[test]
@@ -382,7 +393,7 @@ pub(crate) mod tests {
 
         // The first finishes in the background, and says so in its tab.
         finish(&mut app, first, "ses_a");
-        let unseen = |app: &App, id| app.state.chat(id).unwrap().unseen;
+        let unseen = |app: &App, id| app.core.chat(id).unwrap().unseen;
         assert_eq!(unseen(&app, first), Some(Unseen::Done));
         finish(&mut app, second, "ses_b");
         assert_eq!(unseen(&app, second), None, "the shown chat needs no mark");
@@ -426,7 +437,7 @@ pub(crate) mod tests {
         assert_eq!(shown(&app), second);
         app.on_key(ctrl('w'));
         assert_eq!(app.screen, Screen::Nodes);
-        assert_eq!(app.state.nodes[app.selected].id, "n1");
+        assert_eq!(app.core.nodes()[app.selected].id, "n1");
     }
 
     #[test]
@@ -458,14 +469,14 @@ pub(crate) mod tests {
         app.on_key(key(KeyCode::Down));
         // Reordered, n2 stays highlighted.
         app.on_update(Update::Nodes(vec![node("n2", true), node("n1", false)]));
-        assert_eq!(app.state.nodes[app.selected].id, "n2");
+        assert_eq!(app.core.nodes()[app.selected].id, "n2");
 
         // A shrinking list keeps the highlight on it, and an empty one is inert.
         app.on_key(key(KeyCode::Down));
         app.on_update(Update::Nodes(vec![node("n2", true)]));
         assert_eq!(app.selected, 0);
         app.on_update(Update::Nodes(Vec::new()));
-        assert!(app.on_key(key(KeyCode::Enter)).is_empty());
+        assert!(press(&mut app, key(KeyCode::Enter)).is_empty());
         app.on_key(key(KeyCode::Down));
         assert_eq!(app.selected, 0);
 
@@ -475,7 +486,9 @@ pub(crate) mod tests {
         assert_eq!(shown(&app), id);
         // Pasting on the node list does nothing.
         app.on_key(ctrl('g'));
-        assert!(app.on_input(Event::Paste("x".into())).is_empty());
+        app.core.take_effects();
+        app.on_input(Event::Paste("x".into()));
+        assert!(app.core.take_effects().is_empty());
     }
 
     #[test]
@@ -489,7 +502,7 @@ pub(crate) mod tests {
         for keys in [ctrl('n'), ctrl('o'), ctrl('g'), ctrl('w')] {
             app.on_key(keys);
         }
-        assert_eq!(app.state.chats.len(), 1);
+        assert_eq!(app.core.chats().len(), 1);
         assert!(!app.pickers.contains_key(&Scope::App));
         assert!(matches!(app.screen, Screen::Chat(_)));
 
@@ -526,13 +539,16 @@ pub(crate) mod tests {
         app.on_key(ctrl('u'));
         app.on_key(key(KeyCode::Up));
         app.on_key(key(KeyCode::Enter));
-        assert_eq!(app.state.chats.len(), 2);
+        assert_eq!(app.core.chats().len(), 2);
         assert!(!app.pickers.contains_key(&Scope::App));
     }
 
     #[test]
     fn a_node_starting_its_agent_opens_once_ready_if_still_in_view() {
-        let mut app = App::new(vec![bare("n1"), bare("n2")], Settings::default());
+        let mut app = App::new(Core::offline(
+            vec![bare("n1"), bare("n2")],
+            Settings::default(),
+        ));
         app.on_key(key(KeyCode::Enter));
         assert!(
             app.pickers.contains_key(&Scope::App),
@@ -541,16 +557,19 @@ pub(crate) mod tests {
         // Esc backs out, and nothing starts.
         app.on_key(key(KeyCode::Esc));
         assert!(!app.pickers.contains_key(&Scope::App));
-        assert!(app.state.starting.is_empty());
+        assert!(!app.core.starting("n1"));
         app.on_key(key(KeyCode::Enter));
-        let effects = app.on_key(key(KeyCode::Enter));
+        let effects = press(&mut app, key(KeyCode::Enter));
         assert!(matches!(&effects[..], [Effect::StartHarness { .. }]));
 
         let ready = |id: &str| NodeInfo {
             harnesses: vec!["opencode".into()],
             ..bare(id)
         };
-        let effects = app.on_update(Update::HarnessStarted("n1".into(), Ok(ready("n1"))));
+        let effects = update(
+            &mut app,
+            Update::HarnessStarted("n1".into(), Ok(ready("n1"))),
+        );
         assert!(matches!(
             &effects[..],
             [Effect::FetchSessions(_), Effect::FetchOptions { .. }]
@@ -564,11 +583,14 @@ pub(crate) mod tests {
         app.on_key(key(KeyCode::Enter));
         app.on_key(key(KeyCode::Up));
         assert!(
-            app.on_update(Update::HarnessStarted("n2".into(), Ok(ready("n2"))))
-                .is_empty()
+            update(
+                &mut app,
+                Update::HarnessStarted("n2".into(), Ok(ready("n2")))
+            )
+            .is_empty()
         );
         assert_eq!(app.screen, Screen::Nodes);
-        assert_eq!(app.state.notice, "box-n2 now hosts opencode");
+        assert_eq!(app.core.notice(), "box-n2 now hosts opencode");
     }
 
     #[test]
@@ -597,7 +619,7 @@ pub(crate) mod tests {
         app.on_key(key(KeyCode::Up));
         app.on_key(key(KeyCode::Up));
         assert_eq!(app.shown().unwrap().1.suggested, 1, "wraps round");
-        let effects = app.on_key(key(KeyCode::Enter));
+        let effects = press(&mut app, key(KeyCode::Enter));
         assert!(matches!(&effects[..], [Effect::FetchSessions(_)]));
         assert!(app.pickers.contains_key(&Scope::App), "the sessions");
         assert_eq!(input(&mut app), "");
@@ -653,13 +675,13 @@ pub(crate) mod tests {
         assert_eq!(input(&mut app), "");
         // Typed while the agent works: kept to send later.
         type_text(&mut app, "next");
-        assert!(app.on_key(key(KeyCode::Enter)).is_empty());
+        assert!(press(&mut app, key(KeyCode::Enter)).is_empty());
         assert_eq!(input(&mut app), "next");
         // Pasted lines join the one line.
         app.on_input(Event::Paste(" and\nmore".into()));
         assert_eq!(input(&mut app), "next and more");
         // Esc cancels the turn rather than clearing the prompt.
-        assert!(app.on_key(key(KeyCode::Esc)).is_empty());
+        assert!(press(&mut app, key(KeyCode::Esc)).is_empty());
         assert_eq!(input(&mut app), "next and more");
     }
 
@@ -670,11 +692,11 @@ pub(crate) mod tests {
         type_text(app, "/providers");
         app.on_key(key(KeyCode::Enter));
         let acme = acme(vec![method("API key", false, 0)]);
-        let listed = crate::state::chat::Message::Providers(Ok(vec![acme]));
+        let listed = commandant_client_core::chat::Message::Providers(Ok(vec![acme]));
         app.on_update(Update::Chat(id, listed));
         app.on_key(key(KeyCode::Enter));
         app.on_key(key(KeyCode::Enter));
-        assert!(app.state.ask(Scope::Chat(id)).is_some_and(Ask::secret));
+        assert!(app.core.ask(Scope::Chat(id)).is_some_and(Ask::secret));
     }
 
     #[test]
@@ -690,14 +712,14 @@ pub(crate) mod tests {
         assert_eq!(shown(&app), id);
 
         type_text(&mut app, "sk-");
-        assert!(app.on_key(key(KeyCode::Esc)).is_empty());
+        assert!(press(&mut app, key(KeyCode::Esc)).is_empty());
         assert_eq!(input(&mut app), "");
-        assert!(app.state.ask(Scope::Chat(id)).is_none());
+        assert!(app.core.ask(Scope::Chat(id)).is_none());
 
         // Entered, it goes to the node and nowhere else.
         ask_for_a_key(&mut app);
         type_text(&mut app, "sk-secret");
-        let effects = app.on_key(key(KeyCode::Enter));
+        let effects = press(&mut app, key(KeyCode::Enter));
         assert!(matches!(&effects[..], [Effect::Authenticate { .. }]));
         assert_eq!(input(&mut app), "");
         app.on_key(key(KeyCode::Up));
@@ -716,14 +738,14 @@ pub(crate) mod tests {
                 harness: "opencode".into(),
             },
         };
-        app.state.set_ask(Scope::App, confirm());
+        app.core.set_ask(Scope::App, confirm());
         // Other keys do nothing; Esc says no.
-        assert!(app.on_key(ctrl('n')).is_empty());
-        assert_eq!(app.state.chats.len(), 1);
+        assert!(press(&mut app, ctrl('n')).is_empty());
+        assert_eq!(app.core.chats().len(), 1);
         app.on_key(key(KeyCode::Esc));
-        assert!(app.state.ask(Scope::App).is_none());
-        app.state.set_ask(Scope::App, confirm());
-        let effects = app.on_key(key(KeyCode::Char('y')));
+        assert!(app.core.ask(Scope::App).is_none());
+        app.core.set_ask(Scope::App, confirm());
+        let effects = press(&mut app, key(KeyCode::Char('y')));
         assert!(matches!(&effects[..], [Effect::StartHarness { .. }]));
 
         // A chat's takes the chat's keys.
@@ -731,11 +753,11 @@ pub(crate) mod tests {
             title: "Link".into(),
             text: "commandant://x".into(),
         };
-        app.state.set_ask(Scope::Chat(id), show);
+        app.core.set_ask(Scope::Chat(id), show);
         type_text(&mut app, "hi");
         assert_eq!(input(&mut app), "");
         app.on_key(key(KeyCode::Enter));
-        assert!(app.state.ask(Scope::Chat(id)).is_none());
+        assert!(app.core.ask(Scope::Chat(id)).is_none());
     }
 
     #[test]

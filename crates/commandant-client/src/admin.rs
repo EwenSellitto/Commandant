@@ -9,7 +9,7 @@ use commandant_proto::*;
 use unicode_width::UnicodeWidthStr;
 
 use crate::cli::LoginArgs;
-use crate::config::{self, Client, FileConfig};
+use commandant_client_core::config::{self, Client, FileConfig};
 
 pub async fn login(args: LoginArgs) -> Result<()> {
     let client = match (args.target.parse::<Link>(), args.admin_token) {

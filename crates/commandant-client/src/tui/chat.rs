@@ -3,8 +3,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::state::chat::Chat;
-use crate::state::{Edit, Intent, Scope};
+use commandant_client_core::chat::Chat;
+use commandant_client_core::{Edit, Intent, Scope};
 
 /// Lines moved by PageUp / PageDown.
 const PAGE: u16 = 10;

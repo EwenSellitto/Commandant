@@ -1,6 +1,6 @@
 # Code layout
 
-Six crates, building two binaries: `commandant-server` (server and worker)
+Seven crates, building two binaries: `commandant-server` (server and worker)
 and `commandant` (the client). For how they work together at runtime, see
 [architecture.md](architecture.md).
 
@@ -8,12 +8,14 @@ and `commandant` (the client). For how they work together at runtime, see
 flowchart TD
     SERVER["commandant-server<br/>the commandant-server binary"]
     CLIENT["commandant-client<br/>the commandant binary"]
+    CORE["commandant-client-core<br/>the client core"]
     ORCH["commandant-orchestrator"]
     WORK["commandant-worker"]
     PROTO["commandant-proto<br/>gRPC contract"]
     COMMON["commandant-common"]
     SERVER --> ORCH & WORK
-    CLIENT --> PROTO
+    CLIENT --> CORE
+    CORE --> PROTO
     ORCH --> PROTO
     WORK --> PROTO
     PROTO --> COMMON
@@ -21,7 +23,8 @@ flowchart TD
 
 The server and the worker are libraries, so `commandant-server` and the
 end-to-end tests both run them in-process. The client depends on neither: no
-SQLite or libgit2 in `commandant`. Code used by several crates goes in
+SQLite or libgit2 in `commandant`. The client core has no terminal or window
+code, so every front end shares it. Code used by several crates goes in
 `commandant-proto` (anything gRPC) or `commandant-common` (everything else).
 
 ## `commandant-common`
@@ -78,24 +81,36 @@ SQLite or libgit2 in `commandant`. Code used by several crates goes in
 |---|---|
 | `main.rs`, `cli.rs` | Logging, and the command line (clap) |
 | `serve.rs`, `worker.rs` | `serve` (link, reset, local worker) and `worker` |
-| `tests/e2e.rs` | End-to-end tests with a real server and workers in-process |
+| `tests/e2e.rs` | End-to-end tests with a real server and workers in-process, and a real client core against them |
 | `tests/fake_opencode/` | A fake OpenCode the tests drive (`hold`, `fail`, `permission` in a prompt) |
 
 ## `commandant-client`
 
 | File | |
 |---|---|
-| `main.rs`, `cli.rs` | Logging, and the command line (clap) |
-| `admin.rs`, `run.rs` | `login`, `token`, `node`, `task`; `run`, `prompt` and `task watch` |
-| `config.rs` | Where clients find the server and token |
-| `state/mod.rs` | What the client knows and does, apart from how it is shown: the nodes and every chat. No terminal code |
-| `state/intent.rs`, `state/ask.rs` | What goes in (intents, updates) and comes out (effects, where to go, prompt edits); the asks (choose, enter, confirm, show), one per chat and one for the app |
-| `state/chat/` | One chat: its session, settings, thread and line language (`/model`, `/project`, the agent's `/skill`); what it offers to choose, provider sign-in and projects in their own files |
-| `tui/mod.rs` | The TUI's event loop: draws, reads keys, makes the calls effects ask for |
+| `main.rs`, `cli.rs` | Logging, the tokio runtime, and the command line (clap) |
+| `admin.rs`, `run.rs` | `login`, `token`, `node`, `task`; `run`, `prompt` and `task watch`: plain gRPC calls |
+| `tui/mod.rs` | The TUI's event loop: draws, reads keys, hands the core's updates back to it |
 | `tui/app.rs` | The screen shown, the highlighted node, the last chat per node; routes keys to intents |
 | `tui/chat.rs` | A chat's prompt (editing, history recall, completion highlight) and scroll |
 | `tui/ui/`, `tui/text.rs` | Drawing, and markdown styling |
 | `tui/asks.rs`, `tui/picker.rs` | What keys say to an ask: the floating list for a choose-ask, a panel for a confirm- or show-ask; an enter-ask is typed in the prompt. The app's and each chat's picker are shown from one map |
+
+## `commandant-client-core`
+
+What any front end knows and does, apart from how it is shown. It depends on
+the gRPC contract, common code, tokio and tonic, never on a terminal or window
+library. Its `test-support` feature gives front ends' tests a core with no
+server, which keeps the calls it would make.
+
+| File | |
+|---|---|
+| `lib.rs` | `Core`: starts on a working connection, takes intents and updates, makes the calls they ask for on the tokio runtime it is given, and is read through `&` accessors; `shutdown` cancels running tasks |
+| `calls.rs` | Every call to the server: prompt streams, questions to nodes, the 5-second node poll |
+| `config.rs` | Where clients find the server and token, and connecting |
+| `state/mod.rs` | What the client knows: the nodes and every chat |
+| `state/intent.rs`, `state/ask.rs` | What goes in (intents, updates) and comes out (effects, where to go, prompt edits); the asks (choose, enter, confirm, show), one per chat and one for the app |
+| `state/chat/` | One chat: its session, settings, thread and line language (`/model`, `/project`, the agent's `/skill`); what it offers to choose, provider sign-in and projects in their own files |
 
 ## Other files
 

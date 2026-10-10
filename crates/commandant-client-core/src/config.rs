@@ -30,6 +30,7 @@ pub fn save(config: &FileConfig) -> Result<PathBuf> {
 }
 
 /// Resolved client connection settings.
+#[derive(Clone)]
 pub struct Client {
     pub addr: String,
     pub token: String,
