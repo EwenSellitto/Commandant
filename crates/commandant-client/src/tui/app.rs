@@ -1,5 +1,5 @@
 //! The terminal's side of the client: which screen is shown, the
-//! highlighted node, each chat's prompt and picker as shown, and what keys
+//! highlighted node, each chat's prompt, the pickers as shown, and what keys
 //! ask of the [`State`].
 
 use std::collections::HashMap;
@@ -7,10 +7,11 @@ use std::collections::HashMap;
 use commandant_proto::*;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use super::asks;
 use super::chat::ChatView;
-use super::picker::{Outcome as Picked, Picker};
+use super::picker::Picker;
 use crate::state::chat::{Chat, Settings};
-use crate::state::{ChatId, Effect, Go, Intent, Outcome, Scope, State, Update, cycle};
+use crate::state::{Ask, ChatId, Effect, Go, Intent, Outcome, Scope, State, Update, cycle};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Screen {
@@ -29,8 +30,8 @@ pub struct App {
     /// What the terminal keeps of each chat, kept in step with the state's
     /// chats by [`sync`](Self::sync).
     pub views: HashMap<ChatId, ChatView>,
-    /// The app's picker, as shown.
-    pub picker: Option<Picker>,
+    /// The pickers of the app and its chats, as shown.
+    pub pickers: HashMap<Scope, Picker>,
     /// Set once the person has asked to leave.
     pub quit: bool,
 }
@@ -48,9 +49,19 @@ impl App {
             selected,
             last: HashMap::new(),
             views: HashMap::new(),
-            picker: None,
+            pickers: HashMap::new(),
             quit: false,
         }
+    }
+
+    /// Where questions are shown on screen, the one on top first: the
+    /// app's, then the shown chat's.
+    pub fn scopes(&self) -> Vec<Scope> {
+        let mut scopes = vec![Scope::App];
+        if let Screen::Chat(id) = self.screen {
+            scopes.push(Scope::Chat(id));
+        }
+        scopes
     }
 
     /// The chat on screen, if any.
@@ -102,21 +113,19 @@ impl App {
             self.quit = true;
             return Vec::new();
         }
-        if let Some(picker) = &mut self.picker {
-            let intent = match picker.on_key(key) {
-                Picked::Open => return Vec::new(),
-                Picked::Closed => Intent::Dismiss(Scope::App),
-                Picked::Chosen(choice) => Intent::Choose(Scope::App, choice),
-            };
-            self.picker = None;
-            return self.ask(intent);
+        // A question takes the keys, the one on top first; a line asked for
+        // is typed in the prompt.
+        for scope in self.scopes() {
+            if let Some(ask) = self.state.ask(scope).filter(|a| !a.wants_line()) {
+                let intent = asks::on_key(ask, self.pickers.get_mut(&scope), scope, key);
+                return intent.map_or_else(Vec::new, |intent| self.act(intent));
+            }
         }
         let Some((chat, view)) = self.shown() else {
             return self.on_node_key(key);
         };
         let id = chat.id;
         let intent = match key.code {
-            _ if view.picker.is_some() => view.on_key(chat, key),
             KeyCode::Char('n') if ctrl => Some(Intent::NewChat(id)),
             KeyCode::Char('o') if ctrl => Some(Intent::Sessions(id)),
             KeyCode::Char('w') if ctrl => Some(Intent::Close(id)),
@@ -128,7 +137,7 @@ impl App {
             KeyCode::Right if alt => return self.cycle_chat(1),
             _ => view.on_key(chat, key),
         };
-        intent.map_or_else(Vec::new, |intent| self.ask(intent))
+        intent.map_or_else(Vec::new, |intent| self.act(intent))
     }
 
     fn on_node_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -150,7 +159,7 @@ impl App {
         };
         let chat = self.last.get(&node.id).copied();
         let node = node.id.clone();
-        self.ask(Intent::Open { node, chat })
+        self.act(Intent::Open { node, chat })
     }
 
     /// Shows the next (or previous) chat on the same node.
@@ -182,7 +191,7 @@ impl App {
     }
 
     /// Asks the state for something, and follows where that leads.
-    fn ask(&mut self, intent: Intent) -> Vec<Effect> {
+    fn act(&mut self, intent: Intent) -> Vec<Effect> {
         let outcome = self.state.intent(intent);
         self.apply(outcome)
     }
@@ -239,23 +248,31 @@ impl App {
         self.screen = Screen::Nodes;
     }
 
-    /// Shows the pickers the state has open, and forgets closed chats.
+    /// Shows what the state asks to choose, and forgets closed chats.
     pub fn sync(&mut self) {
-        Picker::sync(&mut self.picker, self.state.pick(Scope::App));
         let state = &self.state;
         self.views.retain(|id, _| state.chat(*id).is_some());
         for chat in &state.chats {
-            let view = self.views.entry(chat.id).or_default();
-            Picker::sync(&mut view.picker, chat.pick.as_ref());
+            self.views.entry(chat.id).or_default();
         }
+        let mut shown = std::mem::take(&mut self.pickers);
+        let chats = state.chats.iter().map(|c| Scope::Chat(c.id));
+        self.pickers = std::iter::once(Scope::App)
+            .chain(chats)
+            .filter_map(|scope| {
+                let choices = state.ask(scope).and_then(Ask::choices);
+                Some((scope, Picker::sync(shown.remove(&scope), choices)?))
+            })
+            .collect();
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::state::Choose;
     use crate::state::chat::Unseen;
-    use crate::state::fixtures::{bare, node, started};
+    use crate::state::fixtures::{acme, bare, method, node, started};
 
     pub(crate) fn app() -> App {
         let nodes = vec![node("n1", true), node("n2", true), node("n3", false)];
@@ -278,6 +295,11 @@ pub(crate) mod tests {
         for c in text.chars() {
             app.on_key(key(KeyCode::Char(c)));
         }
+    }
+
+    /// The shown chat's picker, if it is choosing.
+    fn chat_picker(app: &App) -> Option<&Picker> {
+        app.pickers.get(&Scope::Chat(shown(app)))
     }
 
     fn shown(app: &App) -> ChatId {
@@ -463,23 +485,20 @@ pub(crate) mod tests {
         with_agents(&mut app);
         type_text(&mut app, "/agent");
         app.on_key(key(KeyCode::Enter));
-        assert!(app.shown().unwrap().1.picker.is_some());
+        assert!(chat_picker(&app).is_some());
         for keys in [ctrl('n'), ctrl('o'), ctrl('g'), ctrl('w')] {
             app.on_key(keys);
         }
         assert_eq!(app.state.chats.len(), 1);
-        assert!(app.picker.is_none());
+        assert!(!app.pickers.contains_key(&Scope::App));
         assert!(matches!(app.screen, Screen::Chat(_)));
 
         // Its keys went to its filter; cleared, they move in it and choose.
-        assert_eq!(
-            app.shown().unwrap().1.picker.as_ref().unwrap().filter,
-            "nogw"
-        );
+        assert_eq!(chat_picker(&app).unwrap().filter, "nogw");
         app.on_key(ctrl('u'));
         app.on_key(key(KeyCode::Down));
         app.on_key(key(KeyCode::Enter));
-        assert!(app.shown().unwrap().1.picker.is_none());
+        assert!(chat_picker(&app).is_none());
         assert_eq!(app.chat().unwrap().agent(), "plan");
     }
 
@@ -489,7 +508,7 @@ pub(crate) mod tests {
         app.on_key(key(KeyCode::Enter));
         app.on_key(ctrl('o'));
         type_text(&mut app, "about");
-        assert_eq!(app.picker.as_ref().unwrap().shown_len(), 0);
+        assert_eq!(app.pickers.get(&Scope::App).unwrap().shown_len(), 0);
         let saved = |id: &str| AgentSession {
             id: id.into(),
             title: format!("about {id}"),
@@ -499,7 +518,7 @@ pub(crate) mod tests {
             "n1".into(),
             Ok(vec![saved("a"), saved("b")]),
         ));
-        let picker = app.picker.as_ref().unwrap();
+        let picker = app.pickers.get(&Scope::App).unwrap();
         assert_eq!((picker.filter.as_str(), picker.shown_len()), ("about", 2));
         assert!(!picker.loading());
 
@@ -508,17 +527,20 @@ pub(crate) mod tests {
         app.on_key(key(KeyCode::Up));
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.state.chats.len(), 2);
-        assert!(app.picker.is_none());
+        assert!(!app.pickers.contains_key(&Scope::App));
     }
 
     #[test]
     fn a_node_starting_its_agent_opens_once_ready_if_still_in_view() {
         let mut app = App::new(vec![bare("n1"), bare("n2")], Settings::default());
         app.on_key(key(KeyCode::Enter));
-        assert!(app.picker.is_some(), "the harness to start");
+        assert!(
+            app.pickers.contains_key(&Scope::App),
+            "the harness to start"
+        );
         // Esc backs out, and nothing starts.
         app.on_key(key(KeyCode::Esc));
-        assert!(app.picker.is_none());
+        assert!(!app.pickers.contains_key(&Scope::App));
         assert!(app.state.starting.is_empty());
         app.on_key(key(KeyCode::Enter));
         let effects = app.on_key(key(KeyCode::Enter));
@@ -577,7 +599,7 @@ pub(crate) mod tests {
         assert_eq!(app.shown().unwrap().1.suggested, 1, "wraps round");
         let effects = app.on_key(key(KeyCode::Enter));
         assert!(matches!(&effects[..], [Effect::FetchSessions(_)]));
-        assert!(app.picker.is_some(), "the sessions");
+        assert!(app.pickers.contains_key(&Scope::App), "the sessions");
         assert_eq!(input(&mut app), "");
 
         // Typing again starts from the top; no match, no list.
@@ -641,18 +663,79 @@ pub(crate) mod tests {
         assert_eq!(input(&mut app), "next and more");
     }
 
+    /// Picks signing in to a provider with an API key, from the chat on
+    /// screen, which then asks for the key.
+    pub(crate) fn ask_for_a_key(app: &mut App) {
+        let id = shown(app);
+        type_text(app, "/providers");
+        app.on_key(key(KeyCode::Enter));
+        let acme = acme(vec![method("API key", false, 0)]);
+        let listed = crate::state::chat::Message::Providers(Ok(vec![acme]));
+        app.on_update(Update::Chat(id, listed));
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.state.ask(Scope::Chat(id)).is_some_and(Ask::secret));
+    }
+
     #[test]
-    fn esc_backs_out_of_typing_a_secret() {
+    fn a_key_asked_for_is_typed_in_the_prompt() {
         let mut app = app();
         app.on_key(key(KeyCode::Enter));
         let id = shown(&app);
-        app.state.chats[0].auth = Some(crate::state::chat::Auth::Key {
-            provider: "acme".into(),
-        });
+        ask_for_a_key(&mut app);
+        // The app's keys still work meanwhile.
+        app.on_key(ctrl('n'));
+        assert_ne!(shown(&app), id);
+        app.on_key(alt(KeyCode::Left));
+        assert_eq!(shown(&app), id);
+
         type_text(&mut app, "sk-");
         assert!(app.on_key(key(KeyCode::Esc)).is_empty());
         assert_eq!(input(&mut app), "");
-        assert!(app.state.chat(id).unwrap().auth.is_none());
+        assert!(app.state.ask(Scope::Chat(id)).is_none());
+
+        // Entered, it goes to the node and nowhere else.
+        ask_for_a_key(&mut app);
+        type_text(&mut app, "sk-secret");
+        let effects = app.on_key(key(KeyCode::Enter));
+        assert!(matches!(&effects[..], [Effect::Authenticate { .. }]));
+        assert_eq!(input(&mut app), "");
+        app.on_key(key(KeyCode::Up));
+        assert_ne!(input(&mut app), "sk-secret", "not brought back");
+    }
+
+    #[test]
+    fn a_question_to_confirm_or_read_takes_the_keys() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Enter));
+        let id = shown(&app);
+        let confirm = || Ask::Confirm {
+            text: "Start opencode?".into(),
+            yes: Choose::Harness {
+                node: "n2".into(),
+                harness: "opencode".into(),
+            },
+        };
+        app.state.set_ask(Scope::App, confirm());
+        // Other keys do nothing; Esc says no.
+        assert!(app.on_key(ctrl('n')).is_empty());
+        assert_eq!(app.state.chats.len(), 1);
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.state.ask(Scope::App).is_none());
+        app.state.set_ask(Scope::App, confirm());
+        let effects = app.on_key(key(KeyCode::Char('y')));
+        assert!(matches!(&effects[..], [Effect::StartHarness { .. }]));
+
+        // A chat's takes the chat's keys.
+        let show = Ask::Show {
+            title: "Link".into(),
+            text: "commandant://x".into(),
+        };
+        app.state.set_ask(Scope::Chat(id), show);
+        type_text(&mut app, "hi");
+        assert_eq!(input(&mut app), "");
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.state.ask(Scope::Chat(id)).is_none());
     }
 
     #[test]

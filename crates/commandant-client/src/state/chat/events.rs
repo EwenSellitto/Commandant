@@ -21,7 +21,7 @@ impl Chat {
                     Ok(options) => {
                         self.options = Some(options);
                         if let Some((menu, filter)) = pending {
-                            return self.open_picker(menu, &filter);
+                            return self.open_menu(menu, &filter);
                         }
                     }
                     Err(e) if waiting || pending.is_some() => {

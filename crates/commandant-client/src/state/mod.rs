@@ -6,16 +6,16 @@
 //! where to go next, and what to do to a chat's prompt. Which screen is
 //! shown, typing and scrolling stay with the front end.
 
+mod ask;
 pub mod chat;
 #[cfg(test)]
 pub(crate) mod fixtures;
 mod intent;
-mod pick;
 #[cfg(test)]
 mod tests;
 
+pub use self::ask::{Ask, Choice, Choices, Choose, Wanted};
 pub use self::intent::{Edit, Effect, Failure, Go, Intent, Outcome, Scope, Update};
-pub use self::pick::{Choice, Choose, Pick};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -49,11 +49,9 @@ pub struct State {
     retries: HashMap<String, u32>,
     /// The sessions each node has saved, as last listed.
     pub saved: HashMap<String, Vec<AgentSession>>,
-    /// The session or harness picker, when open; a chat's own pickers live
-    /// in the chat.
-    pick: Option<Pick>,
-    /// The chat the session picker was opened from.
-    sessions_of: Option<ChatId>,
+    /// What the app asks, when it does: which session, or which harness to
+    /// start. A chat asks its own.
+    ask: Option<Ask>,
     /// A remark about the nodes.
     pub notice: String,
     /// Nodes starting a harness, which can take minutes.
@@ -86,11 +84,24 @@ impl State {
         self.chats.iter().filter(move |c| c.node.id == node_id)
     }
 
-    /// What there is to choose from in `scope`, if anything.
-    pub fn pick(&self, scope: Scope) -> Option<&Pick> {
+    /// What is asked in `scope`, if anything.
+    pub fn ask(&self, scope: Scope) -> Option<&Ask> {
         match scope {
-            Scope::App => self.pick.as_ref(),
-            Scope::Chat(id) => self.chat(id)?.pick.as_ref(),
+            Scope::App => self.ask.as_ref(),
+            Scope::Chat(id) => self.chat(id)?.ask(),
+        }
+    }
+
+    /// Asks `ask` in `scope`, as the state will once it has a reason to.
+    #[cfg(test)]
+    pub(crate) fn set_ask(&mut self, scope: Scope, ask: Ask) {
+        match scope {
+            Scope::App => self.ask = Some(ask),
+            Scope::Chat(id) => {
+                if let Some(chat) = self.chat_mut(id) {
+                    chat.ask = Some(ask);
+                }
+            }
         }
     }
 
@@ -98,7 +109,11 @@ impl State {
     /// chat, something loading, or a node starting its agent.
     pub fn busy(&self) -> bool {
         !self.starting.is_empty()
-            || self.pick.as_ref().is_some_and(|p| p.loading)
+            || self
+                .ask
+                .as_ref()
+                .and_then(Ask::choices)
+                .is_some_and(|c| c.loading)
             || self.chats.iter().any(|c| {
                 c.activity.working()
                     || c.fetching_options
@@ -107,7 +122,7 @@ impl State {
                     || c.listing_providers.is_some()
                     || c.preparing.is_some()
                     || c.listing_projects
-                    || matches!(c.auth, Some(chat::Auth::Waiting { .. }))
+                    || c.signing_in().is_some()
             })
     }
 
@@ -131,7 +146,7 @@ impl State {
                     return Outcome::default();
                 };
                 let node = chat.node.id.clone();
-                self.open_session_picker(id, &node, true);
+                self.ask_sessions(id, &node, true);
                 Effect::FetchSessions(node).into()
             }
             Intent::Close(id) => self.close(id),
@@ -140,7 +155,7 @@ impl State {
                     return Outcome::default();
                 };
                 let (said, command) = chat.submit(&text);
-                let said = self.ask_once(said);
+                let said = self.fetch_once(said);
                 let then = match command {
                     None => Outcome::default(),
                     Some(AppCommand::Quit) => Outcome::go(Go::Quit),
@@ -152,38 +167,41 @@ impl State {
                 said.and(then)
             }
             Intent::Choose(Scope::App, choice) => self.choose(choice),
-            Intent::Choose(Scope::Chat(id), choice) => {
-                let chosen = self.chat_mut(id).map(|c| c.choose(choice));
-                self.ask_once(chosen.unwrap_or_default())
-            }
-            Intent::Dismiss(Scope::App) => {
-                self.pick = None;
-                self.sessions_of = None;
-                Outcome::default()
-            }
-            Intent::Dismiss(Scope::Chat(id)) => {
-                self.chat_mut(id).map(Chat::dismiss).unwrap_or_default()
-            }
-            Intent::Cancel(id) => self.chat_mut(id).and_then(Chat::cancel).into(),
-            Intent::CycleAgent(id, step) => {
-                let effect = self.chat_mut(id).and_then(|c| c.cycle_agent(step));
-                self.ask_once(effect.into())
-            }
-            Intent::CycleEffort(id) => {
-                let effect = self.chat_mut(id).and_then(Chat::cycle_effort);
-                self.ask_once(effect.into())
-            }
-            Intent::Seen(id) => {
-                if let Some(chat) = self.chat_mut(id) {
-                    chat.unseen = None;
+            Intent::Choose(Scope::Chat(id), choice) => self.in_chat(id, |c| c.choose(choice)),
+            // The app asks for no line yet.
+            Intent::Enter(Scope::App, _) => Outcome::default(),
+            Intent::Enter(Scope::Chat(id), text) => self.in_chat(id, |c| c.enter(&text)),
+            Intent::Confirm(scope) => match self.ask(scope) {
+                Some(Ask::Confirm { yes, .. }) => {
+                    let yes = yes.clone();
+                    self.intent(Intent::Choose(scope, yes))
                 }
+                _ => Outcome::default(),
+            },
+            Intent::Dismiss(Scope::App) => {
+                self.ask = None;
                 Outcome::default()
             }
+            Intent::Dismiss(Scope::Chat(id)) => self.in_chat(id, Chat::dismiss),
+            Intent::Cancel(id) => self.in_chat(id, Chat::cancel),
+            Intent::CycleAgent(id, step) => self.in_chat(id, |c| c.cycle_agent(step)),
+            Intent::CycleEffort(id) => self.in_chat(id, Chat::cycle_effort),
+            Intent::Seen(id) => self.in_chat(id, |c| c.unseen = None),
         }
     }
 
+    /// What `act` comes to in the chat `id`, if it is open.
+    fn in_chat<T: Into<Outcome>>(
+        &mut self,
+        id: ChatId,
+        act: impl FnOnce(&mut Chat) -> T,
+    ) -> Outcome {
+        let outcome = self.chat_mut(id).map(|c| act(c).into());
+        self.fetch_once(outcome.unwrap_or_default())
+    }
+
     /// Drops requests for options a node is already answering.
-    fn ask_once(&mut self, mut outcome: Outcome) -> Outcome {
+    fn fetch_once(&mut self, mut outcome: Outcome) -> Outcome {
         outcome.effects.retain(|effect| match effect {
             Effect::FetchOptions { node, .. } => self.fetching.insert(node.clone()),
             _ => true,
@@ -246,7 +264,8 @@ impl State {
                 Choice::new(choice, name, detail)
             })
             .collect();
-        self.pick = Some(Pick::new("Start an agent on this node", choices, None));
+        let choices = Choices::new("Start an agent on this node", choices, None);
+        self.ask = Some(choices.into());
     }
 
     fn start_harness(&mut self, node: String, harness: String) -> Outcome {
@@ -278,7 +297,7 @@ impl State {
             go: Some(Go::Chat(id)),
             ..fetch.into()
         };
-        self.ask_once(outcome)
+        self.fetch_once(outcome)
     }
 
     /// Another chat on the node `id` is on, with its settings but a new session.
@@ -316,7 +335,7 @@ impl State {
 
     /// The node's open chats, then the sessions it saved that aren't open,
     /// for the chat `from`. `loading` while the node is asked for them again.
-    fn open_session_picker(&mut self, from: ChatId, node_id: &str, loading: bool) {
+    fn ask_sessions(&mut self, from: ChatId, node_id: &str, loading: bool) {
         let mut choices = vec![Choice::new(Choose::NewSession, "+ New session", "ctrl-n")];
         for chat in self.chats_on(node_id) {
             let state = match &chat.activity {
@@ -349,24 +368,33 @@ impl State {
                 detail.join(" · "),
             ));
         }
-        let mut pick = Pick::new(SESSIONS, choices, Some(Choose::Chat(from)));
-        pick.loading = loading;
-        // Still open: the same picker, with what the node has said since.
-        if let Some(open) = self
-            .pick
-            .as_ref()
-            .filter(|_| self.sessions_of == Some(from))
+        let mut sessions = Choices::new(SESSIONS, choices, Some(Choose::Chat(from)));
+        sessions.loading = loading;
+        // Still open: the same question, with what the node has said since.
+        if self.sessions_from() == Some(from)
+            && let Some(open) = self.ask.as_ref().and_then(Ask::choices)
         {
-            pick = pick.revise(open);
+            sessions = sessions.revise(open);
         }
-        self.pick = Some(pick);
-        self.sessions_of = Some(from);
+        self.ask = Some(sessions.into());
     }
 
-    /// Does what the app's picker offered, which closes.
+    /// The chat that asked for its node's sessions, while they are offered.
+    fn sessions_from(&self) -> Option<ChatId> {
+        match self.ask.as_ref()?.choices()? {
+            Choices {
+                title: SESSIONS,
+                current: Some(Choose::Chat(from)),
+                ..
+            } => Some(*from),
+            _ => None,
+        }
+    }
+
+    /// Does what the app's question offered, which closes.
     fn choose(&mut self, choice: Choose) -> Outcome {
-        self.pick = None;
-        let from = self.sessions_of.take();
+        let from = self.sessions_from();
+        self.ask = None;
         match choice {
             Choose::NewSession => from.map_or_else(Outcome::default, |id| self.another_chat(id)),
             Choose::Chat(id) => Outcome::go(Go::Chat(id)),
@@ -424,11 +452,8 @@ impl State {
     /// Takes in what a background call reports, which may call for more.
     pub fn update(&mut self, update: Update) -> Outcome {
         match update {
-            Update::Chat(id, message) => {
-                let effect = self.chat_mut(id).and_then(|c| c.on_message(message));
-                // Signing in asks for the options again, maybe while they're being asked for.
-                self.ask_once(effect.into())
-            }
+            // Signing in asks for the options again, maybe while they're being asked for.
+            Update::Chat(id, message) => self.in_chat(id, |c| c.on_message(message)),
             Update::Options(node, Err(failure)) if failure.transient => {
                 // Busy starting its agent, say: ask again before saying so.
                 let tries = self.retries.entry(node.clone()).or_default();
@@ -506,15 +531,14 @@ impl State {
                 self.options.remove(&id);
                 let mut outcome = Outcome::default();
                 if self.chats_on(&id).next().is_some() {
-                    outcome = self.ask_once(Effect::fetch_options(&id).into());
+                    outcome = self.fetch_once(Effect::fetch_options(&id).into());
                 }
                 self.notice = format!("{name} now hosts {hosts}");
                 outcome.go = Some(Go::Ready(id));
                 outcome
             }
             Update::Sessions(node, sessions) => {
-                let picking = self.pick.as_ref().is_some_and(|p| p.title == SESSIONS);
-                let from = self.sessions_of.filter(|_| picking);
+                let from = self.sessions_from();
                 match sessions {
                     Ok(sessions) => {
                         self.saved.insert(node.clone(), sessions);
@@ -529,7 +553,7 @@ impl State {
                 if let Some(from) = from
                     && self.chat(from).is_some_and(|c| c.node.id == node)
                 {
-                    self.open_session_picker(from, &node, false);
+                    self.ask_sessions(from, &node, false);
                 }
                 Outcome::default()
             }

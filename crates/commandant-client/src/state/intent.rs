@@ -13,20 +13,22 @@ use super::{ChatId, Choose};
 pub enum Intent {
     /// Show one of a node's chats: `chat`, the one the front end last
     /// showed, if it is still open, else its newest, else a new one.
-    Open {
-        node: String,
-        chat: Option<ChatId>,
-    },
+    Open { node: String, chat: Option<ChatId> },
     /// Another chat on the same node, with the same settings.
     NewChat(ChatId),
-    /// Pick one of the chat's node's chats or saved sessions.
+    /// Choose one of the chat's node's chats or saved sessions.
     Sessions(ChatId),
     /// Close a chat, unless its agent is still at work.
     Close(ChatId),
-    /// A line typed in a chat: a prompt, a `/command`, or a secret asked for.
+    /// A line typed in a chat: a prompt or a `/command`.
     Submit(ChatId, String),
+    /// Answer the scope's [`Ask::Choose`](super::Ask::Choose).
     Choose(Scope, Choose),
-    /// Close the picker, or stop waiting for a secret.
+    /// Answer the scope's [`Ask::Enter`](super::Ask::Enter) with a line.
+    Enter(Scope, String),
+    /// Say yes to the scope's [`Ask::Confirm`](super::Ask::Confirm).
+    Confirm(Scope),
+    /// Leave the scope's question unanswered.
     Dismiss(Scope),
     /// Cancel the chat's turn.
     Cancel(ChatId),
@@ -38,7 +40,7 @@ pub enum Intent {
     Seen(ChatId),
 }
 
-/// Where a picker, or an intent about one, belongs.
+/// Where a question, or an intent about one, belongs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Scope {
     App,
@@ -86,6 +88,13 @@ impl Outcome {
         self.go = next.go.or(self.go);
         self.prompt = next.prompt.or(self.prompt);
         self
+    }
+}
+
+/// Nothing more to do.
+impl From<()> for Outcome {
+    fn from(_: ()) -> Self {
+        Self::default()
     }
 }
 

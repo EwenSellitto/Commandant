@@ -1,14 +1,16 @@
-//! What floats over the rest: the commands completing what is typed, and
-//! the picker.
+//! What floats over the rest: the commands completing what is typed, the
+//! picker, and a question to confirm or read.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding};
+use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 
 use super::{MUTED, PANEL, SELECTED, hints, spinner};
+use crate::state::Ask;
 use crate::tui::picker::Picker;
+use crate::tui::text;
 
 /// The commands completing what is typed, on a panel at the bottom of
 /// `area`, just over the prompt.
@@ -117,4 +119,42 @@ pub(super) fn draw_picker(frame: &mut Frame, accent: Color, picker: &Picker) {
         .highlight_style(Style::new().bg(SELECTED).add_modifier(Modifier::BOLD));
     let mut state = ListState::default().with_selected(Some(picker.selected));
     frame.render_stateful_widget(list_widget, list, &mut state);
+}
+
+/// A question to confirm or read, if that is what `ask` is: a solid panel
+/// centred over everything else.
+pub(super) fn draw_dialog(frame: &mut Frame, accent: Color, ask: Option<&Ask>) {
+    let (title, said, hints): (&str, &str, &[(&str, &str)]) = match ask {
+        Some(Ask::Confirm { text, .. }) => ("", text, &[("enter", "yes"), ("esc", "no")]),
+        Some(Ask::Show { title, text }) => (title, text, &[("esc", "close")]),
+        _ => return,
+    };
+    let screen = frame.area();
+    let width = screen.width.saturating_sub(4).min(80);
+    let room = width.saturating_sub(4) as usize;
+    let gutter = Span::raw("");
+    let lines: Vec<Line> = said
+        .lines()
+        .flat_map(|line| text::wrap(Line::from(line.to_string()), room, &gutter, &gutter))
+        .collect();
+    let rows = lines.len() as u16;
+    // Title and gap, the text, gap, hints; plus a padding row each end.
+    let titled = if title.is_empty() { 0 } else { 2 };
+    let height = (titled + rows + 4).min(screen.height.saturating_sub(2));
+    let area = screen.centered(Constraint::Length(width), Constraint::Length(height));
+    frame.render_widget(Clear, area);
+    let panel = Block::new().bg(PANEL).padding(Padding::new(2, 2, 1, 1));
+    let inner = panel.inner(area);
+    frame.render_widget(panel, area);
+    let [heading, _, body, _, keys] = Layout::vertical([
+        Constraint::Length(titled.min(1)),
+        Constraint::Length(titled.saturating_sub(1)),
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    frame.render_widget(Span::raw(title).bold().fg(accent), heading);
+    frame.render_widget(Paragraph::new(lines), body);
+    frame.render_widget(self::hints(hints), keys);
 }

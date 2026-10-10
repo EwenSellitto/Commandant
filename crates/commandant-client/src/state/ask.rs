@@ -1,4 +1,6 @@
-//! Something to choose from, which the front end offers as it likes.
+//! A question the client puts to the person, which each front end asks as
+//! it likes: something to choose, a line to enter, a yes to give, or
+//! something to read.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -6,7 +8,69 @@ use commandant_proto::{AgentSession, ProjectCopy};
 
 use super::ChatId;
 
-/// What choosing from a picker means.
+/// A question for the person, open in a scope until it is answered or
+/// dismissed; a scope has at most one.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Ask {
+    /// One of several things.
+    Choose(Choices),
+    /// A line of text, which is never shown if it is `secret`.
+    Enter {
+        /// What to enter: "the code the page shows".
+        label: String,
+        /// Masked while typed, and kept out of everything shown.
+        secret: bool,
+        /// What the line is for.
+        wanted: Wanted,
+    },
+    /// Whether to go ahead with `yes`.
+    #[allow(dead_code, reason = "nothing asks for one yet")]
+    Confirm {
+        /// The question: "Remove box-1?".
+        text: String,
+        /// What saying yes does.
+        yes: Choose,
+    },
+    /// Something to read, or copy.
+    #[allow(dead_code, reason = "nothing asks for one yet")]
+    Show {
+        /// What it is: "Link".
+        title: String,
+        /// What to read, or copy.
+        text: String,
+    },
+}
+
+impl Ask {
+    /// What there is to choose from, if that is the question.
+    pub fn choices(&self) -> Option<&Choices> {
+        match self {
+            Self::Choose(choices) => Some(choices),
+            _ => None,
+        }
+    }
+
+    /// Whether this asks for a line, typed where a prompt would be.
+    pub fn wants_line(&self) -> bool {
+        matches!(self, Self::Enter { .. })
+    }
+
+    /// Whether this asks for a line that is never shown.
+    pub fn secret(&self) -> bool {
+        matches!(self, Self::Enter { secret: true, .. })
+    }
+}
+
+/// What a line entered for an [`Ask::Enter`] is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Wanted {
+    /// The API key to sign in to a provider with.
+    ApiKey { provider: String },
+    /// The code a provider's page showed, to finish its OAuth method `index`.
+    Code { provider: String, index: u32 },
+}
+
+/// What choosing one of the [`Choices`] means.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Choose {
     /// The agent a chat's prompts go to; empty for the default.
@@ -62,10 +126,10 @@ impl Choice {
     }
 }
 
-/// Something to choose from, for the front end to offer.
+/// What an [`Ask::Choose`] offers.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Pick {
-    /// Tells it from the pickers before it.
+pub struct Choices {
+    /// Tells it from the questions before it.
     pub id: u64,
     /// Changes whenever its choices do, while it stays open.
     pub revision: u64,
@@ -79,7 +143,7 @@ pub struct Pick {
     pub loading: bool,
 }
 
-impl Pick {
+impl Choices {
     pub fn new(title: &'static str, choices: Vec<Choice>, current: Option<Choose>) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -99,11 +163,17 @@ impl Pick {
         self
     }
 
-    /// The same picker, open, with new choices.
-    pub(super) fn revise(self, previous: &Pick) -> Self {
+    /// The same question, open, with new choices.
+    pub(super) fn revise(self, previous: &Choices) -> Self {
         Self {
             id: previous.id,
             ..self
         }
+    }
+}
+
+impl From<Choices> for Ask {
+    fn from(choices: Choices) -> Self {
+        Self::Choose(choices)
     }
 }

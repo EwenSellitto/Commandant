@@ -56,15 +56,17 @@ pub const KEYS: [(&str, &str); 11] = [
 ];
 
 impl Chat {
-    /// Takes a line: a prompt, a `/command`, or the secret asked for. A line
-    /// that is the app's to carry out comes back as its command.
+    /// Takes a line: a prompt or a `/command`. A line that is the app's to
+    /// carry out comes back as its command.
     pub(in crate::state) fn submit(&mut self, text: &str) -> (Outcome, Option<AppCommand>) {
         let text = text.trim().to_string();
         if text.is_empty() {
             return Default::default();
         }
-        if let Some(effect) = self.send_secret(&text) {
-            return (self.cleared(Some(effect)), None);
+        // A line asked for, a key say, is never a prompt.
+        if self.entering() {
+            let entered = self.enter(&text);
+            return (self.cleared(None).and(entered), None);
         }
         if self.sent.last() != Some(&text) {
             self.sent.push(text.clone());
@@ -113,7 +115,7 @@ impl Chat {
                 // Not a command: a prompt that starts with a slash.
                 _ => return (self.send(text.clone(), String::new(), text), None),
             };
-            let effect = self.open_picker(menu, filter.trim());
+            let effect = self.open_menu(menu, filter.trim());
             return (self.cleared(effect), None);
         }
         (self.send(text.clone(), String::new(), text), None)
@@ -133,7 +135,7 @@ impl Chat {
         let Some(typed) = text.strip_prefix('/') else {
             return Vec::new();
         };
-        if typed.contains(' ') || self.auth.is_some() {
+        if typed.contains(' ') || self.entering() || self.signing_in.is_some() {
             return Vec::new();
         }
         let own = COMMANDS.iter().map(|(n, d)| (n.to_string(), d.to_string()));

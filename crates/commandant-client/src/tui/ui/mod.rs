@@ -1,6 +1,6 @@
 //! Drawing, without boxes. A chat: a status line and the node's chats on top,
 //! the thread, the prompt on a solid slab, the settings underneath, and the
-//! picker floating over it all. Or the list of nodes.
+//! question asked floating over it all. Or the list of nodes.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -19,10 +19,10 @@ mod nodes;
 #[cfg(test)]
 mod tests;
 
-use self::lists::{draw_picker, draw_suggestions};
+use self::lists::{draw_dialog, draw_picker, draw_suggestions};
 use self::nodes::draw_nodes;
-use crate::state::ChatId;
-use crate::state::chat::{self, Activity, Auth, Chat, Role, Unseen};
+use crate::state::chat::{self, Activity, Chat, Role, Unseen};
+use crate::state::{Ask, ChatId};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// The prompt's slab.
@@ -52,9 +52,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area().inner(ratatui::layout::Margin::new(1, 0));
     let Screen::Chat(id) = app.screen else {
         draw_nodes(frame, app, area);
-        if let Some(picker) = &app.picker {
-            draw_picker(frame, Color::Cyan, picker);
-        }
+        draw_asks(frame, app, Color::Cyan);
         return;
     };
     let [header, tabs, thread, status, input, footer] = Layout::vertical([
@@ -83,11 +81,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         accent,
         thread,
     );
-    if let Some(picker) = &view.picker {
-        draw_picker(frame, accent, picker);
-    }
-    if let Some(picker) = &app.picker {
-        draw_picker(frame, accent, picker);
+    draw_asks(frame, app, accent);
+}
+
+/// What is asked on screen, the one on top drawn last.
+fn draw_asks(frame: &mut Frame, app: &App, accent: Color) {
+    for scope in app.scopes().into_iter().rev() {
+        match app.pickers.get(&scope) {
+            Some(picker) => draw_picker(frame, accent, picker),
+            None => draw_dialog(frame, accent, app.state.ask(scope)),
+        }
     }
 }
 
@@ -335,9 +338,9 @@ fn draw_status(frame: &mut Frame, chat: &Chat, scroll: u16, area: Rect) {
         Activity::Idle if !chat.node.online => {
             Line::from(format!("● {} is offline", chat.node.name)).red()
         }
-        _ if let Some(Auth::Waiting { doing, .. }) = &chat.auth => Line::from(vec![
+        _ if let Some(doing) = chat.signing_in() => Line::from(vec![
             Span::raw(format!("{} ", spinner())).yellow(),
-            Span::raw(doing.clone()).yellow(),
+            Span::raw(doing.to_string()).yellow(),
         ]),
         Activity::Idle if let Some(repository) = &chat.preparing => {
             loading(format!("getting {repository} ready on {}…", chat.node.name))
@@ -393,13 +396,14 @@ fn draw_input(frame: &mut Frame, chat: &Chat, view: &ChatView, area: Rect) {
     let line = Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(3), 1);
 
     let input = &view.input;
-    let secret = matches!(chat.auth, Some(Auth::Key { .. }));
+    // A line asked for is typed here.
+    let secret = chat.ask().is_some_and(Ask::secret);
     if input.text.is_empty() {
-        let hint = match (&chat.auth, &chat.activity) {
-            (Some(Auth::Key { .. }), _) => {
-                "Paste the API key (hidden), Enter to save, Esc to cancel".into()
-            }
-            (Some(Auth::Code { .. }), _) => "Paste the code the page shows, Esc to cancel".into(),
+        let hint = match (chat.ask(), &chat.activity) {
+            (Some(Ask::Enter { label, secret, .. }), _) => match secret {
+                true => format!("Paste {label} (hidden), Enter to save, Esc to cancel"),
+                false => format!("Paste {label}, Esc to cancel"),
+            },
             (_, Activity::Idle) => format!("Message {}…", or(chat.agent(), "the agent")),
             (_, Activity::Working { .. }) => "Type the next prompt…".into(),
         };

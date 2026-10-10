@@ -1,9 +1,8 @@
 //! What the terminal keeps of a chat (its prompt, where the thread is
-//! scrolled, its picker as shown) and what keys in it ask for.
+//! scrolled) and what keys in it ask for.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::picker::{Outcome as Picked, Picker};
 use crate::state::chat::Chat;
 use crate::state::{Edit, Intent, Scope};
 
@@ -21,8 +20,6 @@ pub struct ChatView {
     /// was being typed before, to come back to.
     recalled: Option<usize>,
     draft: String,
-    /// The chat's picker, as shown.
-    pub picker: Option<Picker>,
 }
 
 impl ChatView {
@@ -52,15 +49,6 @@ impl ChatView {
     /// Edits the prompt, or says what the key asks of the chat.
     pub fn on_key(&mut self, chat: &Chat, key: KeyEvent) -> Option<Intent> {
         let id = chat.id;
-        if let Some(picker) = &mut self.picker {
-            let intent = match picker.on_key(key) {
-                Picked::Open => return None,
-                Picked::Closed => Intent::Dismiss(Scope::Chat(id)),
-                Picked::Chosen(choice) => Intent::Choose(Scope::Chat(id), choice),
-            };
-            self.picker = None;
-            return Some(intent);
-        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let suggestions = self.suggestions(chat);
         let completing = !suggestions.is_empty();
@@ -95,7 +83,9 @@ impl ChatView {
             KeyCode::BackTab => return Some(Intent::CycleAgent(id, -1)),
             KeyCode::Char(c) => self.input.insert(c),
             KeyCode::Enter => return self.submit(chat),
-            KeyCode::Esc if chat.awaiting_secret() => {
+            // Typing what is asked for, which goes with the line.
+            KeyCode::Esc if chat.entering() => {
+                self.input.clear();
                 return Some(Intent::Dismiss(Scope::Chat(id)));
             }
             KeyCode::Esc => return Some(Intent::Cancel(id)),
@@ -112,16 +102,19 @@ impl ChatView {
         None
     }
 
-    /// Hands over what is typed; the chat says whether it takes it.
+    /// Hands over what is typed: the line asked for, which is taken at
+    /// once, else a prompt the chat says whether it takes.
     fn submit(&mut self, chat: &Chat) -> Option<Intent> {
-        let text = self.input.text.trim();
+        let text = self.input.text.trim().to_string();
         if text.is_empty() {
             return None;
         }
-        if !chat.awaiting_secret() {
-            self.recalled = None;
+        if chat.entering() {
+            self.input.clear();
+            return Some(Intent::Enter(Scope::Chat(chat.id), text));
         }
-        Some(Intent::Submit(chat.id, text.to_string()))
+        self.recalled = None;
+        Some(Intent::Submit(chat.id, text))
     }
 
     /// Fills in the highlighted completion, ready for its arguments.

@@ -1,6 +1,6 @@
 use super::*;
-use crate::state::fixtures::{output, started};
-use crate::state::{Choose, Edit};
+use crate::state::fixtures::{acme, method, output, started};
+use crate::state::{Ask, Choose, Edit, Wanted};
 
 fn chat() -> Chat {
     let node = NodeInfo {
@@ -184,21 +184,21 @@ fn the_agents_commands_run_with_their_arguments() {
 
     // Picking one readies it for its arguments.
     command(&mut app, "/skills");
-    let pick = app.pick.as_ref().unwrap();
+    let pick = app.ask().and_then(Ask::choices).unwrap();
     assert_eq!(pick.choices.len(), 1);
     let picked = app.choose(pick.choices[0].value.clone());
     assert_eq!(
         picked.prompt,
         Some((app.id, Edit::Insert("/review ".into())))
     );
-    assert!(app.pick.is_none());
+    assert!(app.ask().is_none());
 }
 
 #[test]
 fn mcp_servers_are_switched_from_a_picker() {
     let mut app = with_options();
     command(&mut app, "/mcp");
-    assert_eq!(app.pick.as_ref().unwrap().choices.len(), 1);
+    assert_eq!(app.ask().and_then(Ask::choices).unwrap().choices.len(), 1);
     let Some(Effect::SwitchMcp {
         chat,
         name,
@@ -257,21 +257,24 @@ fn model_and_effort_are_picked() {
     let mut app = with_options();
     // The default model is unknown until a reply names it.
     command(&mut app, "/effort");
-    assert!(app.pick.is_none());
+    assert!(app.ask().is_none());
 
     let outcome = command(&mut app, "/model smart");
     assert_eq!(outcome.prompt, Some((app.id, Edit::Clear)));
-    let pick = app.pick.as_ref().expect("/model opens a picker");
+    let pick = app
+        .ask()
+        .and_then(Ask::choices)
+        .expect("/model opens a picker");
     assert_eq!((pick.title, pick.filter.as_str()), ("Model", "smart"));
     assert_eq!(pick.current, Some(Choose::Model(String::new())));
     choose(&mut app, Choose::Model("a/smart".into()));
-    assert!(app.pick.is_none());
+    assert!(app.ask().is_none());
     assert_eq!(app.settings.model, "a/smart");
 
     command(&mut app, "/effort");
     let efforts: Vec<_> = app
-        .pick
-        .as_ref()
+        .ask()
+        .and_then(Ask::choices)
         .unwrap()
         .choices
         .iter()
@@ -342,7 +345,7 @@ fn the_title_is_the_first_prompt_sent() {
     let mut app = with_options();
     command(&mut app, "/model");
     app.dismiss();
-    assert!(app.pick.is_none());
+    assert!(app.ask().is_none());
     assert_eq!(app.title, "", "commands aren't prompts");
     send(&mut app, "first");
     // Sent while it works: kept, not sent, not the title.
@@ -375,7 +378,7 @@ fn a_picker_asked_for_too_early_opens_when_the_options_come() {
     let mut app = chat();
     // The node hasn't said yet: the request is remembered, not dropped.
     assert!(effect(command(&mut app, "/model smart")).is_none());
-    assert!(app.pick.is_none());
+    assert!(app.ask().is_none());
     assert!(
         effect(command(&mut app, "/model smart")).is_none(),
         "still the one request"
@@ -389,14 +392,17 @@ fn a_picker_asked_for_too_early_opens_when_the_options_come() {
         ..Default::default()
     };
     app.on_message(Message::Options(Ok(Arc::new(options))));
-    let pick = app.pick.as_ref().expect("it opens by itself");
+    let pick = app
+        .ask()
+        .and_then(Ask::choices)
+        .expect("it opens by itself");
     assert_eq!((pick.title, pick.filter.as_str()), ("Model", "smart"));
 
     // If the node can't say, the wait ends with why.
     let mut failed = chat();
     command(&mut failed, "/agent");
     failed.on_message(Message::Options(Err("timed out".into())));
-    assert!(failed.pick.is_none());
+    assert!(failed.ask().is_none());
     let said = &failed.thread.last().unwrap().text;
     assert!(
         said.contains("couldn't list the agent's options: timed out"),
@@ -409,26 +415,20 @@ fn listed(app: &mut Chat) {
         effect(command(app, "/providers")),
         Some(Effect::FetchProviders { .. })
     ));
-    let method = |label: &str, oauth: bool, index: u32| AuthMethod {
-        label: label.into(),
-        oauth,
-        index,
-    };
+    let methods = vec![
+        method("Browser", true, 0),
+        method("Code", true, 1),
+        method("API key", false, 2),
+    ];
     let providers = vec![ModelProvider {
-        id: "acme".into(),
-        name: "Acme".into(),
         connected: true,
-        methods: vec![
-            method("Browser", true, 0),
-            method("Code", true, 1),
-            method("API key", false, 2),
-        ],
+        ..acme(methods)
     }];
     assert!(app.on_message(Message::Providers(Ok(providers))).is_none());
-    assert!(app.pick.is_some(), "the providers come in a picker");
+    assert!(app.ask().is_some(), "the providers come in a picker");
     choose(app, Choose::Provider("acme".into()));
     // Browser, Code, API key, Sign out.
-    assert_eq!(app.pick.as_ref().unwrap().choices.len(), 4);
+    assert_eq!(app.ask().and_then(Ask::choices).unwrap().choices.len(), 4);
 }
 
 fn sent(effect: Option<Effect>) -> (String, auth_action::Action) {
@@ -452,11 +452,35 @@ fn an_api_key_is_sent_but_never_shown() {
     let mut app = with_options();
     listed(&mut app);
     assert!(choose(&mut app, sign_in("acme", None)).is_none());
-    assert!(app.awaiting_secret());
+    let Some(Ask::Enter {
+        label,
+        secret: true,
+        wanted: Wanted::ApiKey { provider },
+    }) = app.ask()
+    else {
+        panic!("a key is asked for, secretly");
+    };
+    assert_eq!(
+        (label.as_str(), provider.as_str()),
+        ("the API key for Acme", "acme")
+    );
     assert!(app.completions("/").is_empty(), "a key isn't a command");
-    let typed = command(&mut app, "sk-secret");
-    assert_eq!(typed.prompt, Some((app.id, Edit::Clear)));
-    let (provider, action) = sent(effect(typed));
+    // Submitted as a prompt by mistake, it is still the key.
+    let mut submitted = with_options();
+    listed(&mut submitted);
+    choose(&mut submitted, sign_in("acme", None));
+    let typed = command(&mut submitted, "sk-secret");
+    assert_eq!(
+        typed.prompt,
+        Some((submitted.id, Edit::Clear)),
+        "not left in view"
+    );
+    let (_, action) = sent(effect(typed));
+    assert_eq!(action, auth_action::Action::ApiKey("sk-secret".into()));
+    assert!(!submitted.sent().iter().any(|s| s.contains("sk-secret")));
+    // A blank line isn't one.
+    assert!(app.enter("  ").effects.is_empty());
+    let (provider, action) = sent(effect(app.enter("sk-secret")));
     assert_eq!(provider, "acme");
     assert_eq!(action, auth_action::Action::ApiKey("sk-secret".into()));
     assert!(app.thread.iter().all(|e| !e.text.contains("sk-secret")));
@@ -465,15 +489,16 @@ fn an_api_key_is_sent_but_never_shown() {
     // Done: the node's models are asked for again.
     let done = app.on_message(Message::Auth(Ok(ProviderAuthResult::default())));
     assert!(matches!(done, Some(Effect::FetchOptions { .. })));
-    assert!(app.auth.is_none());
+    assert!(app.ask().is_none() && app.signing_in().is_none());
 
     // Dismissing backs out of typing a key.
     listed(&mut app);
     choose(&mut app, sign_in("acme", None));
-    let dismissed = app.dismiss();
-    assert_eq!(dismissed.prompt, Some((app.id, Edit::Clear)));
-    assert!(app.auth.is_none());
+    app.dismiss();
+    assert!(app.ask().is_none());
     assert_eq!(app.thread.last().unwrap().text, "not signed in");
+    // With nothing asked, a line is a prompt again.
+    assert!(app.enter("sk-secret").effects.is_empty());
 }
 
 #[test]
@@ -508,7 +533,9 @@ fn oauth_waits_in_the_browser_or_takes_the_code() {
         ..Default::default()
     };
     assert!(app.on_message(Message::Auth(Ok(started))).is_none());
-    let (_, finish) = sent(effect(command(&mut app, "abc")));
+    assert!(matches!(app.ask(), Some(Ask::Enter { secret: false, .. })));
+    let (_, finish) = sent(effect(app.enter("abc")));
+    assert_eq!(app.signing_in(), Some("signing in to Acme…"));
     assert!(
         matches!(finish, auth_action::Action::OauthFinish(f) if f.index == 1 && f.code == "abc")
     );
@@ -559,7 +586,10 @@ fn projects_are_browsed_joined_or_copied() {
         ],
     }];
     app.on_message(Message::Projects(Ok(projects)));
-    let pick = app.pick.as_ref().expect("the projects to browse");
+    let pick = app
+        .ask()
+        .and_then(Ask::choices)
+        .expect("the projects to browse");
     let shown: Vec<_> = pick
         .choices
         .iter()
@@ -607,7 +637,7 @@ fn projects_are_browsed_joined_or_copied() {
     let mut empty = with_options();
     command(&mut empty, "/project");
     empty.on_message(Message::Projects(Ok(Vec::new())));
-    assert!(empty.pick.is_none());
+    assert!(empty.ask().is_none());
     assert!(
         empty
             .thread
