@@ -239,8 +239,8 @@ impl Chat {
         }
     }
 
-    /// Every task still running: the turn's, then the commands'.
-    pub fn running_tasks(&self) -> impl Iterator<Item = String> {
+    /// Every task of the chat's still running: the turn's, then the commands'.
+    pub fn tasks(&self) -> impl Iterator<Item = String> {
         let runs = self.run_tasks().cloned();
         self.running_task().into_iter().chain(runs)
     }

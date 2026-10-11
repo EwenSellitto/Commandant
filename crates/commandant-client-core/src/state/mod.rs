@@ -130,7 +130,7 @@ impl State {
 
     /// Tasks still running, for quitting.
     pub fn running_tasks(&self) -> Vec<String> {
-        self.chats.iter().flat_map(Chat::running_tasks).collect()
+        self.chats.iter().flat_map(Chat::tasks).collect()
     }
 
     /// Opens a new chat on `node` on the agent's session `session_id`, or a
@@ -326,8 +326,8 @@ impl State {
         self.new_chat(chat.node.clone(), settings)
     }
 
-    /// Closes a chat, unless its agent is still at work, and says which of
-    /// its node's chats to show instead: the one after it, else the one
+    /// Closes a chat, unless its agent or a command is still at work, and
+    /// says which of its node's chats to show instead: the one after it, else the one
     /// before, else the node list.
     fn close(&mut self, id: ChatId) -> Outcome {
         let Some(chat) = self.chat_mut(id) else {

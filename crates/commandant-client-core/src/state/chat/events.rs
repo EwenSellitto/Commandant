@@ -80,12 +80,11 @@ impl Chat {
                 }
             }
             Message::Run(id, event) => return self.on_run(id, event),
-            // The turn's cancel failing ends it, as its stream breaking would.
-            Message::CancelFailed { task_id, error } => {
-                if !self.run_wont_stop(&task_id, &error) {
-                    return self.on_message(Message::Failed(error));
-                }
-            }
+            Message::CancelFailed { task_id, error } => match self.stop_refused(&task_id) {
+                Some(line) => self.error(&format!("couldn't stop {line}: {error}")),
+                // The turn's cancel failing ends it, as its stream breaking would.
+                None => return self.on_message(Message::Failed(error)),
+            },
             Message::Failed(error) => {
                 self.flush_output();
                 self.error(&error);

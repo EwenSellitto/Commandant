@@ -24,7 +24,7 @@ pub enum Intent {
     NewChat(ChatId),
     /// Choose one of the chat's node's chats or saved sessions.
     Sessions(ChatId),
-    /// Close a chat, unless its agent is still at work.
+    /// Close a chat, unless its agent or a command is still at work.
     Close(ChatId),
     /// A line typed in a chat: a prompt, a `/command` or a `!command`.
     Submit(ChatId, String),

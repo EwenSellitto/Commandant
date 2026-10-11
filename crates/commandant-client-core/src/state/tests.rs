@@ -1,5 +1,5 @@
 use super::chat::{Message, Role, Unseen};
-use super::fixtures::{acme, bare, method, node, output, started};
+use super::fixtures::{acme, bare, for_run, method, node, output, started};
 use super::*;
 
 fn state() -> State {
@@ -305,10 +305,7 @@ fn a_running_command_keeps_its_chat_busy_and_open() {
     assert!(said.contains("command is still running"), "{said}");
 
     // Quitting stops it.
-    let Message::Task(event) = started("t9") else {
-        unreachable!()
-    };
-    state.update(Update::Chat(id, Message::Run(run, Ok(event))));
+    state.update(Update::Chat(id, for_run(run, started("t9"))));
     assert_eq!(state.running_tasks(), ["t9"]);
 }
 

@@ -305,9 +305,9 @@ fn command_rows(entry: &Entry, width: usize) -> Vec<Line<'static>> {
         rows.extend(text::wrap(line, width, &gutter, &gutter));
     }
     let end = match &run.ended {
-        None if run.stopping() => Line::from(format!("{} stopping…", spinner())).yellow(),
+        None if run.stopping() => stopping(),
         None => Line::from(format!("{} running", spinner())).cyan(),
-        Some(Ended::Exited(0)) => Line::from("exit 0").fg(MUTED),
+        Some(ended) if ended.succeeded() => Line::from("exit 0").fg(MUTED),
         Some(Ended::Exited(code)) => Line::from(format!("exit {code}")).red(),
         Some(Ended::Cancelled) => Line::from("cancelled").yellow(),
         Some(Ended::Failed(why)) => Line::from(why.clone()).red(),
@@ -439,20 +439,13 @@ fn draw_status(frame: &mut Frame, chat: &Chat, scroll: u16, area: Rect) {
 
 /// Which commands run, and how to stop them; `None` when none does.
 fn commands_status(chat: &Chat) -> Option<Line<'static>> {
-    let running: Vec<&Entry> = chat
-        .thread
-        .iter()
-        .filter(|e| e.run.as_ref().is_some_and(Run::running))
-        .collect();
-    let last = running.last()?;
-    if running
-        .iter()
-        .all(|e| e.run.as_ref().is_some_and(Run::stopping))
-    {
-        return Some(Line::from(format!("{} stopping…", spinner())).yellow());
+    let running: Vec<(&str, &Run)> = chat.commands().filter(|(_, r)| r.running()).collect();
+    let (line, _) = running.last()?;
+    if running.iter().all(|(_, r)| r.stopping()) {
+        return Some(stopping());
     }
     let what = match running.len() {
-        1 => shorten(&last.text, 40),
+        1 => shorten(line, 40),
         n => format!("{n} commands"),
     };
     Some(Line::from(vec![
@@ -460,6 +453,11 @@ fn commands_status(chat: &Chat) -> Option<Line<'static>> {
         Span::raw(what).cyan(),
         "  esc to stop".fg(MUTED),
     ]))
+}
+
+/// Commands asked to stop, and not stopped yet.
+fn stopping() -> Line<'static> {
+    Line::from(format!("{} stopping…", spinner())).yellow()
 }
 
 /// `mcp 1/2 connected · 1 failed`, when the agent has MCP servers.

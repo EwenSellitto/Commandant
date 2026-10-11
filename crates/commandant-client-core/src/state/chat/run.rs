@@ -52,6 +52,12 @@ pub enum Ended {
     Failed(String),
 }
 
+impl Ended {
+    pub fn succeeded(&self) -> bool {
+        matches!(self, Self::Exited(0))
+    }
+}
+
 impl Run {
     fn new(id: RunId) -> Self {
         Self {
@@ -175,9 +181,15 @@ impl Chat {
         self.cleared(Some(run))
     }
 
+    /// The commands run from the chat, oldest first, each with its line.
+    pub fn commands(&self) -> impl Iterator<Item = (&str, &Run)> {
+        let runs = self.thread.iter();
+        runs.filter_map(|e| Some((e.text.as_str(), e.run.as_ref()?)))
+    }
+
     /// The commands run from the chat, oldest first.
     pub fn runs(&self) -> impl Iterator<Item = &Run> {
-        self.thread.iter().filter_map(|e| e.run.as_ref())
+        self.commands().map(|(_, run)| run)
     }
 
     /// The tasks of the commands still running.
@@ -185,20 +197,14 @@ impl Chat {
         self.runs().filter_map(Run::task)
     }
 
-    fn run_mut(&mut self, id: RunId) -> Option<&mut Run> {
-        let mut runs = self.thread.iter_mut().rev().filter_map(|e| e.run.as_mut());
-        runs.find(|r| r.id == id)
+    fn runs_mut(&mut self) -> impl Iterator<Item = &mut Run> {
+        self.thread.iter_mut().filter_map(|e| e.run.as_mut())
     }
 
     /// Stops every command still running; `None` if none is.
     pub(super) fn cancel_runs(&mut self) -> Option<Vec<Effect>> {
         let chat = self.id;
-        let mut runs = self
-            .thread
-            .iter_mut()
-            .filter_map(|e| e.run.as_mut())
-            .filter(|r| r.running())
-            .peekable();
+        let mut runs = self.runs_mut().filter(|r| r.running()).peekable();
         runs.peek()?;
         Some(runs.filter_map(|r| r.cancel(chat)).collect())
     }
@@ -207,7 +213,7 @@ impl Chat {
     pub(super) fn on_run(&mut self, id: RunId, event: Result<TaskEvent, String>) -> Option<Effect> {
         let chat = self.id;
         // What comes after its end is too late to matter.
-        let run = self.run_mut(id).filter(|r| r.running())?;
+        let run = self.runs_mut().find(|r| r.id == id && r.running())?;
         let ended = match event {
             Ok(TaskEvent::Started(started)) => {
                 run.task_id = Some(started.task_id.clone());
@@ -223,33 +229,23 @@ impl Chat {
             Ok(TaskEvent::Finished(finished)) => Ended::from(finished),
             Err(error) => Ended::Failed(error),
         };
-        let unseen = match ended {
-            Ended::Exited(0) => Unseen::Done,
-            _ => Unseen::Failed,
+        let unseen = match ended.succeeded() {
+            true => Unseen::Done,
+            false => Unseen::Failed,
         };
         run.end(ended);
         self.unseen = Some(unseen);
         None
     }
 
-    /// Says a command couldn't be stopped, so it can be asked again; whether
-    /// it was the command's task that wouldn't stop.
-    pub(super) fn run_wont_stop(&mut self, task_id: &str, error: &str) -> bool {
+    /// The command whose task wouldn't stop, which can then be asked to
+    /// again: its line; `None` if no command has that task.
+    pub(super) fn stop_refused(&mut self, task_id: &str) -> Option<String> {
         let entry = self.thread.iter_mut().find(|e| {
             let run = e.run.as_ref();
             run.is_some_and(|r| r.task_id.as_deref() == Some(task_id))
-        });
-        let Some(Entry {
-            text,
-            run: Some(run),
-            ..
-        }) = entry
-        else {
-            return false;
-        };
-        run.cancelling = false;
-        let said = format!("couldn't stop {text}: {error}");
-        self.error(&said);
-        true
+        })?;
+        entry.run.as_mut()?.cancelling = false;
+        Some(entry.text.clone())
     }
 }

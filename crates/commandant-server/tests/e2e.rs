@@ -1380,8 +1380,14 @@ mod agents {
         follow(&mut core, &mut updates, "the command never ended", over).await;
         let (ended, output) = last_run(&core).unwrap();
         assert_eq!(ended, Some(Ended::Exited(3)));
-        let printed: Vec<_> = output.iter().map(|p| (p.stderr, p.text.as_str())).collect();
-        assert_eq!(printed, [(false, "listed-here.txt\n"), (true, "oops\n")]);
+        // Each stream comes through its own pipe: in order within one, but
+        // not across them.
+        let stream = |stderr: bool| {
+            let pieces = output.iter().filter(|p| p.stderr == stderr);
+            pieces.map(|p| p.text.as_str()).collect::<String>()
+        };
+        assert_eq!(stream(false), "listed-here.txt\n");
+        assert_eq!(stream(true), "oops\n");
         // Not a word of it reached the agent.
         let log = cluster.fake.log();
         assert!(
@@ -1393,7 +1399,7 @@ mod agents {
 
         // Esc stops a command that would run on.
         core.act(Intent::Submit(chat, "!sleep 60".into()));
-        let started = |core: &Core| core.chat(chat).unwrap().running_tasks().next().is_some();
+        let started = |core: &Core| core.chat(chat).unwrap().tasks().next().is_some();
         follow(
             &mut core,
             &mut updates,

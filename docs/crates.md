@@ -95,7 +95,7 @@ code, so every front end shares it. Code used by several crates goes in
 | `tui/chat.rs` | A chat's prompt (editing, history recall, completion highlight) and scroll |
 | `tui/ui/`, `tui/text.rs` | Drawing, and markdown styling |
 | `tui/asks.rs`, `tui/picker.rs` | What keys say to an ask: the floating list, narrowed down by typing, for a choose-ask, a panel for a confirm- or show-ask; an enter-ask is typed in the prompt. The app's and each chat's picker are shown from one map |
-| `tui/help.rs` | The help (F1, `?` on the nodes, `/help`): every command, the agent's commands and skills, and the terminal's keys in one such list, searched by name, key, alias or what it does; choosing one runs it, starts it in the prompt, or presses the key |
+| `tui/help.rs` | The help (F1, `?` on the nodes, `/help`): every command, `!` to run one on the node, the agent's commands and skills, and the terminal's keys in one such list, searched by name, key, alias or what it does; choosing one runs it, starts it in the prompt, or presses the key |
 
 ## `commandant-client-core`
 
