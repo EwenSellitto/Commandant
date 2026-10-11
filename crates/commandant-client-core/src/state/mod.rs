@@ -117,7 +117,7 @@ impl State {
                 .and_then(Ask::choices)
                 .is_some_and(|c| c.loading)
             || self.chats.iter().any(|c| {
-                c.activity.working()
+                c.at_work()
                     || c.fetching_options
                     || c.loading_history
                     || c.loading()
@@ -130,7 +130,7 @@ impl State {
 
     /// Tasks still running, for quitting.
     pub fn running_tasks(&self) -> Vec<String> {
-        self.chats.iter().filter_map(Chat::running_task).collect()
+        self.chats.iter().flat_map(Chat::running_tasks).collect()
     }
 
     /// Opens a new chat on `node` on the agent's session `session_id`, or a
@@ -335,6 +335,10 @@ impl State {
         };
         if chat.activity.working() {
             chat.info("the agent is still working: cancel with Esc first, or switch away");
+            return Outcome::default();
+        }
+        if chat.at_work() {
+            chat.info("a command is still running: stop it with Esc first, or switch away");
             return Outcome::default();
         }
         let node = chat.node.id.clone();

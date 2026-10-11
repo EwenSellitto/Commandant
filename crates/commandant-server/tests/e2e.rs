@@ -988,7 +988,7 @@ mod fake_opencode;
 /// real one.
 #[cfg(unix)]
 mod agents {
-    use commandant_client_core::chat::Role;
+    use commandant_client_core::chat::{Ended, Role};
     use commandant_client_core::config::Client;
     use commandant_client_core::{ChatId, Core, Go, Intent, Settings, Updates};
     use commandant_worker::HarnessKind;
@@ -1259,10 +1259,16 @@ mod agents {
     /// A client core on the cluster's server, with a chat open on its node,
     /// as a front end starts one.
     async fn core_with_a_chat(connection: &Client) -> (Core, Updates, ChatId) {
+        core_with_a_chat_in(connection, Settings::default()).await
+    }
+
+    /// The same, with new chats starting with `defaults`.
+    async fn core_with_a_chat_in(
+        connection: &Client,
+        defaults: Settings,
+    ) -> (Core, Updates, ChatId) {
         let handle = tokio::runtime::Handle::current();
-        let (mut core, updates) = Core::start(connection, Settings::default(), handle)
-            .await
-            .unwrap();
+        let (mut core, updates) = Core::start(connection, defaults, handle).await.unwrap();
         let node = core.nodes()[0].id.clone();
         let open = Intent::OpenSession {
             node,
@@ -1349,6 +1355,56 @@ mod agents {
         core.shutdown().await;
         let aborted = format!("POST /session/{session}/abort");
         assert!(cluster.fake.log().contains(&aborted));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_core_runs_a_command_the_agent_never_hears_of() {
+        let cluster = cluster().await;
+        let dir = cluster._tmp.path().join("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("listed-here.txt"), "").unwrap();
+        let defaults = Settings {
+            cwd: dir.display().to_string(),
+            ..Default::default()
+        };
+        let (mut core, mut updates, chat) =
+            core_with_a_chat_in(&cluster.connection, defaults).await;
+        let last_run = |core: &Core| {
+            let runs = core.chat(chat).unwrap().runs();
+            runs.last().map(|r| (r.ended.clone(), r.output.clone()))
+        };
+        let over = |core: &Core| last_run(core).is_some_and(|(ended, _)| ended.is_some());
+
+        core.act(Intent::Submit(chat, "!ls; echo oops >&2; exit 3".into()));
+        assert!(!working(&core, chat), "the agent isn't asked");
+        follow(&mut core, &mut updates, "the command never ended", over).await;
+        let (ended, output) = last_run(&core).unwrap();
+        assert_eq!(ended, Some(Ended::Exited(3)));
+        let printed: Vec<_> = output.iter().map(|p| (p.stderr, p.text.as_str())).collect();
+        assert_eq!(printed, [(false, "listed-here.txt\n"), (true, "oops\n")]);
+        // Not a word of it reached the agent.
+        let log = cluster.fake.log();
+        assert!(
+            log.iter().all(|l| !l.starts_with("POST /session")
+                && !l.contains("listed-here")
+                && !l.contains("oops")),
+            "{log:?}"
+        );
+
+        // Esc stops a command that would run on.
+        core.act(Intent::Submit(chat, "!sleep 60".into()));
+        let started = |core: &Core| core.chat(chat).unwrap().running_tasks().next().is_some();
+        follow(
+            &mut core,
+            &mut updates,
+            "the command never started",
+            started,
+        )
+        .await;
+        core.act(Intent::Cancel(chat));
+        follow(&mut core, &mut updates, "the command never stopped", over).await;
+        assert_eq!(last_run(&core).unwrap().0, Some(Ended::Cancelled));
+        assert!(!core.busy());
     }
 
     #[tokio::test(flavor = "multi_thread")]

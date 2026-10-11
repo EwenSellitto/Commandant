@@ -63,10 +63,7 @@ pub(super) fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
             }
             let chats = core.chats_on(&node.id).count();
             if chats > 0 {
-                let working = core
-                    .chats_on(&node.id)
-                    .filter(|c| c.activity.working())
-                    .count();
+                let working = core.chats_on(&node.id).filter(|c| c.at_work()).count();
                 let mut open = format!("   {chats} open");
                 if working > 0 {
                     open.push_str(&format!(" · {working} working"));

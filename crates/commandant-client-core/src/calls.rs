@@ -11,7 +11,7 @@ use tokio::task::{AbortHandle, JoinSet};
 
 use crate::config::Client;
 use crate::state::chat::Message;
-use crate::state::{ChatId, Effect, Failure, Update};
+use crate::state::{Effect, Failure, Update};
 
 /// How often the nodes' details are refreshed.
 const NODE_REFRESH: Duration = Duration::from_secs(5);
@@ -71,7 +71,18 @@ impl Server {
         let (mut control, handle, tx) = (self.control.clone(), &self.handle, self.tx.clone());
         match effect {
             Effect::Send(chat, request) => {
-                handle.spawn(stream_prompt(control, chat, request, tx));
+                let call = async move { control.prompt(request).await };
+                handle.spawn(stream_task(call, move |event| {
+                    let message = event.map_or_else(Message::Failed, Message::Task);
+                    tx.send(Update::Chat(chat, message)).is_ok()
+                }));
+            }
+            Effect::RunCommand { chat, run, request } => {
+                let call = async move { control.run_command(request).await };
+                handle.spawn(stream_task(call, move |event| {
+                    tx.send(Update::Chat(chat, Message::Run(run, event)))
+                        .is_ok()
+                }));
             }
             Effect::FetchOptions { node, after } => {
                 handle.spawn(async move {
@@ -171,8 +182,12 @@ impl Server {
             }
             Effect::Cancel(chat, task_id) => {
                 handle.spawn(async move {
-                    if let Err(status) = control.cancel_task(CancelTaskRequest { task_id }).await {
-                        let failed = Message::Failed(status.message().to_string());
+                    let request = CancelTaskRequest {
+                        task_id: task_id.clone(),
+                    };
+                    if let Err(status) = control.cancel_task(request).await {
+                        let error = status.message().to_string();
+                        let failed = Message::CancelFailed { task_id, error };
                         let _ = tx.send(Update::Chat(chat, failed));
                     }
                 });
@@ -214,13 +229,17 @@ fn spawn_ask<T: Send + 'static>(
     });
 }
 
-/// Sends a prompt and relays its events to its chat.
-async fn stream_prompt(mut control: ControlClient, chat: ChatId, request: PromptRequest, tx: Tx) {
-    let send = |message| tx.send(Update::Chat(chat, message)).is_ok();
-    let mut events = match control.prompt(request).await {
+/// Starts a task with `call` and relays its events to `send` until it
+/// finishes, or why it couldn't start or its stream broke; `send` says
+/// whether anyone still listens.
+async fn stream_task(
+    call: impl Future<Output = Result<tonic::Response<tonic::Streaming<TaskEvent>>, tonic::Status>>,
+    send: impl Fn(Result<task_event::Event, String>) -> bool,
+) {
+    let mut events = match call.await {
         Ok(response) => response.into_inner(),
         Err(status) => {
-            send(Message::Failed(status.message().to_string()));
+            send(Err(status.message().to_string()));
             return;
         }
     };
@@ -228,21 +247,19 @@ async fn stream_prompt(mut control: ControlClient, chat: ChatId, request: Prompt
         match events.message().await {
             Ok(Some(TaskEvent { event: Some(event) })) => {
                 let finished = matches!(event, task_event::Event::Finished(_));
-                if !send(Message::Task(event)) || finished {
+                if !send(Ok(event)) || finished {
                     return;
                 }
             }
             Ok(Some(_)) => {}
             Ok(None) => break,
             Err(status) => {
-                send(Message::Failed(status.message().to_string()));
+                send(Err(status.message().to_string()));
                 return;
             }
         }
     }
-    send(Message::Failed(
-        "the stream ended before the agent finished".into(),
-    ));
+    send(Err("the stream ended before the task finished".into()));
 }
 
 /// Keeps the nodes' details (online, harnesses) current.

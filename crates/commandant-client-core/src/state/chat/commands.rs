@@ -1,5 +1,6 @@
-//! The line language: what a submitted line asks for, and the commands
-//! that complete what is being typed.
+//! The line language: what a submitted line asks for (a prompt, a
+//! `/command`, or a shell command after `!`), and the commands that complete
+//! what is being typed.
 
 use commandant_common::or;
 
@@ -61,6 +62,9 @@ impl Chat {
         }
         if self.sent.last() != Some(&text) {
             self.sent.push(text.clone());
+        }
+        if let Some(line) = text.strip_prefix('!') {
+            return (self.run(line.trim()), None);
         }
         if let Some(command) = text.strip_prefix('/') {
             let (command, filter) = command.split_once(' ').unwrap_or((command, ""));

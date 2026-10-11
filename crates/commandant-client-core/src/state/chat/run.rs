@@ -1,0 +1,255 @@
+//! Commands run from a chat with `!`: each is a block in the thread, with
+//! what it printed and how it ended. They run alongside the agent's turn
+//! and never reach the agent.
+
+use commandant_proto::task_event::Event as TaskEvent;
+use commandant_proto::*;
+
+use super::events::decode;
+use super::{Chat, Entry, Role, Unseen};
+use crate::state::{ChatId, Effect, Outcome};
+
+/// Tells a chat's commands apart.
+pub type RunId = u64;
+
+/// How much of a command's output its block keeps: the end of it. The
+/// server keeps more.
+const KEPT: usize = 64 * 1024;
+
+/// A command run from the chat, as its block shows it.
+#[derive(Debug)]
+pub struct Run {
+    pub id: RunId,
+    /// What it printed, in order: the end of it, if it printed a lot.
+    pub output: Vec<Printed>,
+    /// Whether the start of its output was dropped.
+    pub dropped: bool,
+    /// How it ended; `None` while it runs.
+    pub ended: Option<Ended>,
+    /// Known once the server has started it.
+    task_id: Option<String>,
+    /// Asked to stop; one not started yet is stopped once it is.
+    cancelling: bool,
+    /// Bytes of a UTF-8 character split across output chunks, per stream.
+    partial_stdout: Vec<u8>,
+    partial_stderr: Vec<u8>,
+}
+
+/// A piece of a command's output, from one stream.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Printed {
+    /// Written to its error output.
+    pub stderr: bool,
+    pub text: String,
+}
+
+/// How a command ended.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Ended {
+    Exited(i32),
+    Cancelled,
+    /// It couldn't start, was killed, or its stream broke: why.
+    Failed(String),
+}
+
+impl Run {
+    fn new(id: RunId) -> Self {
+        Self {
+            id,
+            output: Vec::new(),
+            dropped: false,
+            ended: None,
+            task_id: None,
+            cancelling: false,
+            partial_stdout: Vec::new(),
+            partial_stderr: Vec::new(),
+        }
+    }
+
+    pub fn running(&self) -> bool {
+        self.ended.is_none()
+    }
+
+    /// Whether it has been asked to stop and hasn't yet.
+    pub fn stopping(&self) -> bool {
+        self.running() && self.cancelling
+    }
+
+    /// Its task, while it runs.
+    fn task(&self) -> Option<&String> {
+        self.task_id.as_ref().filter(|_| self.running())
+    }
+
+    /// Asks it to stop, once; its task is cancelled now if it has started.
+    fn cancel(&mut self, chat: ChatId) -> Option<Effect> {
+        if !self.running() || self.cancelling {
+            return None;
+        }
+        self.cancelling = true;
+        let task_id = self.task_id.clone()?;
+        Some(Effect::Cancel(chat, task_id))
+    }
+
+    /// Adds what a stream printed, to the last piece if it came from the same one.
+    fn print(&mut self, stderr: bool, data: &[u8]) {
+        let partial = match stderr {
+            true => &mut self.partial_stderr,
+            false => &mut self.partial_stdout,
+        };
+        let text = decode(partial, data);
+        if text.is_empty() {
+            return;
+        }
+        match self.output.last_mut() {
+            Some(last) if last.stderr == stderr => last.text.push_str(&text),
+            _ => self.output.push(Printed { stderr, text }),
+        }
+        self.keep_the_end();
+    }
+
+    /// Drops the start of the output past [`KEPT`], up to the end of a
+    /// line, so the first line kept is whole.
+    fn keep_the_end(&mut self) {
+        let size: usize = self.output.iter().map(|p| p.text.len()).sum();
+        let mut excess = size.saturating_sub(KEPT);
+        while excess > 0
+            && let Some(first) = self.output.first_mut()
+        {
+            let text = &mut first.text;
+            let newline = text.bytes().skip(excess).position(|b| b == b'\n');
+            let cut = newline.map_or(text.len(), |at| excess + at + 1);
+            text.drain(..cut);
+            if text.is_empty() {
+                self.output.remove(0);
+            }
+            excess = excess.saturating_sub(cut);
+            self.dropped = true;
+        }
+    }
+
+    fn end(&mut self, ended: Ended) {
+        self.partial_stdout.clear();
+        self.partial_stderr.clear();
+        self.ended = Some(ended);
+    }
+}
+
+impl From<TaskFinished> for Ended {
+    fn from(finished: TaskFinished) -> Self {
+        match finished.exit_code {
+            _ if finished.cancelled => Self::Cancelled,
+            _ if !finished.error.is_empty() => Self::Failed(finished.error),
+            Some(code) => Self::Exited(code),
+            None => Self::Failed("it ended without an exit status".into()),
+        }
+    }
+}
+
+impl Chat {
+    /// Runs `line` as a shell command on the node, in the chat's directory,
+    /// in a block of its own.
+    pub(super) fn run(&mut self, line: &str) -> Outcome {
+        if line.is_empty() {
+            self.info("! runs a shell command on the node, in this chat's directory: !ls");
+            return Outcome::default();
+        }
+        let id = self.next_run;
+        self.next_run += 1;
+        self.thread.push(Entry {
+            role: Role::Command,
+            text: line.to_string(),
+            agent: self.agent().to_string(),
+            run: Some(Run::new(id)),
+        });
+        let request = RunCommandRequest {
+            node: self.node.id.clone(),
+            argv: vec!["sh".into(), "-c".into(), line.to_string()],
+            cwd: self.settings.cwd.clone(),
+            env: Default::default(),
+        };
+        let run = Effect::RunCommand {
+            chat: self.id,
+            run: id,
+            request,
+        };
+        self.cleared(Some(run))
+    }
+
+    /// The commands run from the chat, oldest first.
+    pub fn runs(&self) -> impl Iterator<Item = &Run> {
+        self.thread.iter().filter_map(|e| e.run.as_ref())
+    }
+
+    /// The tasks of the commands still running.
+    pub(super) fn run_tasks(&self) -> impl Iterator<Item = &String> {
+        self.runs().filter_map(Run::task)
+    }
+
+    fn run_mut(&mut self, id: RunId) -> Option<&mut Run> {
+        let mut runs = self.thread.iter_mut().rev().filter_map(|e| e.run.as_mut());
+        runs.find(|r| r.id == id)
+    }
+
+    /// Stops every command still running; `None` if none is.
+    pub(super) fn cancel_runs(&mut self) -> Option<Vec<Effect>> {
+        let chat = self.id;
+        let mut runs = self
+            .thread
+            .iter_mut()
+            .filter_map(|e| e.run.as_mut())
+            .filter(|r| r.running())
+            .peekable();
+        runs.peek()?;
+        Some(runs.filter_map(|r| r.cancel(chat)).collect())
+    }
+
+    /// Takes in what a command's task reports, which may call for an effect.
+    pub(super) fn on_run(&mut self, id: RunId, event: Result<TaskEvent, String>) -> Option<Effect> {
+        let chat = self.id;
+        // What comes after its end is too late to matter.
+        let run = self.run_mut(id).filter(|r| r.running())?;
+        let ended = match event {
+            Ok(TaskEvent::Started(started)) => {
+                run.task_id = Some(started.task_id.clone());
+                // Esc was pressed before the task had an id.
+                return run
+                    .cancelling
+                    .then(|| Effect::Cancel(chat, started.task_id));
+            }
+            Ok(TaskEvent::Output(output)) => {
+                run.print(output.stream() == OutputStream::Stderr, &output.data);
+                return None;
+            }
+            Ok(TaskEvent::Finished(finished)) => Ended::from(finished),
+            Err(error) => Ended::Failed(error),
+        };
+        let unseen = match ended {
+            Ended::Exited(0) => Unseen::Done,
+            _ => Unseen::Failed,
+        };
+        run.end(ended);
+        self.unseen = Some(unseen);
+        None
+    }
+
+    /// Says a command couldn't be stopped, so it can be asked again; whether
+    /// it was the command's task that wouldn't stop.
+    pub(super) fn run_wont_stop(&mut self, task_id: &str, error: &str) -> bool {
+        let entry = self.thread.iter_mut().find(|e| {
+            let run = e.run.as_ref();
+            run.is_some_and(|r| r.task_id.as_deref() == Some(task_id))
+        });
+        let Some(Entry {
+            text,
+            run: Some(run),
+            ..
+        }) = entry
+        else {
+            return false;
+        };
+        run.cancelling = false;
+        let said = format!("couldn't stop {text}: {error}");
+        self.error(&said);
+        true
+    }
+}

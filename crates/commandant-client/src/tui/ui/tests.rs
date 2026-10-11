@@ -1,6 +1,7 @@
+use commandant_client_core::chat::Message;
 use commandant_client_core::state::fixtures::{bare, output};
-use commandant_client_core::{Core, Scope, Update};
-use commandant_proto::OutputStream;
+use commandant_client_core::{Core, Effect, Scope, Update};
+use commandant_proto::{OutputStream, TaskFinished, TaskOutput, TaskStarted, task_event};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -246,6 +247,55 @@ fn a_list_coming_while_a_key_is_typed_leaves_it_hidden() {
         &effects[..],
         [commandant_client_core::Effect::Authenticate { .. }]
     ));
+}
+
+#[test]
+fn a_command_runs_in_a_block_of_its_own_until_esc_stops_it() {
+    let mut app = app();
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    for c in "!ls b".chars() {
+        app.on_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    let effects = press(&mut app, KeyEvent::from(KeyCode::Enter));
+    let [Effect::RunCommand { chat, run, .. }] = effects[..] else {
+        panic!("it should run: {effects:?}");
+    };
+    let buf = render(&mut app);
+    find(&buf, "$ ls b");
+    let (_, status) = find(&buf, "running ls b  esc to stop");
+    assert!(status > find(&buf, "$ ls b").1, "under the thread");
+
+    let event = |event| Update::Chat(chat, Message::Run(run, Ok(event)));
+    let printed = |stream: OutputStream, data: &[u8]| {
+        event(task_event::Event::Output(TaskOutput {
+            stream: stream as i32,
+            data: data.to_vec(),
+            ..Default::default()
+        }))
+    };
+    let started = TaskStarted {
+        task_id: "t2".into(),
+        ..Default::default()
+    };
+    app.on_update(event(task_event::Event::Started(started)));
+    app.on_update(printed(OutputStream::Stdout, b"a.txt\n"));
+    app.on_update(printed(OutputStream::Stderr, b"ls: b: not found\n"));
+    let effects = press(&mut app, KeyEvent::from(KeyCode::Esc));
+    assert_eq!(effects, [Effect::Cancel(chat, "t2".into())]);
+    find(&render(&mut app), "stopping…");
+
+    let finished = TaskFinished {
+        exit_code: Some(2),
+        ..Default::default()
+    };
+    app.on_update(event(task_event::Event::Finished(finished)));
+    let buf = render(&mut app);
+    assert_eq!(buf[find(&buf, "a.txt")].fg, Color::Reset);
+    assert_eq!(buf[find(&buf, "ls: b: not found")].fg, Color::Red);
+    let (x, y) = find(&buf, "exit 2");
+    assert_eq!(buf[(x, y)].fg, Color::Red);
+    assert_eq!(find(&buf, "└").1, y);
+    assert!(absent(&buf, "esc to stop"));
 }
 
 #[test]

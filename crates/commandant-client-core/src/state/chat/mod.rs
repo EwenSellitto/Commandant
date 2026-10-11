@@ -15,6 +15,7 @@ mod events;
 mod format;
 mod menus;
 mod projects;
+mod run;
 mod sign_in;
 #[cfg(test)]
 mod tests;
@@ -23,6 +24,7 @@ pub(in crate::state) use self::commands::AppCommand;
 pub use self::commands::{ALIASES, COMMANDS};
 pub use self::format::{count, dollars, elapsed};
 use self::menus::Menu;
+pub use self::run::{Ended, Printed, Run, RunId};
 use self::sign_in::SigningIn;
 
 /// Sent with every prompt; `session_id` fills in after the first reply.
@@ -40,6 +42,13 @@ pub enum Message {
     Task(TaskEvent),
     /// The prompt couldn't be sent, or its stream broke.
     Failed(String),
+    /// What a command run from the chat reports, or why its stream broke.
+    Run(RunId, Result<TaskEvent, String>),
+    /// The task of the turn or of a command couldn't be cancelled.
+    CancelFailed {
+        task_id: String,
+        error: String,
+    },
     Node(NodeInfo),
     Options(Result<Arc<AgentOptions>, String>),
     /// A resumed session's earlier turns.
@@ -65,6 +74,8 @@ pub enum Role {
     Info,
     /// What a finished turn used: agent, model, time, tokens, cost.
     Summary,
+    /// A command run with `!`: its text is the command, its block the rest.
+    Command,
 }
 
 pub struct Entry {
@@ -72,6 +83,8 @@ pub struct Entry {
     pub text: String,
     /// The agent that was chosen when it was written.
     pub agent: String,
+    /// A command's block: what it printed and how it ended.
+    pub run: Option<Run>,
 }
 
 #[derive(Default)]
@@ -146,6 +159,7 @@ pub struct Chat {
     pub spent: f64,
     /// Tokens in the session's context after the last turn.
     pub context: u64,
+    next_run: RunId,
 }
 
 impl Chat {
@@ -206,9 +220,10 @@ impl Chat {
             .map(|m| m.variants.as_slice())
     }
 
-    /// What the agent is up to, judging by the latest output.
+    /// What the agent is up to, judging by its latest output.
     pub fn doing(&self) -> &'static str {
-        match self.thread.last().map(|e| e.role) {
+        let said = self.thread.iter().rev().find(|e| e.role != Role::Command);
+        match said.map(|e| e.role) {
             Some(Role::Thinking) => "thinking",
             Some(Role::Agent) => "writing",
             Some(Role::Tool) => "using tools",
@@ -216,11 +231,23 @@ impl Chat {
         }
     }
 
+    /// The turn's task, once it has started.
     pub fn running_task(&self) -> Option<String> {
         match &self.activity {
             Activity::Working { task_id, .. } => task_id.clone(),
             Activity::Idle => None,
         }
+    }
+
+    /// Every task still running: the turn's, then the commands'.
+    pub fn running_tasks(&self) -> impl Iterator<Item = String> {
+        let runs = self.run_tasks().cloned();
+        self.running_task().into_iter().chain(runs)
+    }
+
+    /// Whether the agent or a command is at work.
+    pub fn at_work(&self) -> bool {
+        self.activity.working() || self.runs().any(Run::running)
     }
 
     /// What was sent, oldest first.
@@ -330,8 +357,16 @@ impl Chat {
         None
     }
 
-    /// Cancels the task; one not started yet is cancelled as soon as it is.
-    pub(super) fn cancel(&mut self) -> Option<Effect> {
+    /// Stops the commands still running, else cancels the turn; a task not
+    /// started yet is cancelled as soon as it is.
+    pub(super) fn cancel(&mut self) -> Vec<Effect> {
+        match self.cancel_runs() {
+            Some(stops) => stops,
+            None => self.cancel_turn().into_iter().collect(),
+        }
+    }
+
+    fn cancel_turn(&mut self) -> Option<Effect> {
         let Activity::Working {
             task_id,
             cancelling,
@@ -362,6 +397,7 @@ impl Chat {
             role,
             text: text.to_string(),
             agent: self.agent().to_string(),
+            run: None,
         });
     }
 }

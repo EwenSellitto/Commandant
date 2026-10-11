@@ -69,6 +69,7 @@ impl Chat {
                             },
                             text: e.text,
                             agent: agent.clone(),
+                            run: None,
                         });
                         // Before whatever was said since resuming.
                         self.thread.splice(0..0, earlier);
@@ -76,6 +77,13 @@ impl Chat {
                     Err(e) => self.error(&format!(
                         "couldn't load the session's earlier messages: {e}"
                     )),
+                }
+            }
+            Message::Run(id, event) => return self.on_run(id, event),
+            // The turn's cancel failing ends it, as its stream breaking would.
+            Message::CancelFailed { task_id, error } => {
+                if !self.run_wont_stop(&task_id, &error) {
+                    return self.on_message(Message::Failed(error));
                 }
             }
             Message::Failed(error) => {
@@ -225,7 +233,7 @@ impl Chat {
 }
 
 /// Decodes output, holding back a character split across chunks in `partial`.
-fn decode(partial: &mut Vec<u8>, data: &[u8]) -> String {
+pub(super) fn decode(partial: &mut Vec<u8>, data: &[u8]) -> String {
     partial.extend_from_slice(data);
     let complete = match std::str::from_utf8(partial) {
         Ok(_) => partial.len(),

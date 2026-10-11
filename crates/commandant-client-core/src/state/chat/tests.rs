@@ -110,15 +110,15 @@ fn cancelling_cancels_the_task_once() {
     let mut app = chat();
     send(&mut app, "hi");
     assert!(app.on_message(started("t1")).is_none());
-    assert!(matches!(app.cancel(), Some(Effect::Cancel(_, id)) if id == "t1"));
-    assert!(app.cancel().is_none());
+    assert_eq!(app.cancel(), [Effect::Cancel(1, "t1".into())]);
+    assert!(app.cancel().is_empty());
 }
 
 #[test]
 fn cancelling_before_the_task_starts_cancels_it_when_it_does() {
     let mut app = chat();
     send(&mut app, "hi");
-    assert!(app.cancel().is_none());
+    assert!(app.cancel().is_empty());
     assert!(matches!(
         app.activity,
         Activity::Working {
@@ -368,7 +368,7 @@ fn a_failed_stream_ends_the_turn_and_marks_it() {
     assert_eq!(app.unseen, Some(Unseen::Failed));
     assert!(app.running_task().is_none());
     // Cancelling after the turn ended does nothing.
-    assert!(app.cancel().is_none());
+    assert!(app.cancel().is_empty());
     // The half character is dropped, not glued to the next reply.
     send(&mut app, "again");
     app.on_message(output(OutputStream::Stdout, b"ok"));
@@ -657,4 +657,244 @@ fn the_agents_commands_are_known_once_loaded() {
     let commands: Vec<_> = app.agent_commands().collect();
     assert_eq!(commands, [("review", "Review the changes")]);
     assert!(app.is_command("review") && app.is_command("login"));
+}
+
+/// Runs `line` with `!`, and returns the run and its request.
+fn run(chat: &mut Chat, line: &str) -> (u64, RunCommandRequest) {
+    let outcome = command(chat, &format!("!{line}"));
+    assert_eq!(outcome.prompt, Some((chat.id, Edit::Clear)));
+    match effect(outcome) {
+        Some(Effect::RunCommand { run, request, .. }) => (run, request),
+        _ => panic!("{line:?} should run"),
+    }
+}
+
+/// What a command's task reports, as `message` says it for the agent's.
+fn to_run(run: u64, message: Message) -> Message {
+    match message {
+        Message::Task(event) => Message::Run(run, Ok(event)),
+        _ => unreachable!("a task event"),
+    }
+}
+
+fn finished(exit_code: Option<i32>, error: &str, cancelled: bool) -> Message {
+    Message::Task(TaskEvent::Finished(TaskFinished {
+        exit_code,
+        error: error.into(),
+        cancelled,
+        ..Default::default()
+    }))
+}
+
+/// The block of the command that ran `line`.
+fn block<'a>(chat: &'a Chat, line: &str) -> &'a Run {
+    let entry = chat.thread.iter().find(|e| e.text == line);
+    let entry = entry.unwrap_or_else(|| panic!("no block for {line:?}"));
+    assert_eq!(entry.role, Role::Command);
+    entry.run.as_ref().unwrap()
+}
+
+fn printed(run: &Run) -> Vec<(bool, &str)> {
+    run.output
+        .iter()
+        .map(|p| (p.stderr, p.text.as_str()))
+        .collect()
+}
+
+#[test]
+fn a_command_runs_on_the_node_in_the_chats_directory() {
+    let mut app = chat();
+    app.settings.cwd = "/src/app".into();
+    let (_, request) = run(&mut app, " ls -la ");
+    assert_eq!(request.node, "n1");
+    assert_eq!(request.argv, ["sh", "-c", "ls -la"]);
+    assert_eq!(request.cwd, "/src/app");
+    assert!(request.env.is_empty());
+
+    // A block of its own; nothing goes to the agent, which isn't at work,
+    // and the title waits for a prompt.
+    assert!(block(&app, "ls -la").running());
+    assert!(!app.activity.working());
+    assert_eq!(app.title, "");
+    assert_eq!(app.sent(), ["! ls -la"]);
+}
+
+#[test]
+fn a_bang_alone_says_what_it_is_for() {
+    let mut app = chat();
+    for text in ["!", "!   "] {
+        let outcome = command(&mut app, text);
+        assert!(outcome.effects.is_empty() && outcome.prompt.is_none());
+        let said = app.thread.last().unwrap();
+        assert_eq!(said.role, Role::Info);
+        assert!(said.text.contains("shell command"), "{}", said.text);
+    }
+}
+
+#[test]
+fn a_commands_output_streams_into_its_block_until_it_exits() {
+    let mut app = chat();
+    let (id, _) = run(&mut app, "make");
+    app.on_message(to_run(id, started("t2")));
+    // "é" split across two chunks, with error output between them.
+    app.on_message(to_run(
+        id,
+        output(OutputStream::Stdout, b"building caf\xc3"),
+    ));
+    app.on_message(to_run(id, output(OutputStream::Stderr, b"warning\n")));
+    app.on_message(to_run(id, output(OutputStream::Stdout, b"\xa9\n")));
+    app.on_message(to_run(id, output(OutputStream::Stdout, b"done\n")));
+    assert!(app.unseen.is_none());
+    app.on_message(to_run(id, finished(Some(2), "", false)));
+
+    let make = block(&app, "make");
+    assert_eq!(
+        printed(make),
+        [
+            (false, "building caf"),
+            (true, "warning\n"),
+            (false, "é\ndone\n")
+        ]
+    );
+    assert_eq!(make.ended, Some(Ended::Exited(2)));
+    assert_eq!(app.unseen, Some(Unseen::Failed));
+
+    let (id, _) = run(&mut app, "true");
+    app.on_message(to_run(id, finished(Some(0), "", false)));
+    assert_eq!(block(&app, "true").ended, Some(Ended::Exited(0)));
+    assert_eq!(app.unseen, Some(Unseen::Done));
+}
+
+#[test]
+fn a_block_keeps_the_end_of_a_long_output() {
+    let mut app = chat();
+    let (id, _) = run(&mut app, "yes");
+    let line = format!("{}\n", "y".repeat(99));
+    for _ in 0..1000 {
+        app.on_message(to_run(id, output(OutputStream::Stdout, line.as_bytes())));
+    }
+    app.on_message(to_run(id, output(OutputStream::Stderr, b"oops\n")));
+    let yes = block(&app, "yes");
+    let kept: usize = yes.output.iter().map(|p| p.text.len()).sum();
+    assert!(kept <= 64 * 1024 && kept > 60 * 1024, "{kept}");
+    assert!(yes.dropped);
+    // From the start of a line, to the very end.
+    assert!(yes.output[0].text.starts_with(&line));
+    assert_eq!(yes.output.last().unwrap().text, "oops\n");
+}
+
+#[test]
+fn a_command_that_cannot_finish_says_why() {
+    let mut app = chat();
+    let (id, _) = run(&mut app, "yes");
+    app.on_message(Message::Run(id, Err("the stream broke".into())));
+    let failed = Ended::Failed("the stream broke".into());
+    assert_eq!(block(&app, "yes").ended, Some(failed));
+
+    let (id, _) = run(&mut app, "kill -9 $$");
+    let killed = finished(None, "terminated by signal 9", false);
+    app.on_message(to_run(id, killed));
+    let failed = Ended::Failed("terminated by signal 9".into());
+    assert_eq!(block(&app, "kill -9 $$").ended, Some(failed.clone()));
+    // What comes after the end changes nothing.
+    app.on_message(to_run(id, output(OutputStream::Stdout, b"late")));
+    app.on_message(to_run(id, finished(Some(0), "", false)));
+    let killed = block(&app, "kill -9 $$");
+    assert_eq!(
+        (killed.ended.clone(), killed.output.len()),
+        (Some(failed), 0)
+    );
+}
+
+#[test]
+fn esc_stops_the_commands_and_then_the_turn() {
+    let mut app = chat();
+    send(&mut app, "hi");
+    app.on_message(started("t1"));
+    // A command runs while the agent works; one not started yet is
+    // stopped once it is.
+    let (one, _) = run(&mut app, "sleep 9");
+    app.on_message(to_run(one, started("t2")));
+    let (two, _) = run(&mut app, "sleep 8");
+    assert_eq!(app.cancel(), [Effect::Cancel(1, "t2".into())]);
+    assert_eq!(
+        app.on_message(to_run(two, started("t3"))),
+        Some(Effect::Cancel(1, "t3".into()))
+    );
+    assert!(app.cancel().is_empty(), "they are stopping");
+    assert!(app.running_task().is_some(), "the turn goes on");
+
+    app.on_message(to_run(one, finished(None, "", true)));
+    app.on_message(to_run(two, finished(None, "", true)));
+    assert_eq!(block(&app, "sleep 9").ended, Some(Ended::Cancelled));
+    assert_eq!(app.cancel(), [Effect::Cancel(1, "t1".into())]);
+}
+
+#[test]
+fn a_command_that_will_not_stop_can_be_stopped_again() {
+    let mut app = chat();
+    let (id, _) = run(&mut app, "sleep 9");
+    app.on_message(to_run(id, started("t2")));
+    assert_eq!(app.cancel(), [Effect::Cancel(1, "t2".into())]);
+    let refused = Message::CancelFailed {
+        task_id: "t2".into(),
+        error: "no route".into(),
+    };
+    app.on_message(refused);
+    let said = app.thread.last().unwrap();
+    assert_eq!(
+        (said.role, said.text.as_str()),
+        (Role::Error, "couldn't stop sleep 9: no route")
+    );
+    assert!(block(&app, "sleep 9").running());
+    assert_eq!(app.cancel(), [Effect::Cancel(1, "t2".into())]);
+
+    // The turn's own cancel failing still ends it, as before.
+    app.on_message(to_run(id, finished(None, "", true)));
+    send(&mut app, "hi");
+    app.on_message(started("t1"));
+    let refused = Message::CancelFailed {
+        task_id: "t1".into(),
+        error: "gone".into(),
+    };
+    app.on_message(refused);
+    assert!(!app.activity.working());
+}
+
+#[test]
+fn a_command_and_a_turn_keep_their_output_apart() {
+    let mut app = chat();
+    send(&mut app, "hi");
+    app.on_message(started("t1"));
+    app.on_message(output(OutputStream::Stdout, b"Hel"));
+    let (id, _) = run(&mut app, "ls");
+    assert_eq!(app.doing(), "writing", "the agent's, not the command's");
+    // Both split a character across chunks, interleaved.
+    app.on_message(to_run(id, output(OutputStream::Stdout, b"a.txt caf\xc3")));
+    app.on_message(output(OutputStream::Stdout, b"lo caf\xc3"));
+    app.on_message(to_run(id, output(OutputStream::Stdout, b"\xa9\n")));
+    app.on_message(output(OutputStream::Stdout, b"\xa9"));
+    app.on_message(to_run(id, finished(Some(0), "", false)));
+    assert!(
+        app.activity.working(),
+        "the command ending isn't the turn's"
+    );
+    app.on_message(finished(Some(0), "", false));
+
+    let thread: Vec<_> = app
+        .thread
+        .iter()
+        .map(|e| (e.role, e.text.as_str()))
+        .take(4)
+        .collect();
+    assert_eq!(
+        thread,
+        [
+            (Role::User, "hi"),
+            (Role::Agent, "Hel"),
+            (Role::Command, "ls"),
+            (Role::Agent, "lo café"),
+        ]
+    );
+    assert_eq!(printed(block(&app, "ls")), [(false, "a.txt café\n")]);
 }

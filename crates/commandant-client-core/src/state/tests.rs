@@ -288,6 +288,31 @@ fn quitting_leaves_the_tasks_on_every_node_to_cancel() {
 }
 
 #[test]
+fn a_running_command_keeps_its_chat_busy_and_open() {
+    let mut state = state();
+    let id = chat_on(&mut state, "n1");
+    state.update(Update::Options("n1".into(), Ok(AgentOptions::default())));
+    assert!(!state.busy());
+    let run = match submit(&mut state, id, "!sleep 9").effects.pop() {
+        Some(Effect::RunCommand { chat, run, .. }) if chat == id => run,
+        _ => panic!("it should run"),
+    };
+    assert!(state.busy(), "its block shows a spinner");
+    assert!(chat(&state, id).at_work());
+    let refused = state.intent(Intent::Close(id));
+    assert!(refused.go.is_none());
+    let said = &chat(&state, id).thread.last().unwrap().text;
+    assert!(said.contains("command is still running"), "{said}");
+
+    // Quitting stops it.
+    let Message::Task(event) = started("t9") else {
+        unreachable!()
+    };
+    state.update(Update::Chat(id, Message::Run(run, Ok(event))));
+    assert_eq!(state.running_tasks(), ["t9"]);
+}
+
+#[test]
 fn cancelling_before_a_background_task_starts_still_cancels_it() {
     let mut state = state();
     let id = chat_on(&mut state, "n1");
