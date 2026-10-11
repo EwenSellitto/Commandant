@@ -1,0 +1,19 @@
+[package]
+name = "commandant-client-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+# A core with no server, which keeps the calls it would make: for front
+# ends' own tests.
+test-support = []
+
+[dependencies]
+anyhow.workspace = true
+commandant-common.workspace = true
+commandant-proto.workspace = true
+serde.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tonic.workspace = true

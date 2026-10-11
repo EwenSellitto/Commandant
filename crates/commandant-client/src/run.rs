@@ -4,11 +4,11 @@
 use std::io::Write;
 
 use anyhow::{Result, bail};
+use commandant_client_core::config::Client;
 use commandant_proto::task_event::Event;
 use commandant_proto::*;
 
 use crate::cli::{PromptArgs, RunArgs};
-use crate::config::Client;
 
 /// The shell convention for "interrupted by Ctrl-C".
 const EXIT_INTERRUPTED: i32 = 130;

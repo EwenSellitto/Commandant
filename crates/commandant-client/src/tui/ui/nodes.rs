@@ -1,5 +1,6 @@
 //! The node list: what each node runs, and how many of its chats are open.
 
+use commandant_client_core::lacks_agent;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Style, Stylize};
@@ -7,7 +8,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState};
 
 use super::{MUTED, SELECTED, dotted, facts, hints, spinner, status_dot};
-use crate::state::lacks_agent;
 use crate::tui::app::App;
 
 /// The node list: what each runs, and how many of its chats are open here.
@@ -20,27 +20,27 @@ pub(super) fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1),
     ])
     .areas(area);
-    let state = &app.state;
-    let online = state.nodes.iter().filter(|n| n.online).count();
+    let core = &app.core;
+    let online = core.nodes().iter().filter(|n| n.online).count();
     frame.render_widget(
         Line::from(vec![
             "Commandant".bold(),
-            format!("  {} nodes · {online} online", state.nodes.len()).fg(MUTED),
+            format!("  {} nodes · {online} online", core.nodes().len()).fg(MUTED),
         ]),
         header,
     );
-    if state.nodes.is_empty() {
+    if core.nodes().is_empty() {
         let empty = "No nodes yet. Add a worker with `commandant-server worker <link>`.";
         frame.render_widget(Line::from(empty).fg(MUTED), list);
     }
-    let name_width = state
-        .nodes
+    let name_width = core
+        .nodes()
         .iter()
         .map(|n| n.name.chars().count())
         .max()
         .unwrap_or(0);
-    let items: Vec<ListItem> = state
-        .nodes
+    let items: Vec<ListItem> = core
+        .nodes()
         .iter()
         .map(|node| {
             let dot = status_dot(node.online);
@@ -56,14 +56,14 @@ pub(super) fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
                 Span::raw(format!("{:<name_width$}  ", node.name)).bold(),
             ];
             spans.extend(dotted(facts.into_iter().map(|f| f.fg(MUTED))));
-            if state.starting.contains(&node.id) {
+            if core.starting(&node.id) {
                 spans.push(format!("   {} starting its agent…", spinner()).yellow());
             } else if lacks_agent(node) && !node.can_host.is_empty() {
                 spans.push("   enter to start an agent".fg(MUTED));
             }
-            let chats = state.chats_on(&node.id).count();
+            let chats = core.chats_on(&node.id).count();
             if chats > 0 {
-                let working = state
+                let working = core
                     .chats_on(&node.id)
                     .filter(|c| c.activity.working())
                     .count();
@@ -81,7 +81,7 @@ pub(super) fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
         .highlight_style(Style::new().bg(SELECTED));
     let mut list_state = ListState::default().with_selected(Some(app.selected));
     frame.render_stateful_widget(list_widget, list, &mut list_state);
-    frame.render_widget(Line::from(state.notice.clone()).yellow(), notice);
+    frame.render_widget(Line::from(core.notice().to_string()).yellow(), notice);
     frame.render_widget(
         hints(&[("↑↓", "move"), ("enter", "open"), ("q", "quit")]),
         footer,

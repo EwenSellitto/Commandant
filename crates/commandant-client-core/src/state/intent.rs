@@ -14,6 +14,12 @@ pub enum Intent {
     /// Show one of a node's chats: `chat`, the one the front end last
     /// showed, if it is still open, else its newest, else a new one.
     Open { node: String, chat: Option<ChatId> },
+    /// A new chat on a node, whatever state it is in, on one of its agent's
+    /// sessions or else a new one: what a front end starts on.
+    OpenSession {
+        node: String,
+        session: Option<String>,
+    },
     /// Another chat on the same node, with the same settings.
     NewChat(ChatId),
     /// Choose one of the chat's node's chats or saved sessions.
@@ -68,7 +74,7 @@ pub enum Edit {
 
 /// What an intent or an update comes to, beyond what the state keeps.
 #[derive(Default)]
-pub struct Outcome {
+pub(crate) struct Outcome {
     pub effects: Vec<Effect>,
     pub go: Option<Go>,
     pub prompt: Option<(ChatId, Edit)>,
@@ -117,7 +123,8 @@ impl From<Option<Effect>> for Outcome {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     Send(ChatId, PromptRequest),
-    Cancel(String),
+    /// Cancel the chat's task; a failure is told to the chat.
+    Cancel(ChatId, String),
     /// Ask a node what its agent offers, after a pause.
     FetchOptions {
         node: String,

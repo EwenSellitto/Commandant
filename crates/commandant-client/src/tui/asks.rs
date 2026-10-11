@@ -2,10 +2,10 @@
 //! [`Picker`]; a line asked for is typed in the chat's prompt; one to
 //! confirm or read is a panel. All but a line take every key while open.
 
+use commandant_client_core::{Ask, Intent, Scope};
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::picker::Picker;
-use crate::state::{Ask, Intent, Scope};
 
 /// What a key says to `ask`, asked in `scope` and shown with `picker` when
 /// it is one to choose from; nothing while it stays open.
