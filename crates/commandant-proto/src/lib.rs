@@ -6,6 +6,10 @@ pub mod v1 {
 
 pub use v1::*;
 
+mod tls;
+
+pub use self::tls::install_provider;
+
 use std::time::Duration;
 
 use tonic::metadata::{Ascii, MetadataValue};
@@ -154,28 +158,42 @@ pub async fn connect_control(addr: &str, token: &str) -> anyhow::Result<ControlC
     ))
 }
 
+/// What went wrong, each cause once: a cause often repeats what it wraps.
+fn reason(error: &anyhow::Error) -> String {
+    let mut said: Vec<String> = Vec::new();
+    for cause in error.chain().map(ToString::to_string) {
+        if !said.iter().any(|s| s.contains(&cause)) {
+            said.push(cause);
+        }
+    }
+    said.join(": ")
+}
+
 /// How long one of an orchestrator's addresses gets to answer.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Connects to the orchestrator at `addr`, which may list several URLs
 /// separated by commas (say its public name and its LAN address): all are
-/// tried at once, and the first to answer is used.
+/// tried at once, and the first to answer is used. Each is spoken to over
+/// TLS, and only if the server shows the certificate the URL pins.
 pub async fn channel(addr: &str) -> anyhow::Result<Channel> {
     let mut attempts = tokio::task::JoinSet::new();
     for url in commandant_common::link::urls(addr) {
-        let url = url.to_string();
+        let target = commandant_common::link::target(url)?;
         attempts.spawn(async move {
-            let local = commandant_common::link::prefer_loopback(&url).await;
+            let host = commandant_common::link::prefer_loopback(&target.host).await;
             let connected = async {
-                Endpoint::from_shared(local)?
+                // The connector speaks TLS itself, so the endpoint doesn't.
+                let endpoint = Endpoint::from_shared(format!("http://{host}"))?
                     .connect_timeout(CONNECT_TIMEOUT)
                     .http2_keep_alive_interval(Duration::from_secs(20))
-                    .keep_alive_while_idle(true)
-                    .connect()
-                    .await
-                    .map_err(anyhow::Error::from)
+                    .keep_alive_while_idle(true);
+                let channel = endpoint.connect_with_connector(tls::connector(target.pin));
+                channel.await.map_err(anyhow::Error::from)
             };
-            connected.await.map_err(|e| format!("{url}: {e:#}"))
+            connected
+                .await
+                .map_err(|e| format!("{}: {}", target.host, reason(&e)))
         });
     }
     let mut failures = Vec::new();

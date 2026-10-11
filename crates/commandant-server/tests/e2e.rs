@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use commandant_common::link::Link;
+use commandant_common::link::{self, Link};
 use commandant_orchestrator::Orchestrator;
 use commandant_proto::*;
 use commandant_worker::WorkerConfig;
@@ -60,6 +60,7 @@ async fn start_orchestrator(data_dir: &Path) -> (String, String, oneshot::Sender
 /// its port.
 struct Running {
     addr: String,
+    port: u16,
     token: String,
     stop: oneshot::Sender<()>,
     served: JoinHandle<anyhow::Result<()>>,
@@ -88,13 +89,15 @@ async fn rebind(port: u16) -> TcpListener {
 async fn serve_on(data_dir: &Path, listener: TcpListener) -> Running {
     let orchestrator = Orchestrator::open(data_dir).await.unwrap();
     let token = orchestrator.admin_token().to_string();
-    let addr = format!("http://{}", listener.local_addr().unwrap());
+    let local = listener.local_addr().unwrap();
+    let addr = link::url(&local.to_string(), Some(&orchestrator.pin()));
     let (stop, stop_rx) = oneshot::channel::<()>();
     let served = tokio::spawn(orchestrator.serve(listener, async {
         let _ = stop_rx.await;
     }));
     Running {
         addr,
+        port: local.port(),
         token,
         stop,
         served,
@@ -356,8 +359,10 @@ async fn a_link_with_several_addresses_uses_the_one_that_answers() {
     let (addr, admin_token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
     // First an address nobody answers on (TEST-NET-1), as a public IP seen
     // from inside the network might be.
-    let hosts = format!("192.0.2.1:7400,{}", addr.trim_start_matches("http://"));
-    let link: Link = Link::new(&admin_token, &hosts).to_string().parse().unwrap();
+    let served = Link::for_addr(&admin_token, &addr);
+    let hosts = format!("192.0.2.1:7400,{}", served.hosts[0]);
+    let link = Link::new(&admin_token, &hosts).with_pin(served.pin);
+    let link: Link = link.to_string().parse().unwrap();
     assert_eq!(link.hosts.len(), 2);
 
     let mut client = connect_control(&link.addr(), &admin_token).await.unwrap();
@@ -371,15 +376,90 @@ async fn a_link_with_several_addresses_uses_the_one_that_answers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn nobody_can_pose_as_the_server_a_link_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (real, _, _stop) = start_orchestrator(&tmp.path().join("real")).await;
+    let (impostor, token, _stop_too) = start_orchestrator(&tmp.path().join("impostor")).await;
+    let mut its_client = connect_control(&impostor, &token).await.unwrap();
+    // Traffic for the real server reaches the impostor: its address, with
+    // the real server's pin. It would take this token, if it ever got it.
+    let real_pin = Link::for_addr("", &real).pin;
+    let impostor_host = &Link::for_addr("", &impostor).hosts[0];
+    let hijacked = link::url(impostor_host, real_pin.as_ref());
+
+    let refused = connect_control(&hijacked, &token).await.unwrap_err();
+    assert!(
+        format!("{refused:#}").contains("isn't the one its link names"),
+        "{refused:#}"
+    );
+    let state_dir = tmp.path().join("worker");
+    let worker = spawn_worker(&hijacked, Some(token.clone()), &state_dir);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let nodes = its_client.list_nodes(ListNodesRequest {}).await.unwrap();
+    assert!(nodes.into_inner().nodes.is_empty(), "the worker said hello");
+    assert!(!worker.is_finished(), "it keeps trying the real server");
+    worker.abort();
+
+    // In plain text, the server answers nothing.
+    let plain = link::url(impostor_host, None);
+    let answered = match connect_control(&plain, &token).await {
+        Ok(mut client) => client.list_nodes(ListNodesRequest {}).await.is_ok(),
+        Err(_) => false,
+    };
+    assert!(!answered);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_from_before_tls_moves_over_with_the_new_link() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (addr, token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
+    let mut client = connect_control(&addr, &token).await.unwrap();
+    let state_dir = tmp.path().join("worker");
+    let worker = spawn_worker(&addr, Some(token.clone()), &state_dir);
+    let joined = wait_for_node(&mut client, true).await;
+    let creds = saved_credentials(&state_dir).await;
+    worker.abort();
+    wait_for_node(&mut client, false).await;
+
+    // It remembers the server in plain text, which the server no longer speaks.
+    let host = &Link::for_addr("", &addr).hosts[0];
+    let plain = commandant_worker::state::Credentials {
+        server: Some(link::url(host, None)),
+        ..creds
+    };
+    commandant_worker::state::save(&state_dir, &plain).unwrap();
+    let config = WorkerConfig {
+        server: None,
+        ..worker_config(&addr, None, &state_dir)
+    };
+    let stuck = tokio::spawn(commandant_worker::run(config));
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    wait_for_node(&mut client, false).await;
+    stuck.abort();
+    let _ = stuck.await;
+
+    // Given the link once, it is the same node, over TLS from then on.
+    let worker = spawn_worker(&addr, None, &state_dir);
+    assert_eq!(wait_for_node(&mut client, true).await.id, joined.id);
+    let moved = eventually("the worker never saved the new address", || async {
+        let creds = commandant_worker::state::load(&state_dir).unwrap()?;
+        (creds.server.as_deref() == Some(addr.as_str())).then_some(())
+    });
+    moved.await;
+    worker.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn admin_link_enrols_workers() {
     let tmp = tempfile::tempdir().unwrap();
     let (addr, admin_token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
     let mut client = connect_control(&addr, &admin_token).await.unwrap();
 
     // The admin token is reusable as a join token, so one link serves everyone.
-    // The worker goes through the link as printed, which stays short.
+    // The worker goes through the link as printed, which stays short even
+    // with the server's pin.
     let printed = Link::for_addr(&admin_token, &addr).to_string();
-    assert!(printed.len() <= 48, "{printed} is {} chars", printed.len());
+    assert!(printed.len() <= 91, "{printed} is {} chars", printed.len());
     let link: Link = printed.parse().unwrap();
     let state_dir = tmp.path().join("worker");
     let worker = spawn_worker(&link.addr(), Some(link.token.clone()), &state_dir);
@@ -551,26 +631,25 @@ mod reset {
             (!token.is_empty() && token != old_token).then(|| token.to_string())
         })
         .await;
-        assert!(
-            connect_control(&addr, &old_token)
-                .await
-                .unwrap()
-                .list_nodes(ListNodesRequest {})
-                .await
-                .is_err()
-        );
-        let mut client = connect_control(&addr, &new_token).await.unwrap();
+        // The link carries the new token and a new certificate's pin; the
+        // remembered host stays.
+        let link = eventually("the reset server never wrote its link", || async {
+            let link: Link = read_trimmed(&data_dir.join("link")).ok()?.parse().ok()?;
+            (link.token == new_token).then_some(link)
+        })
+        .await;
+        assert_eq!(link.hosts[0], format!("box.lan:{port}"));
+        let new_addr = link::url(&format!("127.0.0.1:{port}"), link.pin.as_ref());
+        assert_ne!(new_addr, addr);
+
+        // The old link reaches nothing: the server's certificate changed.
+        assert!(connect_control(&addr, &old_token).await.is_err());
+        let mut old = connect_control(&new_addr, &old_token).await.unwrap();
+        assert!(old.list_nodes(ListNodesRequest {}).await.is_err());
+        let mut client = connect_control(&new_addr, &new_token).await.unwrap();
         let hostname = old_node.hostname.clone();
         let node = wait_for_named(&mut client, &hostname, true).await;
         assert_ne!(node.id, old_node.id);
-
-        // The link carries the new token; the remembered host stays.
-        let link: Link = read_trimmed(&data_dir.join("link"))
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert_eq!(link.token, new_token);
-        assert_eq!(link.hosts[0], format!("box.lan:{port}"));
 
         let pid = child.id().expect("still running") as i32;
         assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
@@ -633,7 +712,7 @@ mod watching {
         assert_eq!(ran.finished.exit_code, Some(3));
 
         worker.abort();
-        let port = server.addr.rsplit(':').next().unwrap().parse().unwrap();
+        let port = server.port;
         server.stop().await;
         let server = serve_on(&tmp.path().join("server"), rebind(port).await).await;
         let mut client = connect_control(&server.addr, &server.token).await.unwrap();

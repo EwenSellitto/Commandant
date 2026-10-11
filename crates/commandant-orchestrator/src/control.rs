@@ -139,7 +139,7 @@ impl ControlService {
         wait: Duration,
     ) -> Result<T, Status> {
         let queries = &self.shared.queries;
-        let (request_id, answer) = queries.open();
+        let (request_id, answer) = queries.open(conn.id);
         if conn
             .tx
             .send(Ok(question(request_id.clone())))

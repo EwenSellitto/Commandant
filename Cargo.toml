@@ -25,11 +25,15 @@ getrandom = "0.4.3"
 # libgit2 built from source; OpenSSL and libssh2 from the system (pkg-config).
 git2 = { version = "0.21", default-features = false, features = ["https", "ssh", "vendored-libgit2"] }
 hex = "0.4.3"
+hyper-util = { version = "0.1.21", features = ["tokio"] }
 libc = "0.2.189"
 prost = "0.14.4"
 protoc-bin-vendored = "3.2.0"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache"] }
+# TLS on ring, which builds on Windows without extra tools.
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "query"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
@@ -37,11 +41,13 @@ sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio
 subtle = "2.6.1"
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "process", "signal", "net", "time", "sync", "io-util", "fs"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring"] }
 tokio-stream = { version = "0.1.19", features = ["net"] }
 toml = "1.1.6"
-tonic = "0.14.6"
+tonic = { version = "0.14.6", features = ["tls-ring"] }
 tonic-prost = "0.14.6"
 tonic-prost-build = "0.14.6"
+tower = "0.5.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 unicode-width = "0.2"

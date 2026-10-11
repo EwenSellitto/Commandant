@@ -1,5 +1,7 @@
-//! Connection links: `commandant://<opaque>`, one string that carries both
-//! where the orchestrator is and the secret to present to it.
+//! Connection links: `commandant://<opaque>`, one string that carries where
+//! the orchestrator is, the secret to present to it, and the fingerprint of
+//! its TLS certificate, so whoever uses the link talks to that orchestrator
+//! and no other.
 //!
 //! The opaque part packs the address and the token as bytes (an IP as 4 or 16
 //! bytes, the port only when it isn't the default, the token's hex as raw
@@ -9,9 +11,10 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use sha2::{Digest, Sha256};
 
 use crate::DEFAULT_PORT;
 
@@ -23,6 +26,9 @@ const FORMAT: u8 = 2;
 const TEXT_FORMAT: u8 = 1;
 /// Several addresses, tried in turn: a count byte, the addresses, the token.
 const MULTI_FORMAT: u8 = 3;
+/// `FORMAT` and `MULTI_FORMAT` with the server's [`Pin`] first.
+const PINNED_FORMAT: u8 = 4;
+const PINNED_MULTI_FORMAT: u8 = 5;
 const KEY: &[u8] = b"commandant-link";
 
 /// How the address is packed; `CUSTOM_PORT` is added when a port follows.
@@ -42,6 +48,87 @@ pub struct Link {
     /// `host:port`s the orchestrator may be reached on, as advertised: a
     /// client tries each (a public name, say, then a LAN address).
     pub hosts: Vec<String>,
+    /// The orchestrator's certificate, which it must show; links from before
+    /// it spoke TLS have none, and no longer work.
+    pub pin: Option<Pin>,
+}
+
+/// The SHA-256 of an orchestrator's TLS certificate. Whoever has its link
+/// connects only to a server showing that certificate, so nobody in between
+/// can pose as it, or read what is said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pin(pub [u8; 32]);
+
+impl Pin {
+    /// The pin of a DER-encoded certificate.
+    pub fn of(certificate: &[u8]) -> Self {
+        Self(Sha256::digest(certificate).into())
+    }
+}
+
+/// `sha256=<hex>`, as an address carries it.
+impl std::fmt::Display for Pin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "sha256={}", hex::encode(self.0))
+    }
+}
+
+impl std::str::FromStr for Pin {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        let hex = s.strip_prefix("sha256=").context("a pin is sha256=<hex>")?;
+        let bytes = hex::decode(hex).context("a pin is sha256=<hex>")?;
+        let bytes = bytes.try_into().ok().context("a pin is 32 bytes")?;
+        Ok(Self(bytes))
+    }
+}
+
+/// One of an orchestrator's addresses, taken apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    /// `host:port`.
+    pub host: String,
+    /// The certificate it must show.
+    pub pin: Pin,
+}
+
+/// Takes apart an orchestrator's URL, `https://host:port#sha256=<hex>`: it
+/// is spoken to over TLS, and must show that certificate.
+pub fn target(url: &str) -> Result<Target> {
+    match parse_url(url)? {
+        ("https", host, Some(pin)) => Ok(Target { host, pin }),
+        ("https", _, None) => bail!(
+            "{url} has no fingerprint of the server's certificate (#sha256=…), \
+             so anyone could pose as it: use the server's link (commandant://…)"
+        ),
+        ("http", ..) => bail!(
+            "{url} is spoken to in plain text, which servers no longer answer: \
+             use the server's current link (commandant://…)"
+        ),
+        _ => bail!("{url:?} is no address: it starts with https://"),
+    }
+}
+
+/// An URL's scheme, `host:port` and pin.
+fn parse_url(url: &str) -> Result<(&str, String, Option<Pin>)> {
+    let (scheme, rest) = url
+        .split_once("://")
+        .with_context(|| format!("{url:?} is no address: it starts with https://"))?;
+    let (host, pin) = match rest.split_once('#') {
+        Some((host, pin)) => (host, Some(pin.parse::<Pin>()?)),
+        None => (rest, None),
+    };
+    Ok((scheme, host.trim_end_matches('/').to_string(), pin))
+}
+
+/// The URL of `host`, showing the certificate `pin` names; with no pin,
+/// what a link from before TLS stood for.
+pub fn url(host: &str, pin: Option<&Pin>) -> String {
+    match pin {
+        Some(pin) => format!("https://{host}#{pin}"),
+        None => format!("http://{host}"),
+    }
 }
 
 impl Link {
@@ -55,20 +142,32 @@ impl Link {
                 .filter(|h| !h.is_empty())
                 .map(|h| with_port(h, DEFAULT_PORT))
                 .collect(),
+            pin: None,
         }
     }
 
-    /// Link to orchestrator URLs such as `http://10.0.0.1:7400`, comma-separated.
-    pub fn for_addr(token: &str, addr: &str) -> Self {
-        let hosts: Vec<&str> = urls(addr)
-            .map(|url| url.trim_start_matches("http://").trim_end_matches('/'))
-            .collect();
-        Self::new(token, &hosts.join(","))
+    /// The same link, naming the orchestrator's certificate.
+    pub fn with_pin(self, pin: Option<Pin>) -> Self {
+        Self { pin, ..self }
     }
 
-    /// The orchestrator's URLs, comma-separated: `http://10.0.0.1:7400`.
+    /// Link to orchestrator URLs such as `https://10.0.0.1:7400#sha256=…`,
+    /// comma-separated; those that aren't URLs are left out.
+    pub fn for_addr(token: &str, addr: &str) -> Self {
+        let parsed: Vec<_> = urls(addr).filter_map(|url| parse_url(url).ok()).collect();
+        let hosts: Vec<&str> = parsed.iter().map(|(_, host, _)| host.as_str()).collect();
+        let pin = parsed.iter().find_map(|(_, _, pin)| *pin);
+        Self::new(token, &hosts.join(",")).with_pin(pin)
+    }
+
+    /// The orchestrator's URLs, comma-separated: `https://10.0.0.1:7400#sha256=…`,
+    /// or `http://10.0.0.1:7400` for a link with no pin.
     pub fn addr(&self) -> String {
-        let urls: Vec<String> = self.hosts.iter().map(|h| format!("http://{h}")).collect();
+        let urls: Vec<String> = self
+            .hosts
+            .iter()
+            .map(|host| url(host, self.pin.as_ref()))
+            .collect();
         urls.join(",")
     }
 }
@@ -82,11 +181,14 @@ pub fn urls(addr: &str) -> impl Iterator<Item = &str> {
 impl std::fmt::Display for Link {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut payload = Vec::new();
-        // One address keeps the shorter format older clients read.
-        let format = match self.hosts.as_slice() {
+        if let Some(pin) = &self.pin {
+            payload.extend(pin.0);
+        }
+        // One address keeps the shorter format.
+        let multi = match self.hosts.as_slice() {
             [host] => {
                 pack_host(host, &mut payload);
-                FORMAT
+                false
             }
             hosts => {
                 let hosts = &hosts[..hosts.len().min(255)];
@@ -94,8 +196,14 @@ impl std::fmt::Display for Link {
                 for host in hosts {
                     pack_host(host, &mut payload);
                 }
-                MULTI_FORMAT
+                true
             }
+        };
+        let format = match (self.pin.is_some(), multi) {
+            (false, false) => FORMAT,
+            (false, true) => MULTI_FORMAT,
+            (true, false) => PINNED_FORMAT,
+            (true, true) => PINNED_MULTI_FORMAT,
         };
         pack_token(&self.token, &mut payload);
         write!(f, "{SCHEME}{}", encode(format, payload))
@@ -124,8 +232,8 @@ fn encode(format: u8, mut payload: Vec<u8>) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// The token and `host:port`s (comma-separated) in an encoded link.
-fn decode(opaque: &str) -> Option<(String, String)> {
+/// The token, `host:port`s (comma-separated) and pin in an encoded link.
+fn decode(opaque: &str) -> Option<(String, String, Option<Pin>)> {
     let bytes = URL_SAFE_NO_PAD.decode(opaque).ok()?;
     let [format, payload @ .., sum] = bytes.as_slice() else {
         return None;
@@ -135,24 +243,27 @@ fn decode(opaque: &str) -> Option<(String, String)> {
     if checksum(*format, &payload) != *sum {
         return None;
     }
+    let mut rest = payload.as_slice();
+    let pin = match *format {
+        PINNED_FORMAT | PINNED_MULTI_FORMAT => Some(Pin(take(&mut rest, 32)?.try_into().ok()?)),
+        _ => None,
+    };
     match *format {
-        FORMAT => {
-            let mut rest = payload.as_slice();
+        FORMAT | PINNED_FORMAT => {
             let host = unpack_host(&mut rest)?;
-            Some((unpack_token(rest)?, host))
+            Some((unpack_token(rest)?, host, pin))
         }
-        MULTI_FORMAT => {
-            let mut rest = payload.as_slice();
+        MULTI_FORMAT | PINNED_MULTI_FORMAT => {
             let count = *take(&mut rest, 1)?.first()?;
             let hosts = (0..count)
                 .map(|_| unpack_host(&mut rest))
                 .collect::<Option<Vec<_>>>()?;
-            Some((unpack_token(rest)?, hosts.join(",")))
+            Some((unpack_token(rest)?, hosts.join(","), pin))
         }
         TEXT_FORMAT => {
             let text = String::from_utf8(payload).ok()?;
             let (token, host) = text.rsplit_once('@')?;
-            Some((token.to_string(), host.to_string()))
+            Some((token.to_string(), host.to_string(), None))
         }
         _ => None,
     }
@@ -262,13 +373,13 @@ impl std::str::FromStr for Link {
             .strip_prefix(SCHEME)
             .with_context(|| format!("a link starts with {SCHEME}"))?
             .trim_end_matches('/');
-        let (token, host) = if is_hand_written(payload) {
+        let (token, host, pin) = if is_hand_written(payload) {
             let (token, host) = payload.rsplit_once('@').expect("has an @");
-            (token.to_string(), host.to_string())
+            (token.to_string(), host.to_string(), None)
         } else {
             decode(payload).context("invalid link (truncated or mistyped?)")?
         };
-        let link = Self::new(&token, &host);
+        let link = Self::new(&token, &host).with_pin(pin);
         if token.is_empty() || link.hosts.is_empty() {
             anyhow::bail!("invalid link");
         }
@@ -329,23 +440,20 @@ pub fn loopback_of_same_family(ip: IpAddr) -> IpAddr {
     }
 }
 
-/// Rewrites an `http://host:port` URL to loopback when `host` is one of this
-/// machine's own addresses, so local clients don't depend on hairpin routing or
+/// Rewrites a `host:port` to loopback when `host` is one of this machine's
+/// own addresses, so local clients don't depend on hairpin routing or
 /// firewall rules for the public interface.
-pub async fn prefer_loopback(url: &str) -> String {
-    let Some(authority) = url.strip_prefix("http://") else {
-        return url.to_string();
-    };
-    let Ok(mut addrs) = tokio::net::lookup_host(authority.trim_end_matches('/')).await else {
-        return url.to_string();
+pub async fn prefer_loopback(host: &str) -> String {
+    let Ok(mut addrs) = tokio::net::lookup_host(host).await else {
+        return host.to_string();
     };
     match addrs.find(|addr| is_local(addr.ip())) {
         Some(local) => {
-            tracing::debug!(%url, "orchestrator is on this machine; using loopback");
+            tracing::debug!(%host, "orchestrator is on this machine; using loopback");
             let loopback = SocketAddr::new(loopback_of_same_family(local.ip()), local.port());
-            format!("http://{loopback}")
+            loopback.to_string()
         }
-        None => url.to_string(),
+        None => host.to_string(),
     }
 }
 
@@ -439,18 +547,71 @@ mod tests {
     #[tokio::test]
     async fn rewrites_own_addresses_to_loopback() {
         if let Some(ip) = primary_ip() {
-            let url = format!("http://{}", SocketAddr::new(ip, 7400));
+            let host = SocketAddr::new(ip, 7400).to_string();
             let expected = if ip.is_ipv4() {
-                "http://127.0.0.1:7400"
+                "127.0.0.1:7400"
             } else {
-                "http://[::1]:7400"
+                "[::1]:7400"
             };
-            assert_eq!(prefer_loopback(&url).await, expected);
+            assert_eq!(prefer_loopback(&host).await, expected);
         }
         // TEST-NET-3 is never assigned to a local interface.
         assert_eq!(
-            prefer_loopback("http://203.0.113.7:7400").await,
-            "http://203.0.113.7:7400"
+            prefer_loopback("203.0.113.7:7400").await,
+            "203.0.113.7:7400"
+        );
+    }
+
+    fn pin() -> Pin {
+        Pin::of(b"a certificate")
+    }
+
+    #[test]
+    fn a_pinned_link_names_the_servers_certificate() {
+        let admin = format!("cmda_{}", "ab".repeat(16));
+        for hosts in ["192.168.1.15:7400", "home.example.org:9000,192.168.1.15"] {
+            let link = Link::new(&admin, hosts).with_pin(Some(pin()));
+            let text = link.to_string();
+            assert!(!text.contains(&pin().to_string()), "{text}");
+            assert_eq!(text.parse::<Link>().unwrap(), link, "{hosts}");
+            // Its addresses speak TLS, and carry the pin.
+            assert_eq!(Link::for_addr(&admin, &link.addr()), link);
+        }
+        let link = Link::new("t", "10.0.0.1:7400").with_pin(Some(pin()));
+        assert_eq!(link.addr(), format!("https://10.0.0.1:7400#{}", pin()));
+        assert!(pin().to_string().starts_with("sha256="));
+        assert_eq!(pin().to_string().parse::<Pin>().unwrap(), pin());
+
+        // 32 bytes more than an unpinned link.
+        let plain = Link::new(&admin, "192.168.1.15:7400").to_string();
+        let pinned = Link::new(&admin, "192.168.1.15:7400").with_pin(Some(pin()));
+        let pinned = pinned.to_string();
+        assert_eq!(pinned.len() - plain.len(), 43, "{pinned}");
+        // Links from before have no pin.
+        assert_eq!(plain.parse::<Link>().unwrap().pin, None);
+    }
+
+    #[test]
+    fn an_address_says_how_to_reach_the_server() {
+        let url = format!("https://[fd00::1]:9000/#{}", pin());
+        let pinned = target(&url).unwrap();
+        assert_eq!(
+            (pinned.host.as_str(), pinned.pin),
+            ("[fd00::1]:9000", pin())
+        );
+        // TLS with no pin would trust whoever answers.
+        let refused = target("https://10.0.0.1:7400").unwrap_err();
+        assert!(refused.to_string().contains("fingerprint"), "{refused}");
+        assert!(target("https://10.0.0.1:7400#sha256=00ff").is_err());
+        // Plain text, as before TLS, says what to do instead.
+        let plain = target("http://10.0.0.1:7400").unwrap_err();
+        assert!(plain.to_string().contains("current link"), "{plain}");
+        assert!(target("10.0.0.1:7400").is_err());
+        // A link from before still names its addresses.
+        let old = Link::for_addr("t", "http://10.0.0.1:7400/");
+        assert_eq!(
+            (old.hosts.as_slice(), old.pin),
+            (&["10.0.0.1:7400".to_string()][..], None)
         );
     }
 }
