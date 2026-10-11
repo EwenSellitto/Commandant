@@ -1,0 +1,201 @@
+//! The help: every command and key, narrowed down by typing. Choosing one
+//! does what it does.
+
+use commandant_client_core::chat::{ALIASES, COMMANDS, Chat};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use super::picker::{Filtered, Row};
+
+/// A key, as written in the [`KEYS`].
+type Key = (KeyCode, KeyModifiers);
+
+const fn key(code: KeyCode) -> Option<Key> {
+    Some((code, KeyModifiers::NONE))
+}
+
+const fn ctrl(c: char) -> Option<Key> {
+    Some((KeyCode::Char(c), KeyModifiers::CONTROL))
+}
+
+/// A chat's keys that do what no command does, with what they do, and the
+/// key choosing one in the help presses; none for a pair.
+pub const KEYS: [(&str, &str, Option<Key>); 7] = [
+    (
+        "Tab",
+        "switch agent, or complete a /command",
+        key(KeyCode::Tab),
+    ),
+    ("↑ ↓", "earlier prompts, or move in the /command list", None),
+    ("Ctrl-T", "next thinking effort", ctrl('t')),
+    ("Esc", "cancel a turn", key(KeyCode::Esc)),
+    ("PgUp PgDn", "scroll", None),
+    ("Alt-← Alt-→", "previous / next session", None),
+    ("Ctrl-U", "clear the prompt", ctrl('u')),
+];
+
+/// The keys that do what a command does.
+const COMMAND_KEYS: [(&str, &str); 6] = [
+    ("help", "F1"),
+    ("new", "Ctrl-N"),
+    ("sessions", "Ctrl-O"),
+    ("close", "Ctrl-W"),
+    ("nodes", "Ctrl-G"),
+    ("quit", "Ctrl-C"),
+];
+
+/// The node list's keys.
+const NODE_KEYS: [(&str, &str, Option<Key>); 4] = [
+    ("↑ ↓  j k", "move", None),
+    ("Enter", "open the node's sessions", key(KeyCode::Enter)),
+    ("F1  ?", "what every key does", None),
+    ("q  Ctrl-C", "leave", key(KeyCode::Char('q'))),
+];
+
+/// Labels are padded to line up the rows, up to this width.
+const LABEL_WIDTH: usize = 14;
+
+/// What choosing a row of the help does.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Does {
+    /// Sends a line, as if typed: a `/command`.
+    Run(String),
+    /// Starts a line in the prompt, for what follows it.
+    Start(String),
+    Press(KeyEvent),
+    /// Nothing but close the help.
+    Nothing,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entry {
+    label: String,
+    about: String,
+    pub does: Does,
+}
+
+impl Row for Entry {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn detail(&self) -> &str {
+        &self.about
+    }
+}
+
+pub struct Help {
+    pub list: Filtered<Entry>,
+}
+
+impl Help {
+    /// Everything there is to do in `chat`: its commands, the agent's, then
+    /// the keys.
+    pub fn chat(chat: &Chat) -> Self {
+        let own = COMMANDS.iter().map(|&(name, about)| {
+            let key = COMMAND_KEYS.iter().find(|(n, _)| *n == name);
+            let aliases: Vec<String> = ALIASES
+                .iter()
+                .filter(|(_, n)| *n == name)
+                .map(|(alias, _)| format!("/{alias}"))
+                .collect();
+            let mut about = vec![about.to_string()];
+            about.extend(key.map(|(_, key)| key.to_string()));
+            if !aliases.is_empty() {
+                about.push(format!("also {}", aliases.join(" ")));
+            }
+            let line = format!("/{name}");
+            (line.clone(), about.join(" · "), Does::Run(line))
+        });
+        let agent = chat.agent_commands().map(|(name, about)| {
+            let line = format!("/{name}");
+            (
+                line.clone(),
+                about.to_string(),
+                Does::Start(format!("{line} ")),
+            )
+        });
+        let rows: Vec<_> = own.chain(agent).chain(keys(&KEYS)).collect();
+        Self::new(rows)
+    }
+
+    /// What every key of the node list does.
+    pub fn nodes() -> Self {
+        Self::new(keys(&NODE_KEYS).collect())
+    }
+
+    fn new(rows: Vec<(String, String, Does)>) -> Self {
+        let width = rows.iter().map(|(l, ..)| l.chars().count()).max();
+        let width = width.unwrap_or(0).min(LABEL_WIDTH);
+        let entries = rows
+            .into_iter()
+            .map(|(label, about, does)| Entry {
+                label: format!("{label:<width$}"),
+                about,
+                does,
+            })
+            .collect();
+        Self {
+            list: Filtered::new(entries, "", 0),
+        }
+    }
+}
+
+fn keys(keys: &[(&str, &str, Option<Key>)]) -> impl Iterator<Item = (String, String, Does)> {
+    keys.iter().map(|&(label, about, key)| {
+        let does = key.map_or(Does::Nothing, |(code, mods)| {
+            Does::Press(KeyEvent::new(code, mods))
+        });
+        (label.to_string(), about.to_string(), does)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::picker::Picked;
+
+    fn search(help: &mut Help, text: &str) -> Vec<String> {
+        for c in text.chars() {
+            help.list.on_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        let labels = help.list.shown().map(|e| e.label.trim().to_string());
+        labels.collect()
+    }
+
+    fn chat() -> Chat {
+        let node = commandant_proto::NodeInfo::default();
+        Chat::new(1, node, Default::default(), None)
+    }
+
+    #[test]
+    fn commands_and_keys_are_found_by_what_they_do() {
+        let mut help = Help::chat(&chat());
+        assert_eq!(
+            search(&mut help, "session"),
+            ["/new", "/sessions", "/close", "Alt-← Alt-→"]
+        );
+        let mut help = Help::chat(&chat());
+        assert_eq!(search(&mut help, "ctrl-n"), ["/new"], "by its key");
+        let mut help = Help::chat(&chat());
+        assert_eq!(search(&mut help, "login"), ["/providers"], "by an alias");
+    }
+
+    #[test]
+    fn choosing_one_does_it() {
+        let mut help = Help::chat(&chat());
+        let mut choose = |text: &str| {
+            search(&mut help, text);
+            let picked = help.list.on_key(KeyEvent::from(KeyCode::Enter));
+            help.list.filter.clear();
+            match picked {
+                Some(Picked::Chosen(entry)) => entry.does,
+                _ => panic!("nothing chosen for {text:?}"),
+            }
+        };
+        assert_eq!(choose("model"), Does::Run("/model".into()));
+        let effort = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert_eq!(choose("thinking effort"), Does::Run("/effort".into()));
+        assert_eq!(choose("next thinking"), Does::Press(effort));
+        assert_eq!(choose("scroll"), Does::Nothing);
+    }
+}

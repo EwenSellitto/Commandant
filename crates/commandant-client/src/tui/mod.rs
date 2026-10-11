@@ -8,6 +8,7 @@
 mod app;
 mod asks;
 mod chat;
+mod help;
 mod picker;
 mod text;
 mod ui;

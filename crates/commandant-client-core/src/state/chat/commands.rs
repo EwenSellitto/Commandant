@@ -14,10 +14,11 @@ pub(in crate::state) enum AppCommand {
     Sessions,
     Nodes,
     Close,
+    Help,
 }
 
-/// The chat's own commands, for completing and `/help`.
-pub const COMMANDS: [(&str, &str); 18] = [
+/// The chat's own commands, for completing and for a front end's help.
+pub const COMMANDS: [(&str, &str); 13] = [
     ("help", "what every command and key does"),
     ("agent", "choose an agent"),
     ("model", "choose a model"),
@@ -33,26 +34,16 @@ pub const COMMANDS: [(&str, &str); 18] = [
     ("sessions", "switch, or resume a saved one"),
     ("close", "close this session"),
     ("nodes", "the other nodes"),
-    ("commands", "same as /skills"),
-    ("login", "same as /providers"),
     ("quit", "leave"),
-    ("exit", "same as /quit"),
-    ("logout", "same as /providers"),
-    ("?", "same as /help"),
 ];
-/// The terminal's keys, for `/help` and an empty chat.
-pub const KEYS: [(&str, &str); 11] = [
-    ("Tab", "switch agent, or complete a /command"),
-    ("↑ ↓", "earlier prompts, or move in the /command list"),
-    ("Ctrl-T", "next thinking effort"),
-    ("Esc", "cancel a turn"),
-    ("PgUp PgDn", "scroll"),
-    ("Ctrl-N", "new session"),
-    ("Ctrl-O", "sessions"),
-    ("Alt-← Alt-→", "previous / next session"),
-    ("Ctrl-W", "close this session"),
-    ("Ctrl-G", "the other nodes"),
-    ("Ctrl-U", "clear the prompt"),
+/// Other names for some of the [`COMMANDS`]: each alias, and the command it
+/// stands for.
+pub const ALIASES: [(&str, &str); 5] = [
+    ("commands", "skills"),
+    ("login", "providers"),
+    ("exit", "quit"),
+    ("logout", "providers"),
+    ("?", "help"),
 ];
 
 impl Chat {
@@ -79,16 +70,13 @@ impl Chat {
                 "sessions" => Some(AppCommand::Sessions),
                 "nodes" => Some(AppCommand::Nodes),
                 "close" => Some(AppCommand::Close),
+                "help" | "?" => Some(AppCommand::Help),
                 _ => None,
             };
             if app.is_some() {
                 return (self.cleared(None), app);
             }
             let menu = match command {
-                "help" | "?" => {
-                    self.help();
-                    return (self.cleared(None), None);
-                }
                 "agent" => Menu::Agent,
                 "model" => Menu::Model,
                 "effort" => Menu::Effort,
@@ -139,19 +127,22 @@ impl Chat {
             return Vec::new();
         }
         let own = COMMANDS.iter().map(|(n, d)| (n.to_string(), d.to_string()));
-        let agent = self
-            .options
+        let aliases = ALIASES
             .iter()
-            .flat_map(|o| &o.commands)
-            .map(|c| (c.name.clone(), or(&c.description, &c.source).to_string()));
-        own.chain(agent)
+            .map(|(a, n)| (a.to_string(), format!("same as /{n}")));
+        let agent = self
+            .agent_commands()
+            .map(|(n, d)| (n.to_string(), d.to_string()));
+        own.chain(aliases)
+            .chain(agent)
             .filter(|(n, _)| n.starts_with(typed))
             .collect()
     }
 
     /// Whether `name` is one of the chat's commands or the agent's.
     pub fn is_command(&self, name: &str) -> bool {
-        COMMANDS.iter().any(|(n, _)| *n == name) || self.is_agent_command(name)
+        let own = COMMANDS.iter().chain(&ALIASES).any(|(n, _)| *n == name);
+        own || self.is_agent_command(name)
     }
 
     /// How many characters of `text` name a known `/command`, before its
@@ -167,25 +158,14 @@ impl Chat {
         }
     }
 
-    /// Every command and key, in the thread.
-    fn help(&mut self) {
-        let mut lines = vec!["commands".to_string()];
-        lines.extend(COMMANDS.iter().map(|(n, d)| format!("  /{n:<12}{d}")));
-        if let Some(options) = self.options.clone().filter(|o| !o.commands.is_empty()) {
-            lines.push("the agent's commands and skills".into());
-            let agent = options.commands.iter();
-            lines.extend(
-                agent.map(|c| format!("  /{:<12}{}", c.name, or(&c.description, &c.source))),
-            );
-        }
-        lines.push("keys".into());
-        lines.extend(KEYS.iter().map(|(k, d)| format!("  {k:<13}{d}")));
-        self.info(&lines.join("\n"));
+    /// The agent's own commands and skills, with what they do; none until
+    /// its options have loaded.
+    pub fn agent_commands(&self) -> impl Iterator<Item = (&str, &str)> {
+        let commands = self.options.iter().flat_map(|o| &o.commands);
+        commands.map(|c| (c.name.as_str(), or(&c.description, &c.source)))
     }
 
     fn is_agent_command(&self, name: &str) -> bool {
-        self.options
-            .as_ref()
-            .is_some_and(|o| o.commands.iter().any(|c| c.name == name))
+        self.agent_commands().any(|(n, _)| n == name)
     }
 }

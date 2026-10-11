@@ -83,7 +83,12 @@ pub(super) fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list_widget, list, &mut list_state);
     frame.render_widget(Line::from(core.notice().to_string()).yellow(), notice);
     frame.render_widget(
-        hints(&[("↑↓", "move"), ("enter", "open"), ("q", "quit")]),
+        hints(&[
+            ("↑↓", "move"),
+            ("enter", "open"),
+            ("?", "help"),
+            ("q", "quit"),
+        ]),
         footer,
     );
 }
