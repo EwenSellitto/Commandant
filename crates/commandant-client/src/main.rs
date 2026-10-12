@@ -8,7 +8,7 @@ mod tui;
 use std::io::IsTerminal;
 
 use anyhow::Result;
-use clap::{CommandFactory, Parser};
+use clap::CommandFactory;
 use commandant_client_core::config::{self, Client};
 use tokio::runtime::{self, Handle, Runtime};
 use tracing_subscriber::EnvFilter;
@@ -16,7 +16,7 @@ use tracing_subscriber::EnvFilter;
 use crate::cli::{Cli, ClientArgs, Command, GuiArgs, NodeCommand, TaskCommand, TokenCommand};
 
 fn main() {
-    let cli = Cli::parse();
+    let cli = Cli::try_parse_args(std::env::args_os()).unwrap_or_else(|e| e.exit());
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),

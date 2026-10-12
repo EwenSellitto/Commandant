@@ -1,14 +1,16 @@
 //! `commandant gui`: the desktop window.
 //!
-//! GPUI owns the main thread; the tokio runtime `main` built keeps running
-//! beside it for the calls to the server.
+//! GPUI owns the main thread; `main` runs it outside the tokio runtime, which
+//! is left for the calls to the server once the GUI makes any.
 
 mod placement;
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use commandant_common::dirs;
 use gpui::{
     App, AppContext as _, Bounds, Context, IntoElement, Render, Styled as _, Subscription, Task,
@@ -26,9 +28,20 @@ const FIRST_SIZE: (f32, f32) = (1200.0, 800.0);
 const SAVE_AFTER: Duration = Duration::from_millis(500);
 
 /// Opens the window and returns once it is closed. Linux keeps it in the
-/// foreground, so `--foreground` changes nothing yet.
+/// foreground, so `--foreground` changes nothing yet; the other arguments
+/// wait for the views.
 pub fn run(_args: GuiArgs) -> Result<()> {
+    // With no display server GPUI runs headless: an invisible window that
+    // never closes.
+    #[cfg(target_os = "linux")]
+    if gpui::guess_compositor() == "Headless" {
+        anyhow::bail!(
+            "no display to open a window on (neither WAYLAND_DISPLAY nor DISPLAY is set)"
+        );
+    }
     let placement_file = dirs::gui_window()?;
+    let failed = Rc::new(RefCell::new(None));
+    let failure = failed.clone();
     gpui_platform::application().run(move |cx| {
         gpui_component::init(cx);
         cx.on_window_closed(|cx, _| {
@@ -49,31 +62,35 @@ pub fn run(_args: GuiArgs) -> Result<()> {
         };
         let opened = cx.open_window(options, |window, cx| {
             Theme::sync_system_appearance(Some(window), cx);
-            let on_close = placement_file.clone();
-            window.on_window_should_close(cx, move |window, _| {
-                save(placement_of(window), &on_close);
-                true
-            });
             let shell = cx.new(|cx| Shell::new(placement_file, window, cx));
             cx.new(|cx| Root::new(shell, window, cx))
         });
         if let Err(e) = opened {
-            eprintln!("error: cannot open the window: {e:#}");
+            *failure.borrow_mut() = Some(e);
             cx.quit();
         }
     });
-    Ok(())
+    match failed.take() {
+        Some(e) => Err(anyhow!("cannot open the window: {e:#}")),
+        None => Ok(()),
+    }
 }
 
-/// Where the window opens: where it last closed, or centred.
+/// Where the window opens: where it last was, or centred when that is
+/// nowhere on today's displays.
 fn window_bounds(placement_file: &Path, cx: &App) -> WindowBounds {
+    let centred = || WindowBounds::centered(size(px(FIRST_SIZE.0), px(FIRST_SIZE.1)), cx);
     let Some(saved) = Placement::load(placement_file) else {
-        return WindowBounds::centered(size(px(FIRST_SIZE.0), px(FIRST_SIZE.1)), cx);
+        return centred();
     };
     let bounds = Bounds::new(
         point(px(saved.x), px(saved.y)),
         size(px(saved.width), px(saved.height)),
     );
+    let displays = cx.displays();
+    if !displays.is_empty() && !displays.iter().any(|d| d.bounds().intersects(&bounds)) {
+        return centred();
+    }
     if saved.maximized {
         WindowBounds::Maximized(bounds)
     } else {
@@ -105,13 +122,20 @@ fn save(placement: Placement, placement_file: &Path) {
 struct Shell {
     placement_file: PathBuf,
     /// Saves the placement once the window has stopped moving, so it is kept
-    /// even when the process is stopped rather than the window closed.
+    /// even when the process is stopped rather than the window closed. It
+    /// runs on the main thread, as the save on closing does, so the two
+    /// never write at once.
     saving: Option<Task<()>>,
     _subscriptions: [Subscription; 2],
 }
 
 impl Shell {
     fn new(placement_file: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let on_close = placement_file.clone();
+        window.on_window_should_close(cx, move |window, _| {
+            save(placement_of(window), &on_close);
+            true
+        });
         let subscriptions = [
             cx.observe_window_appearance(window, |_, window, cx| {
                 Theme::sync_system_appearance(Some(window), cx);
@@ -132,7 +156,7 @@ impl Shell {
         let file = self.placement_file.clone();
         let settled = cx.background_executor().timer(SAVE_AFTER);
         // Replacing the task drops, and so cancels, the previous one.
-        self.saving = Some(cx.background_spawn(async move {
+        self.saving = Some(cx.spawn(async move |_, _| {
             settled.await;
             save(placement, &file);
         }));

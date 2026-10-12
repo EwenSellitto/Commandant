@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// The smallest window the views are laid out for, in logical pixels.
 pub const MIN_WIDTH: f32 = 800.0;
+/// See [`MIN_WIDTH`].
 pub const MIN_HEIGHT: f32 = 500.0;
 
 /// The window's bounds when it last closed, in logical pixels.
@@ -26,7 +27,17 @@ impl Placement {
     /// The saved placement, grown to the minimum size; none when nothing
     /// usable is saved, and the window opens centred instead.
     pub fn load(path: &Path) -> Option<Self> {
-        let saved: Self = toml::from_str(&fs::read_optional(path).ok()??).ok()?;
+        let read = fs::read_optional(path).and_then(|text| match text {
+            Some(text) => Ok(Some(toml::from_str::<Self>(&text)?)),
+            None => Ok(None),
+        });
+        let saved = match read {
+            Ok(saved) => saved?,
+            Err(e) => {
+                eprintln!("warning: ignoring the saved window placement: {e:#}");
+                return None;
+            }
+        };
         Some(Self {
             width: saved.width.max(MIN_WIDTH),
             height: saved.height.max(MIN_HEIGHT),

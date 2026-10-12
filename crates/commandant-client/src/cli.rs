@@ -1,9 +1,12 @@
 //! The command-line interface definition.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::{Args, Parser, Subcommand};
+use clap::error::ErrorKind;
+use clap::parser::ValueSource;
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -17,6 +20,30 @@ pub struct Cli {
     /// None for a bare `commandant`: help in a terminal, the GUI elsewhere.
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+impl Cli {
+    /// Parses the command line, refusing flags on a bare `commandant` (the
+    /// environment may still set them).
+    pub fn try_parse_args<I, T>(args: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        let mut command = Self::command();
+        let matches = command.try_get_matches_from_mut(args)?;
+        let cli = Self::from_arg_matches(&matches)?;
+        let flagged = ["addr", "token", "token_file"]
+            .into_iter()
+            .any(|id| matches.value_source(id) == Some(ValueSource::CommandLine));
+        if cli.command.is_none() && flagged {
+            return Err(command.error(
+                ErrorKind::MissingSubcommand,
+                "--addr, --token and --token-file need a command",
+            ));
+        }
+        Ok(cli)
+    }
 }
 
 /// How client commands reach the orchestrator.
@@ -232,10 +259,12 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 mod tests {
     use super::*;
 
+    fn try_parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_args(["commandant"].iter().chain(args))
+    }
+
     fn parse(args: &[&str]) -> Option<Command> {
-        Cli::try_parse_from(["commandant"].iter().chain(args))
-            .unwrap()
-            .command
+        try_parse(args).unwrap().command
     }
 
     #[test]
@@ -267,6 +296,14 @@ mod tests {
     #[test]
     fn bare_commandant_has_no_command() {
         assert!(parse(&[]).is_none());
+    }
+
+    #[test]
+    fn bare_commandant_takes_no_flags() {
+        assert!(try_parse(&["--addr", "http://box:7400"]).is_err());
+        assert!(try_parse(&["--token-file", "/t"]).is_err());
+        assert!(parse(&["node", "ls", "--addr", "http://box:7400"]).is_some());
+        assert!(parse(&["--addr", "http://box:7400", "node", "ls"]).is_some());
     }
 
     #[test]
