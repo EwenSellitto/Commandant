@@ -20,13 +20,25 @@ More detail: [how it works](docs/architecture.md) · [code layout](docs/crates.m
 
 ## Install
 
-Needs Rust 1.89+. The server binary also needs `pkg-config` and OpenSSL's
+Needs Rust 1.95+. The server binary also needs `pkg-config` and OpenSSL's
 headers (`libssl-dev` on Debian, `openssl-devel` on Fedora), or use
 [Docker](#docker).
 
 ```sh
 cargo install --path crates/commandant-server   # machines that serve or work
 cargo install --path crates/commandant-client   # machines you control them from
+```
+
+The client includes a desktop GUI (`commandant gui`; a bare `commandant`
+opens it when not started from a terminal). On Linux it needs xkbcommon, xcb,
+wayland and a Vulkan loader (`libxkbcommon-x11-dev libxcb1-dev
+libwayland-dev libvulkan-dev` on Debian, `libxkbcommon-x11-devel
+libxcb-devel wayland-devel vulkan-loader-devel` on Fedora). xkbcommon and xcb
+are linked, so every client command needs them; the others load when the
+window opens. On a headless machine, build without it:
+
+```sh
+cargo install --path crates/commandant-client --no-default-features   # CLI and TUI only
 ```
 
 Upgrading from the single `commandant` binary? Run `cargo uninstall

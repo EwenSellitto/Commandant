@@ -14,8 +14,9 @@ use clap::{Args, Parser, Subcommand};
 pub struct Cli {
     #[command(flatten)]
     pub client: ClientArgs,
+    /// None for a bare `commandant`: help in a terminal, the GUI elsewhere.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 /// How client commands reach the orchestrator.
@@ -47,7 +48,9 @@ pub enum Command {
     /// Send a prompt to a node's coding agent and stream its reply.
     Prompt(PromptArgs),
     /// Chat with a node's coding agent in a terminal UI.
-    Tui(TuiArgs),
+    Tui(UiArgs),
+    /// Chat with nodes' coding agents in a window.
+    Gui(GuiArgs),
     /// Inspect tasks.
     #[command(subcommand)]
     Task(TaskCommand),
@@ -104,8 +107,9 @@ pub struct PromptArgs {
     pub effort: Option<String>,
 }
 
-#[derive(Args)]
-pub struct TuiArgs {
+/// Where a front end starts; `tui` and `gui` take the same.
+#[derive(Args, Debug, Default, PartialEq)]
+pub struct UiArgs {
     /// Node name, id or id prefix; defaults to the only online node with an
     /// agent harness.
     pub node: Option<String>,
@@ -124,6 +128,15 @@ pub struct TuiArgs {
     /// Thinking effort, e.g. low or high; the model's own names apply.
     #[arg(long)]
     pub effort: Option<String>,
+}
+
+#[derive(Args, Default)]
+pub struct GuiArgs {
+    #[command(flatten)]
+    pub ui: UiArgs,
+    /// Keep the window attached to this terminal (always so on Linux).
+    #[arg(long)]
+    pub foreground: bool,
 }
 
 #[derive(Subcommand)]
@@ -218,6 +231,43 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(args: &[&str]) -> Option<Command> {
+        Cli::try_parse_from(["commandant"].iter().chain(args))
+            .unwrap()
+            .command
+    }
+
+    #[test]
+    fn tui_and_gui_take_the_same_arguments() {
+        let args = [
+            "box", "-s", "ses_1", "--cwd", "/src", "-m", "a/b", "--agent", "plan", "--effort",
+            "high",
+        ];
+        let Some(Command::Tui(tui)) = parse(&[&["tui"], &args[..]].concat()) else {
+            panic!("not tui");
+        };
+        let Some(Command::Gui(gui)) = parse(&[&["gui"], &args[..]].concat()) else {
+            panic!("not gui");
+        };
+        assert_eq!(tui, gui.ui);
+        assert_eq!(tui.node.as_deref(), Some("box"));
+        assert_eq!(tui.effort.as_deref(), Some("high"));
+        assert!(!gui.foreground);
+    }
+
+    #[test]
+    fn gui_can_stay_in_the_foreground() {
+        let Some(Command::Gui(gui)) = parse(&["gui", "--foreground"]) else {
+            panic!("not gui");
+        };
+        assert!(gui.foreground);
+    }
+
+    #[test]
+    fn bare_commandant_has_no_command() {
+        assert!(parse(&[]).is_none());
+    }
 
     #[test]
     fn parses_durations() {

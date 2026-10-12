@@ -1,15 +1,19 @@
 mod admin;
 mod cli;
+#[cfg(feature = "gui")]
+mod gui;
 mod run;
 mod tui;
 
+use std::io::IsTerminal;
+
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use commandant_client_core::config::{self, Client};
-use tokio::runtime::{self, Handle};
+use tokio::runtime::{self, Handle, Runtime};
 use tracing_subscriber::EnvFilter;
 
-use crate::cli::{Cli, ClientArgs, Command, NodeCommand, TaskCommand, TokenCommand};
+use crate::cli::{Cli, ClientArgs, Command, GuiArgs, NodeCommand, TaskCommand, TokenCommand};
 
 fn main() {
     let cli = Cli::parse();
@@ -23,7 +27,7 @@ fn main() {
         .enable_all()
         .build()
         .map_err(anyhow::Error::from)
-        .and_then(|runtime| runtime.block_on(dispatch(cli, runtime.handle().clone())));
+        .and_then(|runtime| launch(cli, &runtime));
     match result {
         Ok(exit_code) => std::process::exit(exit_code),
         Err(e) => {
@@ -36,10 +40,42 @@ fn main() {
     }
 }
 
-/// Runs the chosen command and returns the process exit code.
-async fn dispatch(cli: Cli, handle: Handle) -> Result<i32> {
-    let client = || resolve_client(&cli.client);
+/// Runs what was asked and returns the process exit code. The GUI takes the
+/// main thread; everything else runs on the runtime.
+fn launch(cli: Cli, runtime: &Runtime) -> Result<i32> {
     match cli.command {
+        Some(Command::Gui(args)) => open_gui(args),
+        // A double-click or a launcher has no terminal to print help to.
+        None if cfg!(feature = "gui") && !attached_to_terminal() => open_gui(GuiArgs::default()),
+        None => {
+            Cli::command().print_help()?;
+            Ok(0)
+        }
+        Some(command) => runtime.block_on(dispatch(command, &cli.client, runtime.handle().clone())),
+    }
+}
+
+fn attached_to_terminal() -> bool {
+    std::io::stdin().is_terminal()
+        || std::io::stdout().is_terminal()
+        || std::io::stderr().is_terminal()
+}
+
+#[cfg(feature = "gui")]
+fn open_gui(args: GuiArgs) -> Result<i32> {
+    gui::run(args)?;
+    Ok(0)
+}
+
+#[cfg(not(feature = "gui"))]
+fn open_gui(_args: GuiArgs) -> Result<i32> {
+    anyhow::bail!("this build has no GUI; rebuild with the `gui` feature")
+}
+
+/// Runs the chosen command and returns the process exit code.
+async fn dispatch(command: Command, client_args: &ClientArgs, handle: Handle) -> Result<i32> {
+    let client = || resolve_client(client_args);
+    match command {
         Command::Login(args) => admin::login(args).await?,
         Command::Token(TokenCommand::Create { ttl, reusable }) => {
             admin::create_token(&client()?, ttl, reusable).await?
@@ -72,6 +108,7 @@ async fn dispatch(cli: Cli, handle: Handle) -> Result<i32> {
         Command::Run(args) => return run::run(&client()?, args).await,
         Command::Prompt(args) => return run::prompt(&client()?, args).await,
         Command::Tui(args) => tui::run(&client()?, args, handle).await?,
+        Command::Gui(_) => unreachable!("the GUI runs outside the runtime"),
     }
     Ok(0)
 }
