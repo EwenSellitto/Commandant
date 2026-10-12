@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use commandant_proto::*;
 
-use super::chat::Message;
+use super::chat::{Message, RunId};
 use super::{ChatId, Choose};
 
 /// What the person asks for.
@@ -24,9 +24,9 @@ pub enum Intent {
     NewChat(ChatId),
     /// Choose one of the chat's node's chats or saved sessions.
     Sessions(ChatId),
-    /// Close a chat, unless its agent is still at work.
+    /// Close a chat, unless its agent or a command is still at work.
     Close(ChatId),
-    /// A line typed in a chat: a prompt or a `/command`.
+    /// A line typed in a chat: a prompt, a `/command` or a `!command`.
     Submit(ChatId, String),
     /// Answer the scope's [`Ask::Choose`](super::Ask::Choose).
     Choose(Scope, Choose),
@@ -36,7 +36,7 @@ pub enum Intent {
     Confirm(Scope),
     /// Leave the scope's question unanswered.
     Dismiss(Scope),
-    /// Cancel the chat's turn.
+    /// Stop the chat's commands, or else cancel its turn.
     Cancel(ChatId),
     /// The next (or previous) agent.
     CycleAgent(ChatId, isize),
@@ -114,8 +114,14 @@ impl From<Effect> for Outcome {
 
 impl From<Option<Effect>> for Outcome {
     fn from(effect: Option<Effect>) -> Self {
+        effect.into_iter().collect::<Vec<_>>().into()
+    }
+}
+
+impl From<Vec<Effect>> for Outcome {
+    fn from(effects: Vec<Effect>) -> Self {
         Self {
-            effects: effect.into_iter().collect(),
+            effects,
             ..Default::default()
         }
     }
@@ -125,7 +131,13 @@ impl From<Option<Effect>> for Outcome {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     Send(ChatId, PromptRequest),
-    /// Cancel the chat's task; a failure is told to the chat.
+    /// Run a command for one of the chat's blocks.
+    RunCommand {
+        chat: ChatId,
+        run: RunId,
+        request: RunCommandRequest,
+    },
+    /// Cancel a task of the chat's; a failure is told to the chat.
     Cancel(ChatId, String),
     /// Ask a node what its agent offers, after a pause.
     FetchOptions {

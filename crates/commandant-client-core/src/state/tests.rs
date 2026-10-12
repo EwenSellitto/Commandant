@@ -1,5 +1,5 @@
 use super::chat::{Message, Role, Unseen};
-use super::fixtures::{acme, bare, method, node, output, started};
+use super::fixtures::{acme, bare, for_run, method, node, output, started};
 use super::*;
 
 fn state() -> State {
@@ -285,6 +285,28 @@ fn quitting_leaves_the_tasks_on_every_node_to_cancel() {
     assert_eq!(running, ["t1", "t2"]);
     assert_eq!(submit(&mut state, one, "/quit").go, Some(Go::Quit));
     assert_eq!(submit(&mut state, two, "/exit").go, Some(Go::Quit));
+}
+
+#[test]
+fn a_running_command_keeps_its_chat_busy_and_open() {
+    let mut state = state();
+    let id = chat_on(&mut state, "n1");
+    state.update(Update::Options("n1".into(), Ok(AgentOptions::default())));
+    assert!(!state.busy());
+    let run = match submit(&mut state, id, "!sleep 9").effects.pop() {
+        Some(Effect::RunCommand { chat, run, .. }) if chat == id => run,
+        _ => panic!("it should run"),
+    };
+    assert!(state.busy(), "its block shows a spinner");
+    assert!(chat(&state, id).at_work());
+    let refused = state.intent(Intent::Close(id));
+    assert!(refused.go.is_none());
+    let said = &chat(&state, id).thread.last().unwrap().text;
+    assert!(said.contains("command is still running"), "{said}");
+
+    // Quitting stops it.
+    state.update(Update::Chat(id, for_run(run, started("t9"))));
+    assert_eq!(state.running_tasks(), ["t9"]);
 }
 
 #[test]

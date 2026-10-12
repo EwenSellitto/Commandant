@@ -138,7 +138,8 @@ to see the commands, or `/help` for all commands and keys. The main ones:
 
 | Key or command | Does |
 |---|---|
-| **Enter** / **Esc** | Send / cancel the turn |
+| **Enter** / **Esc** | Send / stop a command, else cancel the turn |
+| `!ls` | Run a shell command on the node, in the chat's directory; the agent never sees it |
 | **Tab**, `/agent` | Switch agent |
 | `/model`, `/effort` (**Ctrl-T**) | Choose the model and its thinking effort |
 | `/skills`, `/mcp` | The agent's commands and skills; its MCP servers |

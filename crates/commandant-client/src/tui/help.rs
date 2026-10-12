@@ -27,11 +27,17 @@ pub const KEYS: [(&str, &str, Option<Key>); 7] = [
     ),
     ("↑ ↓", "earlier prompts, or move in the /command list", None),
     ("Ctrl-T", "next thinking effort", ctrl('t')),
-    ("Esc", "cancel a turn", key(KeyCode::Esc)),
+    ("Esc", "stop a command, or cancel a turn", key(KeyCode::Esc)),
     ("PgUp PgDn", "scroll", None),
     ("Alt-← Alt-→", "previous / next session", None),
     ("Ctrl-U", "clear the prompt", ctrl('u')),
 ];
+
+/// What a line starting with `!` does.
+pub const BANG: (&str, &str) = (
+    "!<command>",
+    "run a shell command on the node, in the chat's directory",
+);
 
 /// The keys that do what a command does.
 const COMMAND_KEYS: [(&str, &str); 6] = [
@@ -88,8 +94,8 @@ pub struct Help {
 }
 
 impl Help {
-    /// Everything there is to do in `chat`: its commands, the agent's, then
-    /// the keys.
+    /// Everything there is to do in `chat`: its commands, running one on
+    /// the node, the agent's commands, then the keys.
     pub fn chat(chat: &Chat) -> Self {
         let own = COMMANDS.iter().map(|&(name, about)| {
             let key = COMMAND_KEYS.iter().find(|(n, _)| *n == name);
@@ -114,7 +120,17 @@ impl Help {
                 Does::Start(format!("{line} ")),
             )
         });
-        let rows: Vec<_> = own.chain(agent).chain(keys(&KEYS)).collect();
+        let (label, about) = BANG;
+        let bang = (
+            label.to_string(),
+            about.to_string(),
+            Does::Start("!".into()),
+        );
+        let rows: Vec<_> = own
+            .chain(std::iter::once(bang))
+            .chain(agent)
+            .chain(keys(&KEYS))
+            .collect();
         Self::new(rows)
     }
 
@@ -197,5 +213,6 @@ mod tests {
         assert_eq!(choose("thinking effort"), Does::Run("/effort".into()));
         assert_eq!(choose("next thinking"), Does::Press(effort));
         assert_eq!(choose("scroll"), Does::Nothing);
+        assert_eq!(choose("shell"), Does::Start("!".into()));
     }
 }

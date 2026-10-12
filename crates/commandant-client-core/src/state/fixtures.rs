@@ -3,7 +3,7 @@
 use commandant_proto::task_event::Event as TaskEvent;
 use commandant_proto::*;
 
-use super::chat::Message;
+use super::chat::{Message, RunId};
 
 pub fn node(id: &str, online: bool) -> NodeInfo {
     NodeInfo {
@@ -29,6 +29,15 @@ pub fn started(task_id: &str) -> Message {
         task_id: task_id.into(),
         ..Default::default()
     }))
+}
+
+/// What a command's task reports, from what `message` (a task event) says
+/// for a turn's.
+pub fn for_run(run: RunId, message: Message) -> Message {
+    match message {
+        Message::Task(event) => Message::Run(run, Ok(event)),
+        other => other,
+    }
 }
 
 pub fn output(stream: OutputStream, data: &[u8]) -> Message {

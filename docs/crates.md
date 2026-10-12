@@ -95,7 +95,7 @@ code, so every front end shares it. Code used by several crates goes in
 | `tui/chat.rs` | A chat's prompt (editing, history recall, completion highlight) and scroll |
 | `tui/ui/`, `tui/text.rs` | Drawing, and markdown styling |
 | `tui/asks.rs`, `tui/picker.rs` | What keys say to an ask: the floating list, narrowed down by typing, for a choose-ask, a panel for a confirm- or show-ask; an enter-ask is typed in the prompt. The app's and each chat's picker are shown from one map |
-| `tui/help.rs` | The help (F1, `?` on the nodes, `/help`): every command, the agent's commands and skills, and the terminal's keys in one such list, searched by name, key, alias or what it does; choosing one runs it, starts it in the prompt, or presses the key |
+| `tui/help.rs` | The help (F1, `?` on the nodes, `/help`): every command, `!` to run one on the node, the agent's commands and skills, and the terminal's keys in one such list, searched by name, key, alias or what it does; choosing one runs it, starts it in the prompt, or presses the key |
 
 ## `commandant-client-core`
 
@@ -107,11 +107,11 @@ server, which keeps the calls it would make.
 | File | |
 |---|---|
 | `lib.rs` | `Core`: starts on a working connection, takes intents and updates, makes the calls they ask for on the tokio runtime it is given, and is read through `&` accessors; `shutdown` cancels running tasks |
-| `calls.rs` | The connection to the server and every call made on it: prompt streams, questions to nodes, cancels, the 5-second node poll |
+| `calls.rs` | The connection to the server and every call made on it: prompt and command streams, questions to nodes, cancels, the 5-second node poll |
 | `config.rs` | Where clients find the server and token, and connecting |
 | `state/mod.rs` | What the client knows: the nodes and every chat |
 | `state/intent.rs`, `state/ask.rs` | What goes in (intents, updates) and comes out (effects, where to go, prompt edits); the asks (choose, enter, confirm, show), one per chat and one for the app |
-| `state/chat/` | One chat: its session, settings, thread and line language (`/model`, `/project`, the agent's `/skill`); what it offers to choose, provider sign-in and projects in their own files |
+| `state/chat/` | One chat: its session, settings, thread and line language (`/model`, `/project`, the agent's `/skill`, `!command`); what it offers to choose, provider sign-in, projects, and the commands run with `!` (`run.rs`: a block each, beside the agent's turn) in their own files |
 
 ## Other files
 

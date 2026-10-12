@@ -8,13 +8,13 @@ use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use commandant_client_core::chat::{self, Activity, Chat, Role, Unseen};
+use commandant_client_core::chat::{self, Activity, Chat, Ended, Entry, Role, Run, Unseen};
 use commandant_client_core::{Ask, ChatId};
 use commandant_common::or;
 
 use super::app::{App, Screen};
 use super::chat::ChatView;
-use super::help::KEYS;
+use super::help::{BANG, KEYS};
 use super::text::{self, MUTED};
 
 mod lists;
@@ -164,11 +164,11 @@ fn tab(number: usize, chat: &Chat, shown: bool) -> Vec<Span<'static>> {
         false => Style::new().fg(MUTED),
     };
     let mut spans = vec![Span::styled(format!(" {number} {title}"), style)];
-    let mark = match (&chat.activity, chat.unseen) {
-        (Activity::Working { .. }, _) => Some(Span::raw(format!(" {}", spinner())).cyan()),
-        (Activity::Idle, Some(Unseen::Done)) => Some(" ●".green()),
-        (Activity::Idle, Some(Unseen::Failed)) => Some(" ✗".red()),
-        (Activity::Idle, None) => None,
+    let mark = match (chat.at_work(), chat.unseen) {
+        (true, _) => Some(Span::raw(format!(" {}", spinner())).cyan()),
+        (false, Some(Unseen::Done)) => Some(" ●".green()),
+        (false, Some(Unseen::Failed)) => Some(" ✗".red()),
+        (false, None) => None,
     };
     spans.extend(mark.map(|m| m.patch_style(Style::new().bg(style.bg.unwrap_or_default()))));
     spans.push(Span::styled(" ", style));
@@ -233,10 +233,11 @@ fn thread_rows(chat: &Chat, width: usize) -> Vec<Line<'static>> {
     for entry in &chat.thread {
         let role = entry.role;
         // Space out turns, but keep the pieces of a reply together.
-        let joined = matches!(
-            (previous, role),
-            (Some(Role::Tool), Role::Tool) | (Some(_), Role::Summary)
-        );
+        let joined = match (previous, role) {
+            (Some(Role::Tool), Role::Tool) => true,
+            (Some(previous), Role::Summary) => previous != Role::Command,
+            _ => false,
+        };
         if previous.is_some() && !joined {
             rows.push(Line::default());
         }
@@ -275,6 +276,10 @@ fn thread_rows(chat: &Chat, width: usize) -> Vec<Line<'static>> {
                 "◆ ".fg(MUTED),
                 INDENT.into(),
             ),
+            Role::Command => {
+                rows.extend(command_rows(entry, width));
+                continue;
+            }
         };
         for (i, line) in lines.into_iter().enumerate() {
             let lead = if i == 0 { &first } else { &rest };
@@ -282,6 +287,59 @@ fn thread_rows(chat: &Chat, width: usize) -> Vec<Line<'static>> {
         }
     }
     rows
+}
+
+/// A command's block: `$ <command>`, what it printed with its error output
+/// tinted, then how it ended.
+fn command_rows(entry: &Entry, width: usize) -> Vec<Line<'static>> {
+    let command = Line::from(Span::raw(entry.text.clone()).bold());
+    let mut rows = text::wrap(command, width, &"$ ".fg(MUTED), &INDENT.into());
+    let Some(run) = &entry.run else {
+        return rows;
+    };
+    let gutter = "│ ".fg(MUTED);
+    let dropped = run
+        .dropped
+        .then(|| Line::from("… its earlier output wasn't kept".fg(MUTED).italic()));
+    for line in dropped.into_iter().chain(output_lines(run)) {
+        rows.extend(text::wrap(line, width, &gutter, &gutter));
+    }
+    let end = match &run.ended {
+        None if run.stopping() => stopping(),
+        None => Line::from(format!("{} running", spinner())).cyan(),
+        Some(ended) if ended.succeeded() => Line::from("exit 0").fg(MUTED),
+        Some(Ended::Exited(code)) => Line::from(format!("exit {code}")).red(),
+        Some(Ended::Cancelled) => Line::from("cancelled").yellow(),
+        Some(Ended::Failed(why)) => Line::from(why.clone()).red(),
+    };
+    rows.extend(text::wrap(end, width, &"└ ".fg(MUTED), &INDENT.into()));
+    rows
+}
+
+/// What a command printed, line by line; a line can hold pieces of both
+/// streams, its error output red.
+fn output_lines(run: &Run) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::default()];
+    for printed in &run.output {
+        let style = match printed.stderr {
+            true => Style::new().red(),
+            false => Style::new(),
+        };
+        for (i, part) in printed.text.split('\n').enumerate() {
+            if i > 0 {
+                lines.push(Line::default());
+            }
+            let part = part.trim_end_matches('\r').replace('\t', "    ");
+            if let Some(line) = lines.last_mut().filter(|_| !part.is_empty()) {
+                line.push_span(Span::styled(part, style));
+            }
+        }
+    }
+    // What ends with a newline has no line after it.
+    if lines.last().is_some_and(|l| l.spans.is_empty()) {
+        lines.pop();
+    }
+    lines
 }
 
 fn plain_lines(text: &str, style: Style) -> Vec<Line<'static>> {
@@ -306,7 +364,8 @@ fn welcome(chat: &Chat) -> Vec<Line<'static>> {
     let commands = chat::COMMANDS[1..8]
         .iter()
         .map(|&(n, d)| (format!("/{n}"), d));
-    for (key, does) in keys.take(4).chain(commands) {
+    let bang = std::iter::once((BANG.0.to_string(), BANG.1));
+    for (key, does) in keys.take(4).chain(commands).chain(bang) {
         lines.push(Line::from(vec![
             Span::raw(format!("{INDENT}{key:<13}")).bold(),
             does.fg(MUTED),
@@ -333,6 +392,8 @@ fn draw_status(frame: &mut Frame, chat: &Chat, scroll: u16, area: Rect) {
         ])
     };
     let left = match &chat.activity {
+        // Esc stops them first.
+        _ if let Some(running) = commands_status(chat) => running,
         Activity::Working {
             cancelling: true, ..
         } => Line::from(format!("{} cancelling…", spinner())).yellow(),
@@ -374,6 +435,29 @@ fn draw_status(frame: &mut Frame, chat: &Chat, scroll: u16, area: Rect) {
         let more = Line::from(format!("↓ {scroll} more lines  ")).fg(MUTED);
         frame.render_widget(more.right_aligned(), area);
     }
+}
+
+/// Which commands run, and how to stop them; `None` when none does.
+fn commands_status(chat: &Chat) -> Option<Line<'static>> {
+    let running: Vec<(&str, &Run)> = chat.commands().filter(|(_, r)| r.running()).collect();
+    let (line, _) = running.last()?;
+    if running.iter().all(|(_, r)| r.stopping()) {
+        return Some(stopping());
+    }
+    let what = match running.len() {
+        1 => shorten(line, 40),
+        n => format!("{n} commands"),
+    };
+    Some(Line::from(vec![
+        Span::raw(format!("{} running ", spinner())).cyan(),
+        Span::raw(what).cyan(),
+        "  esc to stop".fg(MUTED),
+    ]))
+}
+
+/// Commands asked to stop, and not stopped yet.
+fn stopping() -> Line<'static> {
+    Line::from(format!("{} stopping…", spinner())).yellow()
 }
 
 /// `mcp 1/2 connected · 1 failed`, when the agent has MCP servers.

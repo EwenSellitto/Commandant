@@ -55,7 +55,7 @@ pub struct Next {
     pub go: Option<Go>,
     /// What a chat's prompt becomes.
     pub prompt: Option<(ChatId, Edit)>,
-    /// The chat whose prompt was just sent, if one was.
+    /// The chat whose prompt or command was just sent, if one was.
     pub sent: Option<ChatId>,
 }
 
@@ -104,7 +104,7 @@ impl Core {
             prompt,
         } = outcome;
         let sent = effects.iter().find_map(|effect| match effect {
-            Effect::Send(id, _) => Some(*id),
+            Effect::Send(id, _) | Effect::RunCommand { chat: id, .. } => Some(*id),
             _ => None,
         });
         for effect in effects {
