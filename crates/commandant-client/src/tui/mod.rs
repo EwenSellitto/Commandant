@@ -28,12 +28,12 @@ use tokio::runtime::Handle;
 use tokio_stream::StreamExt;
 
 use self::app::App;
-use crate::cli::TuiArgs;
+use crate::cli::UiArgs;
 
 /// How often the screen refreshes on its own, for the busy spinner.
 const TICK: Duration = Duration::from_millis(100);
 
-pub async fn run(client: &Client, args: TuiArgs, handle: Handle) -> Result<()> {
+pub async fn run(client: &Client, args: UiArgs, handle: Handle) -> Result<()> {
     let defaults = Settings {
         session_id: String::new(),
         cwd: args.cwd.unwrap_or_default(),

@@ -1,9 +1,12 @@
 //! The command-line interface definition.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::{Args, Parser, Subcommand};
+use clap::error::ErrorKind;
+use clap::parser::ValueSource;
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -14,8 +17,33 @@ use clap::{Args, Parser, Subcommand};
 pub struct Cli {
     #[command(flatten)]
     pub client: ClientArgs,
+    /// None for a bare `commandant`: help in a terminal, the GUI elsewhere.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
+}
+
+impl Cli {
+    /// Parses the command line, refusing flags on a bare `commandant` (the
+    /// environment may still set them).
+    pub fn try_parse_args<I, T>(args: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        let mut command = Self::command();
+        let matches = command.try_get_matches_from_mut(args)?;
+        let cli = Self::from_arg_matches(&matches)?;
+        let flagged = ["addr", "token", "token_file"]
+            .into_iter()
+            .any(|id| matches.value_source(id) == Some(ValueSource::CommandLine));
+        if cli.command.is_none() && flagged {
+            return Err(command.error(
+                ErrorKind::MissingSubcommand,
+                "--addr, --token and --token-file need a command",
+            ));
+        }
+        Ok(cli)
+    }
 }
 
 /// How client commands reach the orchestrator.
@@ -47,7 +75,9 @@ pub enum Command {
     /// Send a prompt to a node's coding agent and stream its reply.
     Prompt(PromptArgs),
     /// Chat with a node's coding agent in a terminal UI.
-    Tui(TuiArgs),
+    Tui(UiArgs),
+    /// Chat with nodes' coding agents in a window.
+    Gui(GuiArgs),
     /// Inspect tasks.
     #[command(subcommand)]
     Task(TaskCommand),
@@ -104,8 +134,9 @@ pub struct PromptArgs {
     pub effort: Option<String>,
 }
 
-#[derive(Args)]
-pub struct TuiArgs {
+/// Where a front end starts; `tui` and `gui` take the same.
+#[derive(Args, Debug, Default, PartialEq)]
+pub struct UiArgs {
     /// Node name, id or id prefix; defaults to the only online node with an
     /// agent harness.
     pub node: Option<String>,
@@ -124,6 +155,15 @@ pub struct TuiArgs {
     /// Thinking effort, e.g. low or high; the model's own names apply.
     #[arg(long)]
     pub effort: Option<String>,
+}
+
+#[derive(Args, Default)]
+pub struct GuiArgs {
+    #[command(flatten)]
+    pub ui: UiArgs,
+    /// Keep the window attached to this terminal (always so on Linux).
+    #[arg(long)]
+    pub foreground: bool,
 }
 
 #[derive(Subcommand)]
@@ -218,6 +258,53 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn try_parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_args(["commandant"].iter().chain(args))
+    }
+
+    fn parse(args: &[&str]) -> Option<Command> {
+        try_parse(args).unwrap().command
+    }
+
+    #[test]
+    fn tui_and_gui_take_the_same_arguments() {
+        let args = [
+            "box", "-s", "ses_1", "--cwd", "/src", "-m", "a/b", "--agent", "plan", "--effort",
+            "high",
+        ];
+        let Some(Command::Tui(tui)) = parse(&[&["tui"], &args[..]].concat()) else {
+            panic!("not tui");
+        };
+        let Some(Command::Gui(gui)) = parse(&[&["gui"], &args[..]].concat()) else {
+            panic!("not gui");
+        };
+        assert_eq!(tui, gui.ui);
+        assert_eq!(tui.node.as_deref(), Some("box"));
+        assert_eq!(tui.effort.as_deref(), Some("high"));
+        assert!(!gui.foreground);
+    }
+
+    #[test]
+    fn gui_can_stay_in_the_foreground() {
+        let Some(Command::Gui(gui)) = parse(&["gui", "--foreground"]) else {
+            panic!("not gui");
+        };
+        assert!(gui.foreground);
+    }
+
+    #[test]
+    fn bare_commandant_has_no_command() {
+        assert!(parse(&[]).is_none());
+    }
+
+    #[test]
+    fn bare_commandant_takes_no_flags() {
+        assert!(try_parse(&["--addr", "http://box:7400"]).is_err());
+        assert!(try_parse(&["--token-file", "/t"]).is_err());
+        assert!(parse(&["node", "ls", "--addr", "http://box:7400"]).is_some());
+        assert!(parse(&["--addr", "http://box:7400", "node", "ls"]).is_some());
+    }
 
     #[test]
     fn parses_durations() {

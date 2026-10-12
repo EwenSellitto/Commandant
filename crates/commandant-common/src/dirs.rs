@@ -22,6 +22,11 @@ pub fn worker_state() -> Result<PathBuf> {
     Ok(project_dirs()?.data_dir().join("worker"))
 }
 
+/// Where the GUI's window was when it last closed.
+pub fn gui_window() -> Result<PathBuf> {
+    Ok(project_dirs()?.data_dir().join("gui").join("window.toml"))
+}
+
 /// Client configuration written by `commandant login`.
 pub fn client_config() -> Result<PathBuf> {
     Ok(project_dirs()?.config_dir().join("config.toml"))

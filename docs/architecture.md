@@ -6,7 +6,7 @@ For the code layout, see [crates.md](crates.md).
 
 ```mermaid
 flowchart LR
-    CLI["client<br/>(node / run / prompt / tui)"]
+    CLI["client<br/>(node / run / prompt / tui / gui)"]
     subgraph orch["server (orchestrator)"]
         CTRL["Control service"]
         LINK["NodeLink service"]
