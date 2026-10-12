@@ -9,10 +9,9 @@ name = "commandant"
 path = "src/main.rs"
 
 [features]
-default = ["gui"]
-# The desktop GUI; off, the client is the CLI and TUI only, for headless
-# machines (GPUI is long to build and needs desktop libraries).
-gui = ["dep:gpui", "dep:gpui-component", "dep:gpui-platform", "dep:serde", "dep:toml"]
+# The desktop GUI, off by default: GPUI is long to build and needs desktop
+# libraries. Without it the client is the CLI and TUI only.
+gui =["dep:gpui", "dep:gpui-component", "dep:gpui-platform", "dep:serde", "dep:toml"]
 
 [dependencies]
 anyhow.workspace = true

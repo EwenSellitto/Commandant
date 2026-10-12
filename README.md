@@ -29,17 +29,20 @@ cargo install --path crates/commandant-server   # machines that serve or work
 cargo install --path crates/commandant-client   # machines you control them from
 ```
 
-The client includes a desktop GUI (`commandant gui`; a bare `commandant`
-opens it when not started from a terminal). On Linux it needs xkbcommon, xcb,
-wayland and a Vulkan loader (`libxkbcommon-x11-dev libxcb1-dev
-libwayland-dev libvulkan-dev` on Debian, `libxkbcommon-x11-devel
-libxcb-devel wayland-devel vulkan-loader-devel` on Fedora). xkbcommon and xcb
-are linked, so every client command needs them; the others load when the
-window opens. On a headless machine, build without it:
+The client can also include a desktop GUI (`commandant gui`; a bare
+`commandant` then opens it when not started from a terminal). It is off by
+default; turn it on with the `gui` feature:
 
 ```sh
-cargo install --path crates/commandant-client --no-default-features   # CLI and TUI only
+cargo install --path crates/commandant-client --features gui
 ```
+
+On Linux it needs xkbcommon, xcb, wayland and a Vulkan loader
+(`libxkbcommon-x11-dev libxcb1-dev libwayland-dev libvulkan-dev` on Debian,
+`libxkbcommon-x11-devel libxcb-devel wayland-devel vulkan-loader-devel` on
+Fedora). xkbcommon and xcb are linked, so every command of a GUI build needs
+them; the others load when the window opens. Without the feature the client
+needs none of them.
 
 Upgrading from the single `commandant` binary? Run `cargo uninstall
 commandant-cli` first, or cargo refuses to install the client over it.
