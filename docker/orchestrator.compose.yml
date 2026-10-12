@@ -13,7 +13,7 @@
 #   commandant login 'commandant://...'
 #
 # Host networking lets the orchestrator see the machine's real IP for the link.
-# Traffic is plaintext gRPC: keep the port on a private network (VPN, Tailscale).
+# Traffic is TLS to the certificate the link names; still, prefer a private network (VPN, Tailscale).
 
 name: commandant-orchestrator
 

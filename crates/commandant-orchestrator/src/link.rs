@@ -217,7 +217,7 @@ async fn handle_messages(
                 }
                 shared
                     .queries
-                    .answer(worker_msg::Msg::HarnessStarted(started))
+                    .answer(conn_id, worker_msg::Msg::HarnessStarted(started))
             }
             answer @ (worker_msg::Msg::Options(_)
             | worker_msg::Msg::Sessions(_)
@@ -225,7 +225,7 @@ async fn handle_messages(
             | worker_msg::Msg::Providers(_)
             | worker_msg::Msg::AuthResult(_)
             | worker_msg::Msg::ProjectReady(_)
-            | worker_msg::Msg::Projects(_)) => shared.queries.answer(answer),
+            | worker_msg::Msg::Projects(_)) => shared.queries.answer(conn_id, answer),
             worker_msg::Msg::Hello(_) => warn!(%node_id, "ignoring duplicate hello"),
         }
     }

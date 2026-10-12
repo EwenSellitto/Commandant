@@ -32,7 +32,7 @@ code, so every front end shares it. Code used by several crates goes in
 | File | |
 |---|---|
 | `lib.rs` | `DEFAULT_PORT`, `VERSION`, `or`, `random_hex` for ids and secrets |
-| `link.rs` | The `commandant://` link: encoding, parsing, addresses, loopback for the local machine |
+| `link.rs` | The `commandant://` link: encoding, parsing, addresses, the pin of the server's certificate, loopback for the local machine |
 | `harness.rs` | `HarnessKind`: the coding agents a worker can host, by name and description |
 | `fs.rs` | Private (0600) files, written atomically; reading optional and single-value files; deleting a file or directory |
 | `dirs.rs` | Default data, state and config directories |
@@ -45,6 +45,7 @@ code, so every front end shares it. Code used by several crates goes in
 |---|---|
 | `proto/commandant.proto` | The contract: `NodeLink` (worker ⇄ server) and `Control` (client → server) |
 | `src/lib.rs` | Generated types, `.into()` for message envelopes, the `Reply` trait for answers to questions, and connecting (`channel` tries every address of a link) |
+| `src/tls.rs` | TLS to the server a link pins: only its certificate is accepted |
 
 `protoc` is vendored: editing the `.proto` only needs a rebuild.
 
@@ -52,13 +53,14 @@ code, so every front end shares it. Code used by several crates goes in
 
 | File | |
 |---|---|
-| `lib.rs` | Opens the data directory, sets up the admin token, serves both services |
+| `lib.rs` | Opens the data directory, sets up the admin token, serves both services over TLS |
+| `tls.rs` | The server's self-signed certificate, made once and kept in the database |
 | `link.rs` | `NodeLink`: admits workers (join or reconnect) and handles their messages |
 | `control.rs` | `Control`: the admin API; sends tasks and questions to workers |
 | `registry.rs` | Which node is connected, on which connection, with which harnesses |
 | `tasks.rs` | Fans live task output out to watching clients, keeping its tail |
 | `output.rs` | The last 1 MiB of a task's output, chunks tagged with their stream |
-| `queries.rs` | Matches workers' answers to the questions asked, by request id |
+| `queries.rs` | Matches workers' answers to the questions asked, by request id and the connection asked |
 | `store.rs` | SQLite: tokens, nodes, tasks and their output (migrations in `migrations/`) |
 | `auth.rs` | Token generation, hashing, constant-time checks |
 

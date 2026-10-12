@@ -5,15 +5,15 @@ use std::net::SocketAddr;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use commandant_common::dirs::{self, LINK_FILE};
+use commandant_common::fs;
 use commandant_common::link::{self, Link};
-use commandant_common::{dirs, fs};
 use commandant_orchestrator::{ADMIN_TOKEN_FILE, DB_FILE, Orchestrator};
 use commandant_worker::WorkerConfig;
 use tokio::task::JoinHandle;
 
 use crate::cli::ServeArgs;
 
-const LINK_FILE: &str = "link";
 const ADVERTISE_FILE: &str = "advertise";
 const LOCAL_WORKER_DIR: &str = "local-worker";
 
@@ -33,13 +33,17 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     let orchestrator = Orchestrator::open(&data_dir).await?;
 
     let host = advertised_host(&data_dir, args.advertise, args.listen)?;
-    let link = Link::new(orchestrator.admin_token(), &host);
+    let pin = orchestrator.pin();
+    let link = Link::new(orchestrator.admin_token(), &host).with_pin(Some(pin));
     fs::write_private(&data_dir.join(LINK_FILE), &format!("{link}\n"))?;
     print_welcome(args.listen, &link);
 
     let local_worker = args.local_worker.then(|| {
         spawn_local_worker(WorkerConfig {
-            server: Some(format!("http://{}", reachable_locally(args.listen))),
+            server: Some(link::url(
+                &reachable_locally(args.listen).to_string(),
+                Some(&pin),
+            )),
             join_token: Some(orchestrator.admin_token().to_string()),
             name: None,
             state_dir: data_dir.join(LOCAL_WORKER_DIR),

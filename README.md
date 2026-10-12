@@ -58,7 +58,10 @@ A worker remembers its credentials: afterwards `commandant-server worker` alone 
 - It holds the server's address and the **admin token**: whoever has it controls
   every worker. Keep it private. For a machine you trust less, use a
   worker-only link from `commandant token create`.
+- It also holds the fingerprint of the server's TLS certificate, so whoever uses
+  it talks to that server and no other.
 - It survives restarts. It is saved in `~/.local/share/commandant/server/link`.
+  A link from before TLS no longer works: hand out the current one once.
 - If others reach the server on another address (a public name, a VPN, a port
   forward), pass `--advertise host[,host2…]` once; it is remembered. Clients try
   every address and use the first that answers.
@@ -198,8 +201,10 @@ workers join through the link in the server's volume.
 
 ## Security
 
-- Traffic is **plaintext gRPC**. Keep port 7400 on a private network (VPN,
-  Tailscale) and never on the internet.
+- Traffic is **TLS**, to the server whose certificate the link names (its
+  fingerprint is in the link): nobody in between can read it or pose as the
+  server. Still, keep port 7400 on a private network (VPN, Tailscale) where you
+  can: the link is the only secret.
 - Workers run what they are told as their own user, with no sandbox, and their
   agents' permission prompts are granted. Give them a dedicated user or container.
 - Only hashes of tokens are stored; secret files are readable by their owner only.

@@ -7,10 +7,14 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 commandant-common.workspace = true
+hyper-util.workspace = true
 prost.workspace = true
+rustls.workspace = true
 tokio.workspace = true
+tokio-rustls.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
+tower.workspace = true
 
 [build-dependencies]
 protoc-bin-vendored.workspace = true

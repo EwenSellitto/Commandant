@@ -194,6 +194,26 @@ impl Store {
         Ok(res.rows_affected() == 1)
     }
 
+    // --- TLS identity -------------------------------------------------------
+
+    /// The server's certificate and private key (PEM), once made.
+    pub async fn tls_identity(&self) -> Result<Option<(String, String)>> {
+        Ok(
+            sqlx::query_as("SELECT certificate, key FROM tls_identity WHERE id = 1")
+                .fetch_optional(&self.pool)
+                .await?,
+        )
+    }
+
+    pub async fn keep_tls_identity(&self, certificate: &str, key: &str) -> Result<()> {
+        sqlx::query("INSERT INTO tls_identity (id, certificate, key) VALUES (1, ?, ?)")
+            .bind(certificate)
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     // --- join tokens --------------------------------------------------------
 
     pub async fn add_join_token(

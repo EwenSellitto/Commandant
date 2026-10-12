@@ -14,6 +14,9 @@ pub fn server_data() -> Result<PathBuf> {
     Ok(project_dirs()?.data_dir().join("server"))
 }
 
+/// The link the orchestrator writes in its data directory.
+pub const LINK_FILE: &str = "link";
+
 /// Worker state: node credentials.
 pub fn worker_state() -> Result<PathBuf> {
     Ok(project_dirs()?.data_dir().join("worker"))

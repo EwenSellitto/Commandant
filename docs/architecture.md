@@ -33,17 +33,34 @@ flowchart LR
 
 ### The link
 
-`commandant://<payload>` packs the server's address(es) and a token into a
-short string: the bytes are XOR-scrambled, given a checksum and base64url
-encoded. This is **obfuscation, not encryption**: it stops the token being read
-at a glance and catches typos, but anyone with the link can decode it. A link
-can hold several addresses (say a public name and a LAN address); clients try
-them all at once and use the first that answers. A client on the server's own
-machine connects through `127.0.0.1`.
+`commandant://<payload>` packs the server's address(es), a token and the
+fingerprint of the server's certificate into a short string: the bytes are
+XOR-scrambled, given a checksum and base64url encoded. This is **obfuscation,
+not encryption**: it stops the token being read at a glance and catches typos,
+but anyone with the link can decode it. A link can hold several addresses (say
+a public name and a LAN address); clients try them all at once and use the
+first that answers. A client on the server's own machine connects through
+`127.0.0.1`.
 
 The server puts the `--advertise` addresses in the link, then its own primary
 IP. Under WSL 2's default network that IP is only reachable from Windows; the
 server warns about it.
+
+### TLS
+
+Both services are served over TLS 1.3, with a self-signed certificate the
+server makes on first start and keeps in its database. There is no
+certificate authority: the link carries the SHA-256 of the certificate (its
+**pin**), and clients and workers talk only to a server that shows exactly
+that certificate. Whoever sits between a worker and the server can't pose as
+the server, read the tokens, node secrets and prompts that cross, or slip in
+tasks. Written out, an address is `https://host:port#sha256=<hex>`; a worker
+keeps it in `node.json`, a client in its config.
+
+`--reset` makes a new certificate as well as a new token, so old links stop
+working. Nothing speaks plain text any more: links and addresses from before
+TLS (no pin) are refused, and a worker keeps retrying until it is given the
+current link once.
 
 ### Tokens
 
@@ -55,6 +72,9 @@ server warns about it.
 
 Only SHA-256 hashes are compared, in constant time. The admin token is also
 kept in full, so the database alone gives back the same link.
+
+A worker may only report on what was sent down its own connection: output and
+results for its own tasks, answers to the questions put to it.
 
 ### A worker's life
 
@@ -163,7 +183,6 @@ directory; one that has started keeps its directory.
 
 ## What's next
 
-- **TLS** for the gRPC port.
 - **Interactive agents**: answer permission requests from the TUI instead of
   granting them.
 - **Several harnesses per worker**: prompts would then need to name theirs.

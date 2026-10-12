@@ -40,7 +40,7 @@ const NO_HARNESS: &str = "this node runs no agent harness";
 
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
-    /// Orchestrator URL, e.g. `http://10.0.0.1:7400`; when unset, the one the
+    /// Orchestrator URL, e.g. `https://10.0.0.1:7400#sha256=…`; when unset, the one the
     /// saved credentials remember.
     pub server: Option<String>,
     /// Only needed until the node has credentials in `state_dir`.

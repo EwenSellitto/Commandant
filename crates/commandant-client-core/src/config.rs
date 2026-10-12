@@ -3,11 +3,10 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
+use commandant_common::link::Link;
 use commandant_common::{dirs, fs};
 use commandant_proto::{ControlClient, connect_control};
 use serde::{Deserialize, Serialize};
-
-pub const DEFAULT_ADDR: &str = "http://127.0.0.1:7400";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct FileConfig {
@@ -58,6 +57,17 @@ pub fn resolve(
             bail!("no admin token: pass --token, set COMMANDANT_TOKEN, or run `commandant login`")
         }
     };
-    let addr = addr.or(file.addr).unwrap_or_else(|| DEFAULT_ADDR.into());
+    let addr = addr.or(file.addr).or_else(local_server);
+    let Some(addr) = addr else {
+        bail!("no server address: pass --addr, set COMMANDANT_ADDR, or run `commandant login`")
+    };
     Ok(Client { addr, token })
+}
+
+/// The addresses of a server running on this machine as this user, from
+/// the link it wrote.
+fn local_server() -> Option<String> {
+    let link = dirs::server_data().ok()?.join(dirs::LINK_FILE);
+    let link: Link = fs::read_trimmed(&link).ok()?.parse().ok()?;
+    Some(link.addr())
 }

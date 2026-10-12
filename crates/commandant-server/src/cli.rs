@@ -66,7 +66,7 @@ pub struct WorkerArgs {
     /// first time; afterwards the worker reconnects on its own.
     #[arg(env = "COMMANDANT_LINK", hide_env_values = true)]
     pub link: Option<Link>,
-    /// Orchestrator URL, e.g. http://10.0.0.1:7400 (instead of a link).
+    /// Orchestrator URL, e.g. https://10.0.0.1:7400#sha256=<its certificate's> (instead of a link).
     #[arg(long, env = "COMMANDANT_SERVER")]
     pub server: Option<String>,
     /// Join token; only needed the first time.

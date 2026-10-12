@@ -8,6 +8,7 @@ mod queries;
 mod registry;
 mod store;
 mod tasks;
+mod tls;
 
 use std::future::Future;
 use std::path::Path;
@@ -23,6 +24,7 @@ use tonic::transport::Server;
 use tracing::info;
 
 use commandant_common::fs::{read_trimmed, write_private};
+use commandant_common::link::Pin;
 
 use crate::auth::{ADMIN_PREFIX, AdminTokens, generate_token, hash_token};
 use crate::control::ControlService;
@@ -31,10 +33,13 @@ use crate::queries::Queries;
 use crate::registry::Registry;
 use crate::store::Store;
 use crate::tasks::TaskHub;
+use crate::tls::TlsIdentity;
 
 pub const ADMIN_TOKEN_FILE: &str = "admin.token";
 /// The database, in the data directory.
 pub const DB_FILE: &str = "commandant.db";
+/// How long a client gets to finish its TLS handshake.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct Shared {
     pub store: Store,
@@ -48,6 +53,7 @@ pub(crate) struct Shared {
 pub struct Orchestrator {
     shared: Arc<Shared>,
     admin_token: String,
+    tls: TlsIdentity,
 }
 
 /// Maps store and other unexpected failures to an opaque gRPC error.
@@ -71,6 +77,7 @@ impl Orchestrator {
         let admin_token =
             load_or_create_admin_token(&store, &data_dir.join(ADMIN_TOKEN_FILE)).await?;
         let admin_tokens = AdminTokens(store.admin_token_hashes().await?);
+        let tls = TlsIdentity::load_or_create(&store).await?;
 
         let shared = Arc::new(Shared {
             store,
@@ -82,6 +89,7 @@ impl Orchestrator {
         Ok(Self {
             shared,
             admin_token,
+            tls,
         })
     }
 
@@ -90,7 +98,13 @@ impl Orchestrator {
         &self.admin_token
     }
 
-    /// Serves both gRPC services on `listener` until `shutdown` resolves.
+    /// The fingerprint of the server's TLS certificate, for its links.
+    pub fn pin(&self) -> Pin {
+        self.tls.pin()
+    }
+
+    /// Serves both gRPC services over TLS on `listener` until `shutdown`
+    /// resolves.
     pub async fn serve(
         self,
         listener: TcpListener,
@@ -109,7 +123,10 @@ impl Orchestrator {
             ControlServer::with_interceptor(ControlService::new(self.shared.clone()), move |req| {
                 shared.admin_tokens.check(req)
             });
+        commandant_proto::install_provider();
+        let tls = self.tls.config().timeout(HANDSHAKE_TIMEOUT);
         Server::builder()
+            .tls_config(tls)?
             .http2_keepalive_interval(Some(Duration::from_secs(20)))
             .add_service(NodeLinkServer::new(LinkService::new(self.shared)))
             .add_service(control)
