@@ -567,38 +567,14 @@ fn draw_input(frame: &mut Frame, chat: &Chat, view: &ChatView, area: Rect) {
 /// has used; and the keys to change them.
 fn draw_footer(frame: &mut Frame, chat: &Chat, area: Rect) {
     let agent = chat.agent();
-    let model = match (chat.settings.model.as_str(), chat.model()) {
-        ("", "") => "default model".to_string(),
-        (_, id) => chat.model_name(id).to_string(),
-    };
-    let effort = match chat.settings.effort.as_str() {
-        "" => "default effort".to_string(),
-        effort => format!("{effort} effort"),
-    };
     let left = Line::from(dotted([
         Span::raw(or(agent, "default agent").to_string())
             .fg(agent_color(chat, agent))
             .bold(),
-        Span::raw(model),
-        Span::raw(effort).magenta(),
+        Span::raw(chat.model_label()),
+        Span::raw(chat.effort_label()).magenta(),
     ]));
-
-    let mut usage = Vec::new();
-    if chat.context > 0 {
-        let window = chat.model_choice(chat.model()).map_or(0, |m| m.context);
-        usage.push(match window {
-            0 => format!("{} tokens", chat::count(chat.context)),
-            window => format!(
-                "{}/{} {}%",
-                chat::count(chat.context),
-                chat::count(window),
-                chat.context * 100 / window
-            ),
-        });
-    }
-    if chat.spent > 0.0 {
-        usage.push(chat::dollars(chat.spent));
-    }
+    let usage = chat.usage();
     let usage = Line::from(dotted(usage.into_iter().map(|u| u.fg(MUTED))));
     let keys = hints(&[("tab", "agent"), ("/model", ""), ("ctrl-t", "effort")]);
 

@@ -9,7 +9,7 @@ mod app;
 mod asks;
 mod chat;
 mod help;
-mod picker;
+pub(crate) mod picker;
 mod text;
 mod ui;
 

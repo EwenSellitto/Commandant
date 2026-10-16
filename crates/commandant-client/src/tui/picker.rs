@@ -54,8 +54,7 @@ impl<R: Row> Filtered<R> {
             selected,
         };
         if !filter.is_empty() {
-            list.filter = filter.to_string();
-            list.refilter();
+            list.set_filter(filter);
         }
         list
     }
@@ -77,34 +76,40 @@ impl<R: Row> Filtered<R> {
     pub fn on_key(&mut self, key: KeyEvent) -> Option<Picked<R>> {
         match key.code {
             KeyCode::Esc => return Some(Picked::Closed),
-            KeyCode::Enter => {
-                let row = self.shown().nth(self.selected)?;
-                return Some(Picked::Chosen(row.clone()));
-            }
-            KeyCode::Up => self.selected = self.selected.saturating_sub(1),
-            KeyCode::Down => self.move_down(1),
-            KeyCode::PageUp => self.selected = self.selected.saturating_sub(PAGE),
-            KeyCode::PageDown => self.move_down(PAGE),
+            KeyCode::Enter => return self.picked().cloned().map(Picked::Chosen),
+            KeyCode::Up => self.step(-1),
+            KeyCode::Down => self.step(1),
+            KeyCode::PageUp => self.step(-(PAGE as isize)),
+            KeyCode::PageDown => self.step(PAGE as isize),
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.filter.clear();
-                self.refilter();
+                self.set_filter("")
             }
-            KeyCode::Char(c) => {
-                self.filter.push(c);
-                self.refilter();
-            }
+            KeyCode::Char(c) => self.set_filter(&format!("{}{c}", self.filter)),
             KeyCode::Backspace => {
-                self.filter.pop();
-                self.refilter();
+                let mut filter = self.filter.clone();
+                filter.pop();
+                self.set_filter(&filter);
             }
             _ => {}
         }
         None
     }
 
-    fn move_down(&mut self, rows: usize) {
+    /// The highlighted row, if any matches.
+    pub fn picked(&self) -> Option<&R> {
+        self.shown().nth(self.selected)
+    }
+
+    /// Moves the highlight `rows` down (up if negative), stopping at the ends.
+    pub fn step(&mut self, rows: isize) {
         let last = self.shown.len().saturating_sub(1);
-        self.selected = (self.selected + rows).min(last);
+        self.selected = self.selected.saturating_add_signed(rows).min(last);
+    }
+
+    /// Narrows the rows down by `filter`, back on the best match.
+    pub fn set_filter(&mut self, filter: &str) {
+        self.filter = filter.to_string();
+        self.refilter();
     }
 
     /// Keeps the rows whose label or detail has every word of the filter.
@@ -157,6 +162,12 @@ impl Picker {
             Some(shown) if shown.choices.id == choices.id => Self::new(choices, &shown.list.filter),
             _ => Self::new(choices, &choices.filter),
         })
+    }
+
+    /// The question it shows, told from the others.
+    #[cfg(feature = "gui")]
+    pub fn id(&self) -> u64 {
+        self.choices.id
     }
 
     pub fn title(&self) -> &'static str {
@@ -242,6 +253,29 @@ mod tests {
         }
         let labels: Vec<_> = picker.list.shown().map(|c| c.label.as_str()).collect();
         assert_eq!(labels, ["Claude Sonnet 5"]);
+    }
+
+    #[test]
+    fn a_list_is_driven_without_keys() {
+        let rows = vec![
+            model("a", "Claude Sonnet 5", "Anthropic"),
+            model("b", "Claude Haiku 4.5", "Anthropic"),
+            model("c", "GPT-6", "OpenAI"),
+        ];
+        let mut list = Filtered::new(rows, "", 0);
+        list.set_filter("claude");
+        list.step(5);
+        assert_eq!(
+            list.picked().map(|c| c.label.as_str()),
+            Some("Claude Haiku 4.5")
+        );
+        list.step(-5);
+        assert_eq!(
+            list.picked().map(|c| c.label.as_str()),
+            Some("Claude Sonnet 5")
+        );
+        list.set_filter("zzz");
+        assert_eq!(list.picked(), None);
     }
 
     #[test]

@@ -942,3 +942,24 @@ fn a_command_and_a_turn_keep_their_output_apart() {
     );
     assert_eq!(printed(block(&app, "ls")), [(false, "a.txt café\n")]);
 }
+
+#[test]
+fn the_chips_say_what_the_next_prompt_goes_to_and_what_was_used() {
+    let mut app = with_options();
+    assert_eq!(
+        (app.model_label(), app.effort_label()),
+        ("default model".to_string(), "default effort".to_string())
+    );
+    assert!(app.usage().is_empty(), "nothing used yet");
+
+    app.settings.model = "a/smart".into();
+    app.settings.effort = "high".into();
+    assert_eq!(
+        (app.model_label(), app.effort_label()),
+        ("a/smart".to_string(), "high effort".to_string())
+    );
+    // A model whose window is unknown says only the tokens.
+    app.context = 12_600;
+    app.spent = 0.42;
+    assert_eq!(app.usage(), ["12.6k tokens", "$0.42"]);
+}

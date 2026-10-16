@@ -4,6 +4,7 @@
 //! is left for the core's calls to the server. What those report is awaited
 //! in a GPUI task, which hands it to the core and redraws.
 
+mod asks;
 mod chat;
 mod connected;
 mod login;
