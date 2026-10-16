@@ -15,7 +15,7 @@ mod events;
 mod format;
 mod menus;
 mod projects;
-pub(in crate::state) mod run;
+mod run;
 mod sign_in;
 #[cfg(test)]
 mod tests;

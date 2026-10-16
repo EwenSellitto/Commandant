@@ -7,7 +7,6 @@ use commandant_common::time;
 use commandant_proto::*;
 
 use super::chat::Run;
-use super::chat::run::KEPT_IN_VIEW;
 use super::{Ask, Choice, Choices, Choose, Effect, Go, Outcome, State, Wanted};
 
 #[cfg(test)]
@@ -23,6 +22,10 @@ pub type OutputId = u64;
 pub(crate) const REFRESH: Duration = Duration::from_secs(2);
 /// How many tasks it shows, the newest.
 pub(crate) const LIMIT: u32 = 200;
+/// How much of its task's output an output view keeps: as much as the
+/// server does.
+const KEPT_IN_VIEW: usize = 1 << 20;
+/// The question choosing which node's tasks to show.
 const TASKS_OF: &str = "Show the tasks of";
 
 /// The tasks the server keeps, newest first, as last listed.
@@ -57,6 +60,9 @@ pub struct Output {
     pub finished: Option<i64>,
     /// Started from here rather than watched, so cancelled on quitting.
     pub(super) ran_here: bool,
+    /// Closed while its command, started here, runs: followed unseen
+    /// until it ends.
+    pub(super) hidden: bool,
 }
 
 impl Output {
@@ -71,6 +77,14 @@ pub fn command_line(task: &TaskInfo) -> String {
     match &task.argv[..] {
         [sh, c, line] if sh == "sh" && c == "-c" => line.clone(),
         argv => argv.join(" "),
+    }
+}
+
+/// What a task ran: a prompt's text, or a command's line.
+pub fn what_ran(task: &TaskInfo) -> String {
+    match (task.kind.as_str(), &task.argv[..]) {
+        ("prompt", [_harness, prompt]) => prompt.clone(),
+        _ => command_line(task),
     }
 }
 
@@ -166,10 +180,7 @@ impl State {
             };
             return Outcome::default();
         }
-        let prompt = match &task.argv[..] {
-            [_harness, prompt] => prompt.clone(),
-            argv => argv.join(" "),
-        };
+        let prompt = what_ran(&task);
         let open = self
             .chats
             .iter_mut()
@@ -183,8 +194,8 @@ impl State {
             self.notice = format!("{} is no longer a node", task.node_name);
             return Outcome::default();
         };
-        let saved = self.saved.get(&node.id).into_iter().flatten();
-        let saved = saved.into_iter().find(|s| s.id == task.session_id).cloned();
+        let mut saved = self.saved.get(&node.id).into_iter().flatten();
+        let saved = saved.find(|s| s.id == task.session_id).cloned();
         let saved = saved.unwrap_or_else(|| AgentSession {
             id: task.session_id.clone(),
             title: prompt.clone(),
@@ -213,6 +224,7 @@ impl State {
             started: time::now(),
             finished: None,
             ran_here,
+            hidden: false,
         });
         id
     }
@@ -256,12 +268,27 @@ impl State {
         Effect::CancelTask(task_id).into()
     }
 
+    /// An open output view.
     pub fn output(&self, id: OutputId) -> Option<&Output> {
-        self.outputs.iter().find(|o| o.id == id)
+        self.outputs.iter().find(|o| o.id == id && !o.hidden)
     }
 
-    /// The output view is no longer shown, so its task is no longer watched.
+    /// The output views shown, oldest first.
+    pub(super) fn shown_outputs(&self) -> impl Iterator<Item = &Output> {
+        self.outputs.iter().filter(|o| !o.hidden)
+    }
+
+    /// The output view is no longer shown, so its task is no longer
+    /// watched; but a command started here is followed till it ends, so
+    /// quitting still stops it.
     pub(super) fn close_output(&mut self, id: OutputId) -> Outcome {
+        let Some(output) = self.outputs.iter_mut().find(|o| o.id == id) else {
+            return Outcome::default();
+        };
+        if output.ran_here && output.following() {
+            output.hidden = true;
+            return Outcome::default();
+        }
         self.outputs.retain(|o| o.id != id);
         Effect::StopWatching(id).into()
     }
@@ -281,6 +308,9 @@ impl State {
         let cancel = output.run.on_event(event).map(Effect::CancelTask);
         if !output.following() && output.finished.is_none() {
             output.finished = Some(time::now());
+        }
+        if output.hidden && !output.following() {
+            self.outputs.retain(|o| o.id != id);
         }
         cancel.into()
     }

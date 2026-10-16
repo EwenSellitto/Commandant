@@ -125,7 +125,7 @@ impl State {
     pub fn busy(&self) -> bool {
         !self.starting.is_empty()
             || self.tasks.as_ref().is_some_and(|t| t.loading)
-            || self.outputs.iter().any(Output::following)
+            || self.shown_outputs().any(Output::following)
             || self
                 .ask
                 .as_ref()

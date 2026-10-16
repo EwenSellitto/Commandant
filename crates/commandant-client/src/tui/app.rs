@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use commandant_client_core::{
     Ask, Chat, ChatId, Core, Go, Intent, Next, OutputId, Scope, Update, cycle,
 };
+use commandant_proto::TaskInfo;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::asks;
@@ -32,7 +33,7 @@ pub struct App {
     /// The highlighted row of the node list.
     pub selected: usize,
     /// The highlighted row of the task list.
-    pub task: usize,
+    pub selected_task: usize,
     /// Where Esc goes from the tasks, and from an output.
     tasks_back: Screen,
     output_back: Screen,
@@ -65,7 +66,7 @@ impl App {
             core,
             screen: Screen::default(),
             selected,
-            task: 0,
+            selected_task: 0,
             tasks_back: Screen::default(),
             output_back: Screen::default(),
             output_scroll: 0,
@@ -96,10 +97,14 @@ impl App {
         }
     }
 
+    /// The highlighted task, if any.
+    fn highlighted(&self) -> Option<&TaskInfo> {
+        self.core.tasks()?.tasks.get(self.selected_task)
+    }
+
     /// The id of the highlighted task, if any.
     fn task_id(&self) -> Option<&str> {
-        let tasks = &self.core.tasks()?.tasks;
-        tasks.get(self.task).map(|t| t.id.as_str())
+        self.highlighted().map(|t| t.id.as_str())
     }
 
     /// Whether the app asks for a line, typed in a box of its own.
@@ -221,9 +226,11 @@ impl App {
         let listed = self.core.tasks().map_or(0, |t| t.tasks.len());
         let task = self.task_id().map(str::to_string);
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.task = self.task.saturating_sub(1),
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.selected_task = self.selected_task.saturating_sub(1)
+            }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.task = (self.task + 1).min(listed.saturating_sub(1))
+                self.selected_task = (self.selected_task + 1).min(listed.saturating_sub(1))
             }
             KeyCode::Enter => {
                 if let Some(task) = task {
@@ -232,12 +239,8 @@ impl App {
             }
             KeyCode::Char('f') => self.act(Intent::FilterTasks),
             KeyCode::Char('x') => {
-                let tasks = self.core.tasks().map(|t| t.tasks.as_slice());
-                let running = tasks
-                    .and_then(|t| t.get(self.task))
-                    .filter(|t| t.status == "running");
-                if let Some(task) = running {
-                    let task = task.id.clone();
+                let running = self.highlighted().filter(|t| t.status == "running");
+                if let Some(task) = running.map(|t| t.id.clone()) {
                     self.act(Intent::CancelTask(task));
                 }
             }
@@ -271,7 +274,10 @@ impl App {
 
     /// Types the line the app asks for, in its own box.
     fn on_entry_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
+            // Not typed: the app's keys wait until the line is in.
+            KeyCode::Char(c) if ctrl && c != 'u' => {}
             KeyCode::Enter => {
                 let line = std::mem::take(&mut self.entry).text;
                 self.act(Intent::Enter(Scope::App, line));
@@ -350,9 +356,9 @@ impl App {
         self.selected = self.selected.min(nodes.len().saturating_sub(1));
         let tasks = self.core.tasks().map_or(&[][..], |t| &t.tasks);
         if let Some(at) = task.and_then(|id| tasks.iter().position(|t| t.id == id)) {
-            self.task = at;
+            self.selected_task = at;
         }
-        self.task = self.task.min(tasks.len().saturating_sub(1));
+        self.selected_task = self.selected_task.min(tasks.len().saturating_sub(1));
         self.apply(next);
         // What happens in the chat on screen is seen as it happens.
         if let Screen::Chat(id) = self.screen {
@@ -379,7 +385,11 @@ impl App {
         match go {
             Some(Go::Chat(id)) => self.show(id),
             Some(Go::Nodes) => self.show_nodes(),
-            Some(Go::Tasks) => self.go_to(Screen::Tasks),
+            // A new list, from its top.
+            Some(Go::Tasks) => {
+                self.selected_task = 0;
+                self.go_to(Screen::Tasks);
+            }
             Some(Go::Output(id)) => self.go_to(Screen::Output(id)),
             Some(Go::Quit) => self.quit = true,
             Some(Go::Help) => self.open_help(),
@@ -426,10 +436,13 @@ impl App {
             self.core.act(Intent::CloseOutput(id));
         }
         match screen {
-            Screen::Tasks if !matches!(from, Screen::Output(_)) => {
-                self.tasks_back = from;
-                self.task = 0;
-            }
+            // Back from an output opened on the list: where the list was
+            // opened from; else where the output was.
+            Screen::Tasks => match from {
+                Screen::Output(_) if self.output_back == Screen::Tasks => {}
+                Screen::Output(_) => self.tasks_back = self.output_back,
+                from => self.tasks_back = from,
+            },
             Screen::Output(_) => {
                 self.output_back = from;
                 self.output_scroll = 0;
@@ -437,7 +450,6 @@ impl App {
             Screen::Nodes | Screen::Chat(_) => {
                 self.core.act(Intent::CloseTasks);
             }
-            Screen::Tasks => {}
         }
         // A chat closed while away isn't there to go back to.
         for back in [&mut self.tasks_back, &mut self.output_back] {
@@ -1148,6 +1160,43 @@ pub(crate) mod tests {
         app.on_key(key(KeyCode::Esc));
         assert_eq!(app.screen, Screen::Nodes);
         assert_eq!(app.core.nodes()[app.selected].id, "n2");
+    }
+
+    #[test]
+    fn a_new_list_starts_at_its_top() {
+        let mut app = app();
+        tasks_listed(&mut app, listed_tasks());
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Char('f')));
+        app.on_key(key(KeyCode::Down));
+        let effects = press(&mut app, key(KeyCode::Enter));
+        let [Effect::FetchTasks { list, .. }] = effects[..] else {
+            panic!("should list n1's tasks, not {effects:?}");
+        };
+        app.on_update(Update::Tasks {
+            list,
+            tasks: Ok(vec![
+                task("t3", "command", "running"),
+                task("t4", "command", "running"),
+            ]),
+        });
+        assert_eq!(app.selected_task, 0);
+    }
+
+    #[test]
+    fn the_tasks_opened_from_an_output_go_back_where_it_came_from() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Char('r')));
+        // Keys with Ctrl type nothing in the line.
+        type_text(&mut app, "ls");
+        app.on_key(ctrl('h'));
+        assert_eq!(app.entry.text, "ls");
+        app.on_key(key(KeyCode::Enter));
+        assert!(matches!(app.screen, Screen::Output(_)));
+        app.on_key(ctrl('h'));
+        assert_eq!(app.screen, Screen::Tasks);
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.screen, Screen::Nodes);
     }
 
     #[test]

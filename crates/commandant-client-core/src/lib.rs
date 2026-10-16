@@ -9,7 +9,7 @@ pub mod config;
 pub mod state;
 
 pub use self::state::chat::{self, Chat, Settings};
-pub use self::state::tasks::{Output, OutputId, Tasks, command_line};
+pub use self::state::tasks::{Output, OutputId, Tasks, command_line, what_ran};
 pub use self::state::{
     Ask, ChatId, Choice, Choices, Choose, Edit, Effect, Go, Intent, Scope, Update, Wanted, cycle,
     lacks_agent,

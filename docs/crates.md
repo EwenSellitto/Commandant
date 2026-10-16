@@ -117,7 +117,7 @@ server, which keeps the calls it would make.
 | File | |
 |---|---|
 | `lib.rs` | `Core`: starts on a working connection, takes intents and updates, makes the calls they ask for on the tokio runtime it is given, and is read through `&` accessors; `shutdown` cancels running tasks |
-| `calls.rs` | The connection to the server and every call made on it: prompt and command streams, questions to nodes, cancels, the 5-second node poll |
+| `calls.rs` | The connection to the server and every call made on it: prompt and command streams, questions to nodes, cancels, the 5-second node poll, task listings, and the watches that feed output views and attached turns |
 | `config.rs` | Where clients find the server and token (none yet before the first log in), reading a pasted link, saving the server, and connecting |
 | `state/mod.rs` | What the client knows: the nodes and every chat |
 | `state/tasks/` | The task list, refreshed while open and filtered by node; output views fed by `WatchTask` (or by a command run on a node), followed while their task runs; opening a prompt task resumes its session, attached to its turn while that runs |

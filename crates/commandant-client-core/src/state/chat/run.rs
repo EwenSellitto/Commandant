@@ -15,8 +15,6 @@ pub type RunId = u64;
 /// How much of a command's output its block keeps: the end of it. The
 /// server keeps more.
 const KEPT: usize = 64 * 1024;
-/// How much an output view keeps: as much as the server does.
-pub(in crate::state) const KEPT_IN_VIEW: usize = 1 << 20;
 
 /// A command run from the chat, as its block shows it.
 #[derive(Debug)]

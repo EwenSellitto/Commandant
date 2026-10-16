@@ -72,6 +72,14 @@ impl Server {
             .await;
     }
 
+    /// Keeps what follows an output view's task, to stop it when the view
+    /// closes; those of tasks that have ended go.
+    fn watched(&self, output: OutputId, watch: AbortHandle) {
+        let mut watches = self.watches.lock().unwrap();
+        watches.retain(|_, w| !w.is_finished());
+        watches.insert(output, watch);
+    }
+
     /// Starts the call an effect asks for.
     pub(crate) fn call(&self, effect: Effect) {
         let (mut control, handle, tx) = (self.control.clone(), &self.handle, self.tx.clone());
@@ -262,16 +270,6 @@ impl Server {
                 });
             }
         }
-    }
-}
-
-impl Server {
-    /// Keeps what follows an output view's task, to stop it when the view
-    /// closes; those of tasks that have ended go.
-    fn watched(&self, output: OutputId, watch: AbortHandle) {
-        let mut watches = self.watches.lock().unwrap();
-        watches.retain(|_, w| !w.is_finished());
-        watches.insert(output, watch);
     }
 }
 

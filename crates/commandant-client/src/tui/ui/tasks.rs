@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use commandant_client_core::chat::elapsed;
-use commandant_client_core::{Output, command_line};
+use commandant_client_core::{Output, what_ran};
 use commandant_common::time::ago;
 use commandant_proto::TaskInfo;
 use ratatui::Frame;
@@ -13,7 +13,7 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
-use super::{MUTED, SELECTED, dotted, end_line, hints, output_rows, spinner};
+use super::{INDENT, MUTED, SELECTED, dotted, end_line, hints, output_rows, spinner};
 use crate::tui::app::App;
 use crate::tui::text;
 
@@ -55,11 +55,7 @@ pub(super) fn draw_tasks(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|task| {
             let kind = commandant_common::or(&task.kind, "command");
-            let ran = match kind {
-                "prompt" => task.argv.last().cloned().unwrap_or_default(),
-                _ => command_line(task),
-            };
-            let ran = ran.replace(['\r', '\n'], " ");
+            let ran = what_ran(task).replace(['\r', '\n'], " ");
             let ran = match task.output_pruned {
                 true => Span::raw(ran).fg(MUTED),
                 false => Span::raw(ran),
@@ -76,7 +72,7 @@ pub(super) fn draw_tasks(frame: &mut Frame, app: &App, area: Rect) {
     let list_widget = List::new(items)
         .highlight_symbol(Line::from("▌ ").cyan())
         .highlight_style(Style::new().bg(SELECTED));
-    let mut list_state = ListState::default().with_selected(Some(app.task));
+    let mut list_state = ListState::default().with_selected(Some(app.selected_task));
     frame.render_stateful_widget(list_widget, list, &mut list_state);
     let said = match &tasks.error {
         Some(e) => format!("couldn't list the tasks: {e}"),
@@ -120,7 +116,7 @@ pub(super) fn draw_output(frame: &mut Frame, output: &Output, scroll: &mut u16, 
     .areas(area);
     let width = area.width as usize;
     let line = Line::from(Span::raw(output.line.replace(['\r', '\n'], " ")).bold());
-    let line = text::wrap(line, width, &"$ ".fg(MUTED), &"  ".into());
+    let line = text::wrap(line, width, &"$ ".fg(MUTED), &INDENT.into());
     frame.render_widget(line.into_iter().next().unwrap_or_default(), command);
     let cwd = commandant_common::or(&output.cwd, "worker's directory").to_string();
     let took = output.finished.unwrap_or_else(commandant_common::time::now) - output.started;

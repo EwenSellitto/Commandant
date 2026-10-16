@@ -406,3 +406,57 @@ fn slash_tasks_shows_every_nodes_tasks() {
     );
     assert!(state.chat(id).unwrap().thread.is_empty(), "not a prompt");
 }
+
+#[test]
+fn a_command_run_here_and_closed_while_running_still_ends_on_quitting() {
+    let mut state = state();
+    let run = Intent::Run {
+        node: "n1".into(),
+        line: "sleep 60".into(),
+    };
+    let id = output_shown(&state.intent(run));
+    state.update(started(id, "t9"));
+    // Closed, it isn't shown, but still followed: it is this client's.
+    let closed = state.intent(Intent::CloseOutput(id));
+    assert!(closed.effects.is_empty());
+    assert!(state.output(id).is_none());
+    assert_eq!(state.running_tasks(), ["t9"]);
+
+    // Once it ends, it is forgotten.
+    let finished = task_event::Event::Finished(TaskFinished {
+        exit_code: Some(0),
+        ..Default::default()
+    });
+    state.update(Update::Output(id, event(finished)));
+    assert!(state.running_tasks().is_empty());
+    assert!(!state.busy());
+}
+
+#[test]
+fn a_history_without_the_turn_attached_to_is_kept_whole() {
+    let mut state = state();
+    let mut task = prompt_task("t1", "running", "ses_a");
+    task.argv[1] = "continue".into();
+    list(&mut state, vec![task]);
+    let id = chat_shown(&state.intent(Intent::OpenTask("t1".into())));
+    let entry = |role: &str, text: &str| HistoryEntry {
+        role: role.into(),
+        text: text.into(),
+    };
+    // Its turn isn't in it yet: an earlier "continue" is no reason to cut.
+    let history = vec![
+        entry("user", "continue"),
+        entry("assistant", "a"),
+        entry("user", "fix it"),
+        entry("assistant", "b"),
+    ];
+    state.update(Update::Chat(id, Message::History(Ok(history))));
+    let said: Vec<_> = state
+        .chat(id)
+        .unwrap()
+        .thread
+        .iter()
+        .map(|e| e.text.as_str())
+        .collect();
+    assert_eq!(said, ["continue", "a", "fix it", "b", "continue"]);
+}
