@@ -27,7 +27,7 @@ use ratatui::DefaultTerminal;
 use tokio::runtime::Handle;
 use tokio_stream::StreamExt;
 
-use self::app::App;
+use self::app::{App, Leave};
 use self::login::{LogIn, Step};
 use crate::cli::UiArgs;
 
@@ -37,17 +37,21 @@ const TICK: Duration = Duration::from_millis(100);
 /// Runs on the `saved` server, or first asks for a link when there is none.
 pub async fn run(saved: Option<Client>, args: UiArgs, handle: Handle) -> Result<()> {
     // A saved server that can't be reached ends the TUI with the error.
-    let started = match saved {
+    let on = match saved {
         Some(client) => {
             let (core, updates) = Core::start(&client, args.defaults(), handle.clone()).await?;
             let first = args.first_open(core.nodes())?;
-            Some((open(core, first), updates))
+            Some(On {
+                client,
+                app: open(core, first),
+                updates,
+            })
         }
         None => None,
     };
     let mut terminal = ratatui::init();
     execute!(stdout(), EnableBracketedPaste)?;
-    let result = sessions(&mut terminal, started, &args, &handle).await;
+    let result = run_until_left(&mut terminal, on, &args, &handle).await;
     execute!(stdout(), DisableBracketedPaste)?;
     ratatui::restore();
     let Some(app) = result? else {
@@ -65,6 +69,13 @@ pub async fn run(saved: Option<Client>, args: UiArgs, handle: Handle) -> Result<
     Ok(())
 }
 
+/// The app on a server, and what its core's calls report.
+struct On {
+    client: Client,
+    app: App,
+    updates: Updates,
+}
+
 /// The app on `core`, showing the `first` chat if one is named.
 fn open(core: Core, first: Option<Intent>) -> App {
     let mut app = App::new(core);
@@ -77,29 +88,34 @@ fn open(core: Core, first: Option<Intent>) -> App {
 /// Runs the app on a server, logging in first when there is none, and
 /// again after each log out; the app last left, unless it was by logging
 /// out, or leaving before logging in.
-async fn sessions(
+async fn run_until_left(
     terminal: &mut DefaultTerminal,
-    mut started: Option<(App, Updates)>,
+    mut on: Option<On>,
     args: &UiArgs,
     handle: &Handle,
 ) -> Result<Option<App>> {
     loop {
-        let (mut app, mut updates) = match started.take() {
-            Some(started) => started,
+        let mut on = match on.take() {
+            Some(on) => on,
             None => match log_in(terminal, args, handle).await? {
-                Some((core, updates)) => {
+                Some((client, core, updates)) => {
                     // The node named may well be on another server.
                     let first = args.first_open(core.nodes()).ok().flatten();
-                    (open(core, first), updates)
+                    On {
+                        client,
+                        app: open(core, first),
+                        updates,
+                    }
                 }
                 None => return Ok(None),
             },
         };
-        event_loop(terminal, &mut app, &mut updates).await?;
-        if !app.logging_out {
-            return Ok(Some(app));
+        event_loop(terminal, &mut on.app, &mut on.updates).await?;
+        if on.app.leaving != Some(Leave::LogOut) {
+            return Ok(Some(on.app));
         }
-        config::forget()?;
+        // A server flags or the environment named keeps the saved one.
+        config::forget_if_saved(&on.client)?;
     }
 }
 
@@ -109,7 +125,7 @@ async fn log_in(
     terminal: &mut DefaultTerminal,
     args: &UiArgs,
     handle: &Handle,
-) -> Result<Option<(Core, Updates)>> {
+) -> Result<Option<(Client, Core, Updates)>> {
     let mut screen = LogIn::default();
     let mut input = EventStream::new();
     loop {
@@ -123,25 +139,27 @@ async fn log_in(
             Step::Wait | Step::Cancel => continue,
         };
         terminal.draw(|frame| ui::draw_log_in(frame, &screen))?;
-        let connecting = Core::start(&client, args.defaults(), handle.clone());
-        tokio::pin!(connecting);
-        // The keys still work, to give up.
-        let started = loop {
-            tokio::select! {
-                started = &mut connecting => break Some(started),
-                event = input.next() => match event {
-                    Some(event) => match screen.on_input(event?) {
-                        Step::Leave => return Ok(None),
-                        Step::Cancel => break None,
-                        _ => {}
+        let started = {
+            let connecting = Core::start(&client, args.defaults(), handle.clone());
+            tokio::pin!(connecting);
+            // The keys still work, to give up.
+            loop {
+                tokio::select! {
+                    started = &mut connecting => break Some(started),
+                    event = input.next() => match event {
+                        Some(event) => match screen.on_input(event?) {
+                            Step::Leave => return Ok(None),
+                            Step::Cancel => break None,
+                            _ => {}
+                        },
+                        None => return Ok(None),
                     },
-                    None => return Ok(None),
-                },
+                }
             }
         };
         match started {
-            Some(Ok(started)) => match config::remember(&client) {
-                Ok(_) => return Ok(Some(started)),
+            Some(Ok((core, updates))) => match config::remember(&client) {
+                Ok(_) => return Ok(Some((client, core, updates))),
                 Err(e) => screen.failed(&e.context("saving the link")),
             },
             Some(Err(e)) => screen.failed(&e),
@@ -162,7 +180,7 @@ async fn event_loop(
         tokio::select! {
             event = input.next() => match event {
                 Some(event) => app.on_input(event?),
-                None => app.quit = true,
+                None => app.leaving = Some(Leave::Quit),
             },
             Some(update) = updates.next() => app.on_update(update),
             // Only the spinners need redrawing on their own.
@@ -178,7 +196,7 @@ async fn event_loop(
         if let Some(text) = app.copying.take() {
             execute!(stdout(), CopyToClipboard::to_clipboard_from(text))?;
         }
-        if app.quit {
+        if app.leaving.is_some() {
             app.core.shutdown().await;
             return Ok(());
         }

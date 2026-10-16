@@ -77,11 +77,11 @@ fn open_gui(_args: GuiArgs, _client: &ClientArgs, _runtime: &Runtime) -> Result<
 
 /// Runs the chosen command and returns the process exit code.
 async fn dispatch(command: Command, client_args: &ClientArgs, handle: Handle) -> Result<i32> {
-    let client = || resolve_client(client_args);
+    let client = || client_args.resolve();
     match command {
         Command::Login(args) => admin::login(args).await?,
         Command::Link => println!("{}", client()?.link()),
-        Command::Logout => admin::logout()?,
+        Command::Logout => admin::logout(client_args)?,
         Command::Token(TokenCommand::Create { ttl, reusable }) => {
             admin::create_token(&client()?, ttl, reusable).await?
         }
@@ -112,25 +112,28 @@ async fn dispatch(command: Command, client_args: &ClientArgs, handle: Handle) ->
         }
         Command::Run(args) => return run::run(&client()?, args).await,
         Command::Prompt(args) => return run::prompt(&client()?, args).await,
-        Command::Tui(args) => tui::run(find_client(client_args)?, args, handle).await?,
+        Command::Tui(args) => tui::run(client_args.find()?, args, handle).await?,
         Command::Gui(_) => unreachable!("the GUI runs outside the runtime"),
     }
     Ok(0)
 }
 
-fn resolve_client(args: &ClientArgs) -> Result<Client> {
-    config::resolve(
-        args.addr.clone(),
-        args.token.clone(),
-        args.token_file.clone(),
-    )
-}
+impl ClientArgs {
+    /// The server, which must be named: by these, or by a log in.
+    fn resolve(&self) -> Result<Client> {
+        config::resolve(
+            self.addr.clone(),
+            self.token.clone(),
+            self.token_file.clone(),
+        )
+    }
 
-/// The server, if anything names it yet; none before the first log in.
-fn find_client(args: &ClientArgs) -> Result<Option<Client>> {
-    config::find(
-        args.addr.clone(),
-        args.token.clone(),
-        args.token_file.clone(),
-    )
+    /// The server, if anything names it yet; none before the first log in.
+    fn find(&self) -> Result<Option<Client>> {
+        config::find(
+            self.addr.clone(),
+            self.token.clone(),
+            self.token_file.clone(),
+        )
+    }
 }

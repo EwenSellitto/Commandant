@@ -91,7 +91,7 @@ code, so every front end shares it. Code used by several crates goes in
 | File | |
 |---|---|
 | `main.rs`, `cli.rs` | Logging, the tokio runtime, and the command line (clap); a bare `commandant` prints help in a terminal and opens the GUI elsewhere |
-| `admin.rs`, `run.rs` | `login`, `token`, `node`, `task`; `run`, `prompt` and `task watch`: plain gRPC calls |
+| `admin.rs`, `run.rs` | `login`, `token`, `node`, `task`; `run`, `prompt` and `task watch`: plain gRPC calls. `logout` forgets the saved server, and says if flags or the environment still name one; `link` prints the link, with no call |
 | `start.rs` | What `tui` and `gui` give the core: new chats' defaults, and the chat `--node` and `--session` open first |
 | `tui/mod.rs` | The TUI's event loop: draws, reads keys, hands the core's updates back to it; the first-run screen before it when no server is saved, and again after `/logout` |
 | `tui/app.rs` | The screen shown (nodes, a chat, the tasks or a task's output) and where Esc goes back to, the highlighted node and task, the last chat per node, the app's own line (`r` and `a` on the nodes), what to copy to the clipboard (OSC 52, `c` on a show-ask); routes keys to intents |
@@ -125,7 +125,7 @@ server, which keeps the calls it would make.
 | `lib.rs` | `Core`: starts on a working connection, takes intents and updates, makes the calls they ask for on the tokio runtime it is given, and is read through `&` accessors; `shutdown` cancels running tasks |
 | `calls.rs` | The connection to the server and every call made on it: prompt and command streams, questions to nodes, cancels, the 5-second node poll, task listings, the watches that feed output views and attached turns, join tokens (turned into a worker's link to the server as logged in to) and removing nodes |
 | `config.rs` | Where clients find the server and token (none yet before the first log in), reading a pasted link, saving and forgetting the server, and connecting |
-| `state/mod.rs` | What the client knows: the nodes and every chat |
+| `state/mod.rs` | What the client knows: the nodes, every chat, and the server's link for `/link` |
 | `state/tasks/` | The task list, refreshed while open and filtered by node; output views fed by `WatchTask` (or by a command run on a node), followed while their task runs; opening a prompt task resumes its session, attached to its turn while that runs |
 | `state/nodes/` | Managing the nodes: adding one (an enter-ask for its token's lifetime, then a show-ask with the worker's command), removing one once confirmed (its chats close), starting an agent on one that hosts none |
 | `state/intent.rs`, `state/ask.rs` | What goes in (intents, updates) and comes out (effects, where to go, prompt edits); the asks (choose, enter, confirm, show), one per chat and one for the app |
