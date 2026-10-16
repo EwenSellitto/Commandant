@@ -7,7 +7,7 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState};
 
-use super::{MUTED, SELECTED, dotted, facts, hints, spinner, status_dot};
+use super::{MUTED, SELECTED, dotted, hints, spinner, status_dot};
 use crate::tui::app::App;
 
 /// The node list: what each runs, and how many of its chats are open here.
@@ -30,7 +30,7 @@ pub(super) fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
         header,
     );
     if core.nodes().is_empty() {
-        let empty = "No nodes yet. Add a worker with `commandant-server worker <link>`.";
+        let empty = "No nodes yet: press a to add one.";
         frame.render_widget(Line::from(empty).fg(MUTED), list);
     }
     let name_width = core
@@ -44,7 +44,14 @@ pub(super) fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|node| {
             let dot = status_dot(node.online);
-            let mut facts = facts(node);
+            let agents = match node.harnesses.join(", ") {
+                none if none.is_empty() => "no agent".to_string(),
+                agents => agents,
+            };
+            let mut facts = vec![agents, format!("{}/{}", node.os, node.arch)];
+            if !node.version.is_empty() {
+                facts.push(format!("v{}", node.version));
+            }
             if !node.online {
                 facts.push(format!(
                     "seen {}",
@@ -83,6 +90,8 @@ pub(super) fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
         hints(&[
             ("↑↓", "move"),
             ("enter", "open"),
+            ("a", "add"),
+            ("d", "remove"),
             ("?", "help"),
             ("q", "quit"),
         ]),

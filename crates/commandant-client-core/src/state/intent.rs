@@ -60,6 +60,13 @@ pub enum Intent {
     /// Run a shell command on a node, in its worker's directory, in an
     /// output view; an empty line asks for one.
     Run { node: String, line: String },
+    /// Add a node: ask how long its token lasts, then show the command
+    /// that enrols the machine it runs on.
+    AddNode,
+    /// Remove a node, once confirmed; it needs a new token to join again.
+    RemoveNode(String),
+    /// Start an agent on a node that hosts none, chosen among those it can.
+    StartAgent(String),
 }
 
 /// Where a question, or an intent about one, belongs.
@@ -234,6 +241,12 @@ pub enum Effect {
         after: Duration,
         list: ListId,
     },
+    /// Make a join token that works once, within `ttl`.
+    CreateToken {
+        ttl: Duration,
+    },
+    /// Have the server forget a node.
+    RemoveNode(String),
 }
 
 impl Effect {
@@ -273,6 +286,13 @@ pub enum Update {
         list: ListId,
         tasks: Result<Vec<TaskInfo>, String>,
     },
+    /// A join token lasting `ttl` was made: the link a worker joins with.
+    TokenCreated {
+        ttl: Duration,
+        link: Result<String, String>,
+    },
+    /// Whether the server forgot the node.
+    NodeRemoved(String, Result<(), String>),
 }
 
 /// Why a node couldn't say what its agent offers.

@@ -12,6 +12,7 @@ pub mod chat;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
 mod intent;
+mod nodes;
 pub mod tasks;
 #[cfg(test)]
 mod tests;
@@ -213,6 +214,10 @@ impl State {
                     wanted: Wanted::Command { node },
                     ..
                 }) if !text.trim().is_empty() => self.run_on(&node, &text),
+                Some(Ask::Enter {
+                    wanted: Wanted::Lifetime,
+                    ..
+                }) => self.create_token(&text),
                 asked => {
                     self.ask = asked;
                     Outcome::default()
@@ -248,6 +253,9 @@ impl State {
             Intent::CloseOutput(id) => self.close_output(id),
             Intent::CancelTask(task_id) => self.cancel_task(task_id),
             Intent::Run { node, line } => self.run_on(&node, &line),
+            Intent::AddNode => self.add_node(),
+            Intent::RemoveNode(node) => self.ask_to_remove(&node),
+            Intent::StartAgent(node) => self.start_agent(&node),
         }
     }
 
@@ -488,6 +496,7 @@ impl State {
             Choose::CancelAndClose(id) => self.cancel_and_close(id),
             Choose::Harness { node, harness } => self.start_harness(node, harness),
             Choose::TasksOf(node) => self.list_tasks(node),
+            Choose::RemoveNode(node) => self.remove_node(node),
             _ => Outcome::default(),
         }
     }
@@ -639,6 +648,8 @@ impl State {
                 outcome
             }
             Update::Tasks { list, tasks } => self.on_tasks(list, tasks),
+            Update::TokenCreated { ttl, link } => self.on_token(ttl, link),
+            Update::NodeRemoved(node, removed) => self.on_removed(&node, removed),
             Update::Output(id, event) => self.on_output(id, event),
             Update::CancelFailed { task_id, error } => {
                 self.notice = format!("couldn't cancel task {task_id}: {error}");

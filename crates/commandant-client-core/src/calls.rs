@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::Result;
+use commandant_common::link::Link;
 use commandant_proto::*;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
@@ -24,6 +25,8 @@ type Tx = mpsc::UnboundedSender<Update>;
 /// The server, as a core calls it.
 pub(crate) struct Server {
     control: ControlClient,
+    /// Where the server is, as logged in to: what a new node's link names.
+    addr: String,
     /// Where calls are made.
     handle: Handle,
     /// Where what they come to goes.
@@ -41,6 +44,7 @@ impl Server {
         client: &Client,
         handle: Handle,
     ) -> Result<(Self, Vec<NodeInfo>, mpsc::UnboundedReceiver<Update>)> {
+        let addr = client.addr.clone();
         let client = client.clone();
         // On the handle, so this can be awaited without a tokio runtime.
         let connect = handle.spawn(async move {
@@ -55,6 +59,7 @@ impl Server {
             .abort_handle();
         let server = Self {
             control,
+            addr,
             handle,
             tx,
             poll,
@@ -257,6 +262,25 @@ impl Server {
                         .map(|listed| listed.into_inner().tasks)
                         .map_err(|status| status.message().to_string());
                     let _ = tx.send(Update::Tasks { list, tasks });
+                });
+            }
+            Effect::CreateToken { ttl } => {
+                let addr = self.addr.clone();
+                let request = CreateJoinTokenRequest {
+                    ttl_secs: ttl.as_secs(),
+                    reusable: false,
+                };
+                let call = async move { control.create_join_token(request).await };
+                spawn_ask(handle, tx, call, move |created| Update::TokenCreated {
+                    ttl,
+                    link: created.map(|c| Link::for_addr(&c.token, &addr).to_string()),
+                });
+            }
+            Effect::RemoveNode(node) => {
+                let request = RemoveNodeRequest { node: node.clone() };
+                let call = async move { control.remove_node(request).await };
+                spawn_ask(handle, tx, call, |removed| {
+                    Update::NodeRemoved(node, removed.map(|_| ()))
                 });
             }
             Effect::StartHarness { node, harness } => {

@@ -1069,7 +1069,9 @@ mod fake_opencode;
 mod agents {
     use commandant_client_core::chat::{Ended, Role};
     use commandant_client_core::config::Client;
-    use commandant_client_core::{ChatId, Core, Go, Intent, OutputId, Scope, Settings, Updates};
+    use commandant_client_core::{
+        Ask, ChatId, Choose, Core, Go, Intent, OutputId, Scope, Settings, Updates,
+    };
     use commandant_worker::HarnessKind;
 
     use super::fake_opencode::FakeOpencode;
@@ -1705,6 +1707,136 @@ mod agents {
             .map(|e| e.text.trim())
             .collect();
         assert_eq!(said, ["hello", "echo: hello", "hold it", "echo: hold it"]);
+    }
+
+    /// A worker named `name` on what a link says, from its own directory.
+    fn joining(cluster: &Cluster, link: &Link, name: &str) -> WorkerConfig {
+        WorkerConfig {
+            name: Some(name.into()),
+            ..worker_config(
+                &link.addr(),
+                Some(link.token.clone()),
+                &cluster._tmp.path().join(name),
+            )
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_core_adds_a_node_with_the_command_it_shows() {
+        let cluster = cluster().await;
+        let handle = tokio::runtime::Handle::current();
+        let (mut core, mut updates) = Core::start(&cluster.connection, Settings::default(), handle)
+            .await
+            .unwrap();
+        core.act(Intent::AddNode);
+        assert!(core.ask(Scope::App).is_some_and(Ask::wants_line));
+        core.act(Intent::Enter(Scope::App, "10m".into()));
+        let shown = |core: &Core| matches!(core.ask(Scope::App), Some(Ask::Show { .. }));
+        follow(
+            &mut core,
+            &mut updates,
+            "the command was never shown",
+            shown,
+        )
+        .await;
+        let Some(Ask::Show { title, text }) = core.ask(Scope::App) else {
+            unreachable!()
+        };
+        assert!(title.contains("within 10m"), "{title}");
+        let link = text
+            .strip_prefix("commandant-server worker ")
+            .unwrap_or_else(|| panic!("{text:?} isn't the worker's command"));
+        let link: Link = link.parse().unwrap();
+
+        // Run on a machine, it enrols it.
+        let worker = tokio::spawn(commandant_worker::run(joining(&cluster, &link, "w2")));
+        let joined = |core: &Core| core.nodes().iter().any(|n| n.name == "w2" && n.online);
+        follow(&mut core, &mut updates, "the node never joined", joined).await;
+        // Once only: another machine can't join with it.
+        let again = commandant_worker::run(joining(&cluster, &link, "w3"));
+        let refused = tokio::time::timeout(WAIT, again)
+            .await
+            .expect("w3 kept trying");
+        assert!(refused.is_err(), "the token was used again");
+        worker.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_core_removes_a_node_once_confirmed() {
+        let mut cluster = cluster().await;
+        let (mut core, mut updates, chat) = core_with_a_chat(&cluster.connection).await;
+        let node = core.nodes()[0].id.clone();
+        let listed = |client: &mut ControlClient| {
+            let mut client = client.clone();
+            async move {
+                let nodes = client.list_nodes(ListNodesRequest {}).await.unwrap();
+                nodes
+                    .into_inner()
+                    .nodes
+                    .into_iter()
+                    .map(|n| n.id)
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        // Declined, nothing changes.
+        core.act(Intent::RemoveNode(node.clone()));
+        assert!(matches!(core.ask(Scope::App), Some(Ask::Confirm { .. })));
+        core.act(Intent::Dismiss(Scope::App));
+        assert_eq!(
+            listed(&mut cluster.client).await,
+            std::slice::from_ref(&node)
+        );
+        assert!(core.chat(chat).is_some());
+
+        // Confirmed, the server forgets it, and its chat closes.
+        core.act(Intent::RemoveNode(node.clone()));
+        core.act(Intent::Confirm(Scope::App));
+        let gone = |core: &Core| core.notice() == "removed w1";
+        follow(&mut core, &mut updates, "the node was never removed", gone).await;
+        assert!(core.nodes().is_empty());
+        assert!(core.chat(chat).is_none());
+        assert!(listed(&mut cluster.client).await.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_core_starts_an_agent_on_a_node_that_hosts_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (addr, token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
+        let fake = FakeOpencode::start().await;
+        let _worker = tokio::spawn(commandant_worker::run(WorkerConfig {
+            harness_bin: Some(fake.binary.clone()),
+            ..worker_config(&addr, Some(token.clone()), &tmp.path().join("worker"))
+        }));
+        let mut client = connect_control(&addr, &token).await.unwrap();
+        let node = wait_for_node(&mut client, true).await;
+        assert!(node.harnesses.is_empty());
+
+        let connection = Client { addr, token };
+        let handle = tokio::runtime::Handle::current();
+        let (mut core, mut updates) = Core::start(&connection, Settings::default(), handle)
+            .await
+            .unwrap();
+        core.act(Intent::StartAgent(node.id.clone()));
+        let offered: Vec<_> = core
+            .ask(Scope::App)
+            .and_then(Ask::choices)
+            .expect("the agents it can host")
+            .choices
+            .iter()
+            .map(|c| c.label.as_str())
+            .collect();
+        assert_eq!(offered, ["opencode", "claude-code"]);
+        let opencode = Choose::Harness {
+            node: node.id.clone(),
+            harness: "opencode".into(),
+        };
+        core.act(Intent::Choose(Scope::App, opencode));
+        assert!(core.starting(&node.id));
+        let started = |core: &Core| !core.starting(&node.id);
+        follow(&mut core, &mut updates, "the agent never started", started).await;
+        assert_eq!(core.notice(), "w1 now hosts opencode");
+        assert_eq!(core.nodes()[0].harnesses, ["opencode"]);
     }
 
     #[tokio::test(flavor = "multi_thread")]

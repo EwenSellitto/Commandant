@@ -19,7 +19,7 @@ commandant-worker = { path = "crates/commandant-worker" }
 anyhow = "1.0.104"
 base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
-crossterm = { version = "0.29.0", features = ["event-stream"] }
+crossterm = { version = "0.29.0", features = ["event-stream", "osc52"] }
 directories = "6.0.0"
 getrandom = "0.4.3"
 # GPUI snapshots publish weekly and break freely: pinned exactly, bumped in

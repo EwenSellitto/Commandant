@@ -50,6 +50,10 @@ pub struct App {
     pub pickers: HashMap<Scope, Picker>,
     /// The help, open over everything else.
     pub help: Option<Help>,
+    /// What to put on the terminal's clipboard next, and what was put
+    /// there last.
+    pub copying: Option<String>,
+    pub copied: Option<String>,
     /// Set once the person has asked to leave.
     pub quit: bool,
 }
@@ -75,6 +79,8 @@ impl App {
             views: HashMap::new(),
             pickers: HashMap::new(),
             help: None,
+            copying: None,
+            copied: None,
             quit: false,
         }
     }
@@ -166,6 +172,10 @@ impl App {
         // is typed in the prompt.
         for scope in self.scopes() {
             if let Some(ask) = self.core.ask(scope).filter(|a| !a.wants_line()) {
+                if let (Ask::Show { text, .. }, KeyCode::Char('c')) = (ask, key.code) {
+                    let text = text.clone();
+                    return self.copy(&text);
+                }
                 if let Some(intent) = asks::on_key(ask, self.pickers.get_mut(&scope), scope, key) {
                     self.act(intent);
                 }
@@ -218,8 +228,28 @@ impl App {
                     });
                 }
             }
+            KeyCode::Char('a') => {
+                self.entry.clear();
+                self.act(Intent::AddNode);
+            }
+            KeyCode::Char('d') => {
+                if let Some(node) = self.core.nodes().get(self.selected) {
+                    self.act(Intent::RemoveNode(node.id.clone()));
+                }
+            }
+            KeyCode::Char('s') => {
+                if let Some(node) = self.core.nodes().get(self.selected) {
+                    self.act(Intent::StartAgent(node.id.clone()));
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Puts `text` on the terminal's clipboard.
+    fn copy(&mut self, text: &str) {
+        self.copying = Some(text.to_string());
+        self.copied = Some(text.to_string());
     }
 
     fn on_tasks_key(&mut self, key: KeyEvent) {
@@ -1197,6 +1227,72 @@ pub(crate) mod tests {
         assert_eq!(app.screen, Screen::Tasks);
         app.on_key(key(KeyCode::Esc));
         assert_eq!(app.screen, Screen::Nodes);
+    }
+
+    #[test]
+    fn a_node_is_added_by_copying_the_command_shown() {
+        let mut app = app();
+        assert!(press(&mut app, key(KeyCode::Char('a'))).is_empty());
+        assert!(app.entering(), "how long its token lasts");
+        let effects = press(&mut app, key(KeyCode::Enter));
+        assert!(matches!(&effects[..], [Effect::CreateToken { .. }]));
+        app.on_update(Update::TokenCreated {
+            ttl: std::time::Duration::from_secs(3600),
+            link: Ok("commandant://abc".into()),
+        });
+
+        // c copies the command, which stays to read; Esc closes it.
+        assert!(app.copying.is_none());
+        app.on_key(key(KeyCode::Char('c')));
+        let command = "commandant-server worker commandant://abc";
+        assert_eq!(app.copying.take().as_deref(), Some(command));
+        assert_eq!(app.copied.as_deref(), Some(command));
+        assert!(app.core.ask(Scope::App).is_some());
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.core.ask(Scope::App).is_none());
+        assert_eq!(app.screen, Screen::Nodes);
+    }
+
+    #[test]
+    fn d_removes_the_highlighted_node_once_confirmed() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Down));
+        // n saying no changes nothing.
+        assert!(press(&mut app, key(KeyCode::Char('d'))).is_empty());
+        assert!(matches!(
+            app.core.ask(Scope::App),
+            Some(Ask::Confirm { .. })
+        ));
+        assert!(press(&mut app, key(KeyCode::Char('n'))).is_empty());
+        assert_eq!(app.core.nodes().len(), 3);
+
+        app.on_key(key(KeyCode::Char('d')));
+        let effects = press(&mut app, key(KeyCode::Enter));
+        assert!(matches!(&effects[..], [Effect::RemoveNode(n)] if n == "n2"));
+        app.on_update(Update::NodeRemoved("n2".into(), Ok(())));
+        let left: Vec<_> = app.core.nodes().iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(left, ["n1", "n3"]);
+        assert!(app.selected < left.len());
+    }
+
+    #[test]
+    fn s_starts_an_agent_on_the_highlighted_node() {
+        let nodes = vec![node("n1", true), bare("n2")];
+        let mut app = App::new(Core::offline(nodes, Settings::default()));
+        // One with an agent already says so.
+        app.selected = 0;
+        assert!(press(&mut app, key(KeyCode::Char('s'))).is_empty());
+        assert_eq!(app.core.notice(), "box-n1 already hosts opencode");
+
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Char('s')));
+        assert_eq!(
+            app.pickers.get(&Scope::App).unwrap().title(),
+            "Start an agent on this node"
+        );
+        let effects = press(&mut app, key(KeyCode::Enter));
+        assert!(matches!(&effects[..], [Effect::StartHarness { node, .. }] if node == "n2"));
+        assert!(app.core.starting("n2"));
     }
 
     #[test]
