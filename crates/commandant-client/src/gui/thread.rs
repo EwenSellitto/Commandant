@@ -14,9 +14,10 @@ use gpui_component::text::TextView;
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 
 use super::connected::Connected;
-use super::rows::{Row, running};
+use super::rows::Row;
 
 impl Connected {
+    /// The thread's row `index` of the chat `id`, as its role is drawn.
     pub(super) fn render_row(
         &mut self,
         id: ChatId,
@@ -56,6 +57,7 @@ impl Connected {
         cx.notify();
     }
 
+    /// An entry drawn on its own; `open` unfolds a settled thinking.
     fn render_entry(
         &self,
         chat: &Chat,
@@ -83,7 +85,7 @@ impl Connected {
                 .into_any_element(),
             Role::Thinking => {
                 let thinking = div().italic().text_color(theme.muted_foreground);
-                if running(chat, at) {
+                if chat.in_running_turn(at) {
                     return thinking.child(text).into_any_element();
                 }
                 // Folded to its first line once the turn has ended.
@@ -207,15 +209,15 @@ fn render_command(entry: &Entry, cx: &App) -> Div {
             .text_color(theme.muted_foreground)
             .child("… its earlier output wasn't kept")
     });
-    let (end, color) = ended(run, cx);
+    let (end, color) = end_label(run, cx);
     block
         .children(dropped)
         .children(output)
         .child(div().text_xs().text_color(color).child(end))
 }
 
-/// How a command ended, or that it still runs.
-fn ended(run: &Run, cx: &App) -> (String, Hsla) {
+/// How a command ended, or that it still runs, and its color.
+fn end_label(run: &Run, cx: &App) -> (String, Hsla) {
     let theme = cx.theme();
     match &run.ended {
         None if run.stopping() => ("stopping…".into(), theme.warning),
@@ -227,10 +229,12 @@ fn ended(run: &Run, cx: &App) -> (String, Hsla) {
     }
 }
 
+/// What a folded row shows of its text.
 fn first_line(text: &str) -> &str {
     text.trim().lines().next().unwrap_or_default()
 }
 
+/// A row's small chevron, in the row's color.
 fn muted_icon(icon: IconName, color: Hsla) -> Icon {
     Icon::new(icon).xsmall().text_color(color)
 }
@@ -246,10 +250,5 @@ pub(super) fn agent_color(chat: &Chat, name: &str, cx: &App) -> Hsla {
         theme.blue,
         theme.red,
     ];
-    let at = chat
-        .options
-        .as_ref()
-        .and_then(|o| o.agents.iter().position(|a| a.name == name))
-        .unwrap_or(0);
-    colors[at % colors.len()]
+    colors[chat.agent_index(name) % colors.len()]
 }

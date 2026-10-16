@@ -26,7 +26,7 @@ getrandom = "0.4.3"
 # lockstep with gpui-component.
 gpui = { package = "gpui-pre", version = "=0.3.8" }
 gpui-component = "=0.7.1"
-# The icons gpui-component draws.
+# The icons gpui-component draws, released with it.
 gpui-kit-assets = "=0.7.1"
 gpui-platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit", "wayland", "x11"] }
 # libgit2 built from source; OpenSSL and libssh2 from the system (pkg-config).

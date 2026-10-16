@@ -336,10 +336,12 @@ impl State {
         let Some(chat) = self.chat(id) else {
             return Outcome::default();
         };
-        let text = match () {
-            _ if chat.activity.working() => "Cancel the turn and close?",
-            _ if chat.at_work() => "Stop the command and close?",
-            _ => return self.remove(id),
+        let text = if chat.activity.working() {
+            "Cancel the turn and close?"
+        } else if chat.at_work() {
+            "Stop the command and close?"
+        } else {
+            return self.remove(id);
         };
         self.ask = Some(Ask::Confirm {
             text: text.into(),
@@ -501,7 +503,7 @@ impl State {
                     _ => return Outcome::default(),
                 };
                 let cancel = self.abandoned.contains(&id);
-                cancel.then(|| Effect::Cancel(id, started.task_id)).into()
+                cancel.then_some(Effect::Cancel(id, started.task_id)).into()
             }
             // Signing in asks for the options again, maybe while they're being asked for.
             Update::Chat(id, message) => self.in_chat(id, |c| c.on_message(message)),

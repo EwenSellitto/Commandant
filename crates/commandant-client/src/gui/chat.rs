@@ -3,8 +3,7 @@
 
 use std::collections::HashSet;
 
-use commandant_client_core::chat::Activity;
-use commandant_client_core::{Chat, ChatId, Intent, Scope};
+use commandant_client_core::{Ask, Chat, ChatId, Intent, Scope};
 use gpui::{
     AnyElement, AppContext as _, Context, DefiniteLength, Div, Entity, InteractiveElement as _,
     IntoElement, ParentElement as _, StyleRefinement, Styled as _, Subscription, Window, div, px,
@@ -16,6 +15,8 @@ use gpui_component::{ActiveTheme as _, Disableable as _, IconName, h_flex, v_fle
 
 use super::connected::Connected;
 use super::rows::{Row, Tally};
+use super::sidebar::status_dot;
+use super::thread::agent_color;
 
 /// The most lines the prompt grows to before it scrolls.
 const PROMPT_LINES: usize = 8;
@@ -23,10 +24,14 @@ const PROMPT_LINES: usize = 8;
 /// What the window keeps of a chat: what is typed, where its thread is
 /// scrolled, and which of its rows are open.
 pub(super) struct Pane {
+    /// The prompt being written.
     pub(super) composer: Entity<TextareaState>,
+    /// Where the thread is scrolled, and how tall its rows are.
     pub(super) scroller: Entity<MessageScrollerState>,
     /// The thread's rows, as last synced.
     pub(super) rows: Vec<Row>,
+    /// What the scroller was told of the rows, and what is new since the
+    /// reader scrolled up.
     pub(super) tally: Tally,
     /// What the prompt says while empty, as last set.
     placeholder: String,
@@ -74,16 +79,17 @@ impl Connected {
         self.act(Intent::Submit(id, text), window, cx);
     }
 
-    /// Esc: says no to what is asked over the window, or else stops what
-    /// the chat is at.
+    /// Esc: says no to the confirm over the window, or else stops what
+    /// the chat is at. Other questions aren't shown yet, so it leaves them.
     fn escape(&mut self, id: ChatId, window: &mut Window, cx: &mut Context<Self>) {
         let intent = match self.core.ask(Scope::App) {
-            Some(_) => Intent::Dismiss(Scope::App),
-            None => Intent::Cancel(id),
+            Some(Ask::Confirm { .. }) => Intent::Dismiss(Scope::App),
+            _ => Intent::Cancel(id),
         };
         self.act(intent, window, cx);
     }
 
+    /// The chat `id`, if it is open: its header, thread and prompt.
     pub(super) fn render_chat(
         &mut self,
         id: ChatId,
@@ -122,15 +128,15 @@ fn render_thread(chat: &Chat, pane: &mut Pane, cx: &mut Context<Connected>) -> A
             .text_color(cx.theme().muted_foreground)
             .child(format!(
                 "Ask {} on {} anything.",
-                agent(chat),
+                agent_name(chat),
                 chat.node.name
             ))
             .into_any_element();
     }
     if !pane.scroller.read(cx).is_scrolled_up() {
-        pane.tally.new = 0;
+        pane.tally.read();
     }
-    let label = match pane.tally.new {
+    let label = match pane.tally.unread() {
         0 => "Latest".to_string(),
         new => format!("{new} new"),
     };
@@ -153,14 +159,7 @@ fn render_composer(
     cx: &mut Context<Connected>,
 ) -> Div {
     let id = chat.id;
-    let turn_stopping = matches!(
-        chat.activity,
-        Activity::Working {
-            cancelling: true,
-            ..
-        }
-    );
-    let stopping = turn_stopping || chat.runs().any(|r| r.stopping());
+    let stopping = chat.stopping();
     let stop = chat.at_work().then(|| {
         Button::new("stop")
             .danger()
@@ -172,7 +171,7 @@ fn render_composer(
             )
     });
     // Only when it changes: setting it redraws.
-    let placeholder = format!("Message {}…", agent(chat));
+    let placeholder = format!("Message {}…", agent_name(chat));
     if pane.placeholder != placeholder {
         pane.placeholder = placeholder.clone();
         pane.composer.update(cx, |composer, cx| {
@@ -195,23 +194,24 @@ fn render_composer(
 }
 
 /// The agent prompts go to, by name.
-fn agent(chat: &Chat) -> &str {
+fn agent_name(chat: &Chat) -> &str {
     match chat.agent() {
         "" => "the agent",
         agent => agent,
     }
 }
 
-/// `● my-box  opencode · linux/x86_64 · v0.1`, then the session and the
-/// directory.
+/// `● my-box  build  opencode · linux/x86_64 · v0.1`, then the session
+/// and the directory.
 fn render_header(chat: &Chat, cx: &Context<Connected>) -> Div {
     let theme = cx.theme();
     let node = &chat.node;
-    let dot = div().size(px(8.0)).flex_none().rounded_full();
-    let dot = match node.online {
-        true => dot.bg(theme.success),
-        false => dot.border_1().border_color(theme.muted_foreground),
-    };
+    let agent = (!chat.agent().is_empty()).then(|| {
+        div()
+            .text_sm()
+            .text_color(agent_color(chat, chat.agent(), cx))
+            .child(chat.agent().to_string())
+    });
     let harness = node.harnesses.first().map_or("no agent", String::as_str);
     let mut facts = vec![harness.to_string(), format!("{}/{}", node.os, node.arch)];
     if !node.version.is_empty() {
@@ -234,12 +234,13 @@ fn render_header(chat: &Chat, cx: &Context<Connected>) -> Div {
         .child(
             h_flex()
                 .gap_2()
-                .child(dot)
+                .child(status_dot(node.online, cx))
                 .child(
                     div()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .child(node.name.clone()),
                 )
+                .children(agent)
                 .child(
                     div()
                         .text_sm()

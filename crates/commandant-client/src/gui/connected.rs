@@ -135,7 +135,12 @@ impl Connected {
             pane.rows = rows(&chat.thread);
             let count = pane.rows.len();
             let scrolled_up = pane.scroller.read(cx).is_scrolled_up();
-            let change = pane.tally.change(chat, count, scrolled_up);
+            let change = pane.tally.change(chat, &pane.rows, scrolled_up);
+            // The rows open are known by their first entry, which the
+            // earlier turns coming have moved.
+            if let Change::Reset(_) = change {
+                pane.open.clear();
+            }
             pane.scroller.update(cx, |scroller, cx| match change {
                 Change::Reset(count) => scroller.reset(count, cx),
                 Change::Grew { added, settled } => {

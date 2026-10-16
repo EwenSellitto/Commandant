@@ -5,7 +5,7 @@ use commandant_client_core::chat::Unseen;
 use commandant_client_core::{Chat, Intent};
 use commandant_proto::NodeInfo;
 use gpui::{
-    Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, Stateful,
+    App, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, Stateful,
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
@@ -20,7 +20,18 @@ const WIDTH: f32 = 240.0;
 /// Room for a chat's mark, so titles line up.
 const MARK: f32 = 14.0;
 
+/// A node's dot: filled while it is online, hollow while not.
+pub(super) fn status_dot(online: bool, cx: &App) -> Div {
+    let theme = cx.theme();
+    let dot = div().size(px(8.0)).flex_none().rounded_full();
+    match online {
+        true => dot.bg(theme.success),
+        false => dot.border_1().border_color(theme.muted_foreground),
+    }
+}
+
 impl Connected {
+    /// Every node and its chats, then the core's notice.
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let nodes = self.core.nodes();
@@ -71,12 +82,6 @@ impl Connected {
     /// opens its last chat, `[+]` a new one.
     fn node_row(&self, at: usize, node: &NodeInfo, cx: &Context<Self>) -> Stateful<Div> {
         let theme = cx.theme();
-        let dot = div().size(px(8.0)).flex_none().rounded_full();
-        let dot = if node.online {
-            dot.bg(theme.success)
-        } else {
-            dot.border_1().border_color(theme.muted_foreground)
-        };
         let id = node.id.clone();
         let open = cx.listener(move |this, _, window, cx| {
             let chat = this.last.get(&id).copied();
@@ -112,7 +117,7 @@ impl Connected {
             .cursor_pointer()
             .hover(|s| s.bg(theme.sidebar_accent))
             .on_click(open)
-            .child(dot)
+            .child(status_dot(node.online, cx))
             .child(div().flex_1().truncate().child(node.name.clone()))
             .children(new);
         if node.online {

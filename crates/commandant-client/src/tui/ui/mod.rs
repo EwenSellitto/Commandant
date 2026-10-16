@@ -588,12 +588,7 @@ fn draw_footer(frame: &mut Frame, chat: &Chat, area: Rect) {
 
 /// The color of the agent named `name`, from where the node lists it.
 fn agent_color(chat: &Chat, name: &str) -> Color {
-    let at = chat
-        .options
-        .as_ref()
-        .and_then(|o| o.agents.iter().position(|a| a.name == name))
-        .unwrap_or(0);
-    AGENT_COLORS[at % AGENT_COLORS.len()]
+    AGENT_COLORS[chat.agent_index(name) % AGENT_COLORS.len()]
 }
 
 /// `● `: green when the node is online, red when not.

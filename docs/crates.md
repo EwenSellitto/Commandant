@@ -105,11 +105,12 @@ code, so every front end shares it. Code used by several crates goes in
 | `gui/sidebar.rs` | The sidebar: every node (status dot, name, `[+]` for a new chat) and its open chats beneath, each with a spinner while working, a dot or cross when it ended unseen, and a hover × |
 | `gui/chat.rs` | A chat in the main pane: its header, its thread and the prompt (Enter sends, Shift+Enter a newline, Stop and Esc cancel) |
 | `gui/thread.rs` | The thread's rows as each role is drawn: markdown replies with copy buttons, thinking folded once the turn ends, tool calls grouped, commands' blocks |
-| `gui/rows.rs` | The thread as rows, and what the scroller is told as it grows; rows added while scrolled up are the pill's "N new" |
+| `gui/rows.rs` | The thread as rows, and what the scroller is told as it grows; rows added or written to while scrolled up are the pill's "N new" |
 | `gui/placement.rs` | Where the window was when it last closed or stopped moving, so it reopens there |
 
-GPUI (`gpui-pre`, `gpui-pre-platform`) and `gpui-component` are pinned with
-`=` and bumped together: their weekly snapshots break freely.
+GPUI (`gpui-pre`, `gpui-pre-platform`), `gpui-component` and its icons
+(`gpui-kit-assets`) are pinned with `=` and bumped together: their weekly
+snapshots break freely.
 
 ## `commandant-client-core`
 
