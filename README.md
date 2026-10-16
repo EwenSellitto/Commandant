@@ -165,6 +165,8 @@ to see the commands, or `/help` for all commands and keys. The main ones:
 | **Ctrl-N**, **Ctrl-O** | New chat; switch to a chat or resume a saved session |
 | **↑** / **↓** | Earlier prompts |
 | **Ctrl-G** / **Ctrl-C** | Back to the nodes / quit |
+| `/tasks` (**Ctrl-H**) | Everything the nodes have run, newest first: **Enter** reads a command's output (followed while it runs) or opens a prompt's session, **f** shows one node's, **x** cancels |
+| **r** on the nodes | Run a shell command on the highlighted node, in its worker's directory |
 
 ## Command reference
 

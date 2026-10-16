@@ -58,7 +58,15 @@ impl Chat {
             Message::History(history) => {
                 self.loading_history = false;
                 match history {
-                    Ok(entries) => {
+                    Ok(mut entries) => {
+                        // The turn under way is the watch's to show.
+                        if let Some(prompt) = self.attached.take()
+                            && let Some(at) = entries
+                                .iter()
+                                .rposition(|e| e.role == "user" && e.text.trim() == prompt.trim())
+                        {
+                            entries.truncate(at);
+                        }
                         let agent = self.agent().to_string();
                         let earlier = entries.into_iter().map(|e| Entry {
                             role: match e.role.as_str() {

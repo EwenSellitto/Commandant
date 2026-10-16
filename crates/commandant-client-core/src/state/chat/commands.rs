@@ -14,12 +14,13 @@ pub(in crate::state) enum AppCommand {
     New,
     Sessions,
     Nodes,
+    Tasks,
     Close,
     Help,
 }
 
 /// The chat's own commands, for completing and for a front end's help.
-pub const COMMANDS: [(&str, &str); 13] = [
+pub const COMMANDS: [(&str, &str); 14] = [
     ("help", "what every command and key does"),
     ("agent", "choose an agent"),
     ("model", "choose a model"),
@@ -35,6 +36,10 @@ pub const COMMANDS: [(&str, &str); 13] = [
     ("sessions", "switch, or resume a saved one"),
     ("close", "close this session"),
     ("nodes", "the other nodes"),
+    (
+        "tasks",
+        "everything the nodes have run, to read, follow or cancel",
+    ),
     ("quit", "leave"),
 ];
 /// Other names for some of the [`COMMANDS`]: each alias, and the command it
@@ -73,6 +78,7 @@ impl Chat {
                 "new" => Some(AppCommand::New),
                 "sessions" => Some(AppCommand::Sessions),
                 "nodes" => Some(AppCommand::Nodes),
+                "tasks" => Some(AppCommand::Tasks),
                 "close" => Some(AppCommand::Close),
                 "help" | "?" => Some(AppCommand::Help),
                 _ => None,

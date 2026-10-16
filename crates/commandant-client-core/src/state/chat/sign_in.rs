@@ -35,6 +35,8 @@ impl Chat {
                 };
                 (provider, auth_action::Action::OauthFinish(finish))
             }
+            // The app's to ask.
+            Wanted::Command { .. } => return Outcome::default(),
         };
         let doing = format!("signing in to {}…", self.provider_name(&provider));
         self.authenticate(provider, None, doing, action).into()
@@ -53,6 +55,7 @@ impl Chat {
                 self.info("then paste the code it shows here");
                 ("the code the page shows".to_string(), false)
             }
+            Wanted::Command { .. } => return,
         };
         self.put(Ask::Enter {
             label,

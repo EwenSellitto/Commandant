@@ -9,6 +9,7 @@ pub mod config;
 pub mod state;
 
 pub use self::state::chat::{self, Chat, Settings};
+pub use self::state::tasks::{Output, OutputId, Tasks, command_line};
 pub use self::state::{
     Ask, ChatId, Choice, Choices, Choose, Edit, Effect, Go, Intent, Scope, Update, Wanted, cycle,
     lacks_agent,
@@ -138,6 +139,16 @@ impl Core {
     /// What is asked in `scope`, if anything.
     pub fn ask(&self, scope: Scope) -> Option<&Ask> {
         self.state.ask(scope)
+    }
+
+    /// The tasks, newest first, while they are shown.
+    pub fn tasks(&self) -> Option<&Tasks> {
+        self.state.tasks()
+    }
+
+    /// An open output view: a task's output, followed while it runs.
+    pub fn output(&self, id: OutputId) -> Option<&Output> {
+        self.state.output(id)
     }
 
     /// Whether anything shown moves on its own: a spinner for a working

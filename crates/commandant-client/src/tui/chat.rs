@@ -34,8 +34,7 @@ impl ChatView {
 
     pub fn paste(&mut self, text: &str) {
         self.recalled = None;
-        // The prompt is a single line.
-        self.input.insert_str(&text.replace(['\r', '\n'], " "));
+        self.input.paste(text);
     }
 
     pub fn edit(&mut self, edit: Edit) {
@@ -76,11 +75,9 @@ impl ChatView {
                 self.complete(&suggestions);
                 return self.submit(chat);
             }
-            KeyCode::Char('u') if ctrl => self.input.clear(),
             KeyCode::Char('t') if ctrl => return Some(Intent::CycleEffort(id)),
             KeyCode::Tab => return Some(Intent::CycleAgent(id, 1)),
             KeyCode::BackTab => return Some(Intent::CycleAgent(id, -1)),
-            KeyCode::Char(c) => self.input.insert(c),
             KeyCode::Enter => return self.submit(chat),
             // Typing what is asked for, which goes with the line.
             KeyCode::Esc if chat.entering() => {
@@ -88,15 +85,9 @@ impl ChatView {
                 return Some(Intent::Dismiss(Scope::Chat(id)));
             }
             KeyCode::Esc => return Some(Intent::Cancel(id)),
-            KeyCode::Backspace => self.input.backspace(),
-            KeyCode::Delete => self.input.delete(),
-            KeyCode::Left => self.input.left(),
-            KeyCode::Right => self.input.right(),
-            KeyCode::Home => self.input.home(),
-            KeyCode::End => self.input.end(),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_add(PAGE),
             KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(PAGE),
-            _ => {}
+            _ => self.input.edit(key),
         }
         None
     }
@@ -152,6 +143,27 @@ pub struct Input {
 }
 
 impl Input {
+    /// What a key does to the text: typing, deleting, moving the cursor.
+    pub fn edit(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('u') if ctrl => self.clear(),
+            KeyCode::Char(c) => self.insert(c),
+            KeyCode::Backspace => self.backspace(),
+            KeyCode::Delete => self.delete(),
+            KeyCode::Left => self.left(),
+            KeyCode::Right => self.right(),
+            KeyCode::Home => self.home(),
+            KeyCode::End => self.end(),
+            _ => {}
+        }
+    }
+
+    /// Pasted text, on the one line.
+    pub fn paste(&mut self, text: &str) {
+        self.insert_str(&text.replace(['\r', '\n'], " "));
+    }
+
     fn byte_index(&self) -> usize {
         self.text
             .char_indices()

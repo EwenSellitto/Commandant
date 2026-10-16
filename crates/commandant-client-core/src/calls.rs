@@ -1,6 +1,8 @@
 //! The calls to the server that effects ask for, made in the background;
 //! what they come to is sent back as updates.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -11,6 +13,7 @@ use tokio::task::{AbortHandle, JoinSet};
 
 use crate::config::Client;
 use crate::state::chat::Message;
+use crate::state::tasks::{LIMIT, OutputId};
 use crate::state::{Effect, Failure, Update};
 
 /// How often the nodes' details are refreshed.
@@ -27,6 +30,8 @@ pub(crate) struct Server {
     tx: Tx,
     /// Keeps the nodes' details current.
     poll: AbortHandle,
+    /// What follows each output view's task.
+    watches: Mutex<HashMap<OutputId, AbortHandle>>,
 }
 
 impl Server {
@@ -53,6 +58,7 @@ impl Server {
             handle,
             tx,
             poll,
+            watches: Mutex::default(),
         };
         Ok((server, nodes, rx))
     }
@@ -77,12 +83,50 @@ impl Server {
                     tx.send(Update::Chat(chat, message)).is_ok()
                 }));
             }
+            Effect::WatchTurn { chat, task_id } => {
+                let call = async move { control.watch_task(WatchTaskRequest { task_id }).await };
+                handle.spawn(stream_task(call, move |event| {
+                    let message = event.map_or_else(Message::Failed, Message::Task);
+                    tx.send(Update::Chat(chat, message)).is_ok()
+                }));
+            }
             Effect::RunCommand { chat, run, request } => {
                 let call = async move { control.run_command(request).await };
                 handle.spawn(stream_task(call, move |event| {
                     tx.send(Update::Chat(chat, Message::Run(run, event)))
                         .is_ok()
                 }));
+            }
+            Effect::Watch { output, task_id } => {
+                let call = async move { control.watch_task(WatchTaskRequest { task_id }).await };
+                let watch = handle.spawn(stream_task(call, move |event| {
+                    tx.send(Update::Output(output, event)).is_ok()
+                }));
+                self.watched(output, watch.abort_handle());
+            }
+            Effect::RunOn { output, request } => {
+                let call = async move { control.run_command(request).await };
+                let run = handle.spawn(stream_task(call, move |event| {
+                    tx.send(Update::Output(output, event)).is_ok()
+                }));
+                self.watched(output, run.abort_handle());
+            }
+            Effect::StopWatching(output) => {
+                let watch = self.watches.lock().unwrap().remove(&output);
+                if let Some(watch) = watch {
+                    watch.abort();
+                }
+            }
+            Effect::CancelTask(task_id) => {
+                handle.spawn(async move {
+                    let request = CancelTaskRequest {
+                        task_id: task_id.clone(),
+                    };
+                    if let Err(status) = control.cancel_task(request).await {
+                        let error = status.message().to_string();
+                        let _ = tx.send(Update::CancelFailed { task_id, error });
+                    }
+                });
             }
             Effect::FetchOptions { node, after } => {
                 handle.spawn(async move {
@@ -192,6 +236,21 @@ impl Server {
                     }
                 });
             }
+            Effect::FetchTasks { node, after, list } => {
+                handle.spawn(async move {
+                    tokio::time::sleep(after).await;
+                    let request = ListTasksRequest {
+                        limit: LIMIT,
+                        node: node.unwrap_or_default(),
+                    };
+                    let tasks = control
+                        .list_tasks(request)
+                        .await
+                        .map(|listed| listed.into_inner().tasks)
+                        .map_err(|status| status.message().to_string());
+                    let _ = tx.send(Update::Tasks { list, tasks });
+                });
+            }
             Effect::StartHarness { node, harness } => {
                 let request = StartHarnessRequest {
                     node: node.clone(),
@@ -203,6 +262,16 @@ impl Server {
                 });
             }
         }
+    }
+}
+
+impl Server {
+    /// Keeps what follows an output view's task, to stop it when the view
+    /// closes; those of tasks that have ended go.
+    fn watched(&self, output: OutputId, watch: AbortHandle) {
+        let mut watches = self.watches.lock().unwrap();
+        watches.retain(|_, w| !w.is_finished());
+        watches.insert(output, watch);
     }
 }
 
