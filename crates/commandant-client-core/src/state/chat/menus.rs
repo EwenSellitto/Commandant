@@ -221,7 +221,11 @@ impl Chat {
                 .into();
             }
             // The app's own choices.
-            Choose::NewSession | Choose::Chat(_) | Choose::Saved(_) | Choose::Harness { .. } => {}
+            Choose::NewSession
+            | Choose::Chat(_)
+            | Choose::Saved(_)
+            | Choose::Harness { .. }
+            | Choose::TasksOf(_) => {}
         }
         Outcome::default()
     }

@@ -12,6 +12,7 @@ pub mod chat;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
 mod intent;
+pub mod tasks;
 #[cfg(test)]
 mod tests;
 
@@ -27,6 +28,7 @@ use commandant_common::time::ago;
 use commandant_proto::*;
 
 use self::chat::{Activity, AppCommand, Chat, Message, Settings};
+use self::tasks::{ListId, Output, OutputId, Tasks};
 
 /// Tells chats apart for as long as the client runs.
 pub type ChatId = u64;
@@ -58,9 +60,15 @@ pub(crate) struct State {
     pub notice: String,
     /// Nodes starting a harness, which can take minutes.
     pub starting: HashSet<String>,
+    /// The tasks, while they are shown.
+    tasks: Option<Tasks>,
+    /// The output views open, oldest first.
+    outputs: Vec<Output>,
     /// What new chats start with; `--session` only goes to the first.
     defaults: Settings,
     next_id: ChatId,
+    next_list: ListId,
+    next_output: OutputId,
 }
 
 impl State {
@@ -84,6 +92,11 @@ impl State {
     /// The chats on a node, oldest first.
     pub fn chats_on<'a>(&'a self, node_id: &'a str) -> impl Iterator<Item = &'a Chat> {
         self.chats.iter().filter(move |c| c.node.id == node_id)
+    }
+
+    /// The tasks, while they are shown.
+    pub fn tasks(&self) -> Option<&Tasks> {
+        self.tasks.as_ref()
     }
 
     /// What is asked in `scope`, if anything.
@@ -111,6 +124,8 @@ impl State {
     /// chat, something loading, or a node starting its agent.
     pub fn busy(&self) -> bool {
         !self.starting.is_empty()
+            || self.tasks.as_ref().is_some_and(|t| t.loading)
+            || self.shown_outputs().any(Output::following)
             || self
                 .ask
                 .as_ref()
@@ -128,9 +143,15 @@ impl State {
             })
     }
 
-    /// Tasks still running, for quitting.
+    /// Tasks started here and still running, for quitting.
     pub fn running_tasks(&self) -> Vec<String> {
-        self.chats.iter().flat_map(Chat::tasks).collect()
+        let ran = self.outputs.iter().filter(|o| o.ran_here);
+        let runs = ran.filter_map(|o| o.run.task().cloned());
+        self.chats
+            .iter()
+            .flat_map(Chat::tasks)
+            .chain(runs)
+            .collect()
     }
 
     /// Opens a new chat on `node` on the agent's session `session_id`, or a
@@ -175,6 +196,7 @@ impl State {
                     Some(AppCommand::New) => self.another_chat(id),
                     Some(AppCommand::Sessions) => self.intent(Intent::Sessions(id)),
                     Some(AppCommand::Nodes) => Outcome::go(Go::Nodes),
+                    Some(AppCommand::Tasks) => self.list_tasks(None),
                     Some(AppCommand::Close) => self.close(id),
                     Some(AppCommand::Help) => Outcome::go(Go::Help),
                 };
@@ -182,8 +204,16 @@ impl State {
             }
             Intent::Choose(Scope::App, choice) => self.choose(choice),
             Intent::Choose(Scope::Chat(id), choice) => self.in_chat(id, |c| c.choose(choice)),
-            // The app asks for no line yet.
-            Intent::Enter(Scope::App, _) => Outcome::default(),
+            Intent::Enter(Scope::App, text) => match self.ask.take() {
+                Some(Ask::Enter {
+                    wanted: Wanted::Command { node },
+                    ..
+                }) if !text.trim().is_empty() => self.run_on(&node, &text),
+                asked => {
+                    self.ask = asked;
+                    Outcome::default()
+                }
+            },
             Intent::Enter(Scope::Chat(id), text) => self.in_chat(id, |c| c.enter(&text)),
             Intent::Confirm(scope) => match self.ask(scope) {
                 Some(Ask::Confirm { yes, .. }) => {
@@ -201,6 +231,19 @@ impl State {
             Intent::CycleAgent(id, step) => self.in_chat(id, |c| c.cycle_agent(step)),
             Intent::CycleEffort(id) => self.in_chat(id, Chat::cycle_effort),
             Intent::Seen(id) => self.in_chat(id, |c| c.unseen = None),
+            Intent::ListTasks { node } => self.list_tasks(node),
+            Intent::FilterTasks => {
+                self.filter_tasks();
+                Outcome::default()
+            }
+            Intent::CloseTasks => {
+                self.tasks = None;
+                Outcome::default()
+            }
+            Intent::OpenTask(task_id) => self.open_task(&task_id),
+            Intent::CloseOutput(id) => self.close_output(id),
+            Intent::CancelTask(task_id) => self.cancel_task(task_id),
+            Intent::Run { node, line } => self.run_on(&node, &line),
         }
     }
 
@@ -418,6 +461,7 @@ impl State {
             Choose::Chat(id) => Outcome::go(Go::Chat(id)),
             Choose::Saved(saved) => from.map_or_else(Outcome::default, |id| self.resume(id, saved)),
             Choose::Harness { node, harness } => self.start_harness(node, harness),
+            Choose::TasksOf(node) => self.list_tasks(node),
             _ => Outcome::default(),
         }
     }
@@ -428,7 +472,11 @@ impl State {
         let Some(chat) = self.chat(from) else {
             return Outcome::default();
         };
-        let node = chat.node.clone();
+        self.resume_on(chat.node.clone(), saved)
+    }
+
+    /// Opens a chat on a session `node` saved, as it was last used.
+    fn resume_on(&mut self, node: NodeInfo, saved: AgentSession) -> Outcome {
         let id = self.next_id;
         let fetch = Effect::FetchHistory {
             chat: id,
@@ -554,6 +602,12 @@ impl State {
                 self.notice = format!("{name} now hosts {hosts}");
                 outcome.go = Some(Go::Ready(id));
                 outcome
+            }
+            Update::Tasks { list, tasks } => self.on_tasks(list, tasks),
+            Update::Output(id, event) => self.on_output(id, event),
+            Update::CancelFailed { task_id, error } => {
+                self.notice = format!("couldn't cancel task {task_id}: {error}");
+                Outcome::default()
             }
             Update::Sessions(node, sessions) => {
                 let from = self.sessions_from();

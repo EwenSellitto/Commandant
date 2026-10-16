@@ -9,6 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 
 use super::{MUTED, PANEL, SELECTED, hints, spinner};
+use crate::tui::chat::Input;
 use crate::tui::help::Help;
 use crate::tui::picker::{Filtered, Picker, Row};
 use crate::tui::text;
@@ -184,4 +185,38 @@ pub(super) fn draw_dialog(frame: &mut Frame, accent: Color, ask: Option<&Ask>) {
     frame.render_widget(Span::raw(title).bold().fg(accent), heading);
     frame.render_widget(Paragraph::new(lines), body);
     frame.render_widget(self::hints(hints), keys);
+}
+
+/// The line the app asks for, typed in a box of its own: a solid panel
+/// centred over everything else.
+pub(super) fn draw_entry(frame: &mut Frame, accent: Color, label: &str, input: &Input) {
+    let screen = frame.area();
+    let width = screen.width.saturating_sub(4).min(80);
+    // Label and gap, the line, gap, hints; plus a padding row each end.
+    let height = 7.min(screen.height.saturating_sub(2));
+    let area = screen.centered(Constraint::Length(width), Constraint::Length(height));
+    frame.render_widget(Clear, area);
+    let panel = Block::new().bg(PANEL).padding(Padding::new(2, 2, 1, 1));
+    let inner = panel.inner(area);
+    frame.render_widget(panel, area);
+    let [heading, _, line, _, keys] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    let mut label = label.chars();
+    let first = label.next().map(|c| c.to_uppercase().collect::<String>());
+    let label = format!("{}{}", first.unwrap_or_default(), label.as_str());
+    frame.render_widget(Span::raw(label).bold().fg(accent), heading);
+    // Scroll sideways so the cursor stays visible.
+    let room = (line.width as usize).saturating_sub(3);
+    let offset = input.cursor.saturating_sub(room);
+    let visible: String = input.text.chars().skip(offset).take(room).collect();
+    frame.render_widget(Line::from(vec!["› ".fg(accent), Span::raw(visible)]), line);
+    let x = line.x + 2 + (input.cursor - offset) as u16;
+    frame.set_cursor_position((x, line.y));
+    frame.render_widget(self::hints(&[("enter", "run"), ("esc", "cancel")]), keys);
 }

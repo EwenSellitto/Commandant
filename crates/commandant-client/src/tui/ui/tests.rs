@@ -346,3 +346,80 @@ fn the_help_floats_over_the_rest_and_narrows_as_typed() {
     find(&buf, "1 of ");
     assert!(absent(&buf, "what every command and key does"));
 }
+
+#[test]
+fn the_tasks_say_what_ran_where_and_how_it_ended() {
+    let mut app = app();
+    let mut tasks = crate::tui::app::tests::listed_tasks();
+    tasks[1].output_pruned = true;
+    tasks.push(commandant_proto::TaskInfo {
+        status: "failed".into(),
+        exit_code: Some(3),
+        ..tasks[0].clone()
+    });
+    crate::tui::app::tests::tasks_listed(&mut app, tasks);
+    let buf = render(&mut app);
+    assert!(find(&buf, "every node").1 < find(&buf, "echo t2").1);
+    let (_, running) = find(&buf, "running");
+    assert_eq!(find(&buf, "echo t2").1, running);
+    assert_eq!(buf[find(&buf, "exit 3")].fg, Color::Red);
+    // What a pruned task ran is greyed.
+    assert_eq!(buf[find(&buf, "echo t1")].fg, MUTED);
+    assert_eq!(
+        buf[find(&buf, "box-n1")].bg,
+        SELECTED,
+        "the newest is highlighted"
+    );
+}
+
+#[test]
+fn an_output_fills_the_screen_and_says_when_it_was_pruned() {
+    let mut app = app();
+    crate::tui::app::tests::tasks_listed(&mut app, crate::tui::app::tests::listed_tasks());
+    app.on_key(KeyEvent::from(KeyCode::Down));
+    app.on_key(KeyEvent::from(KeyCode::Up));
+    let effects = press(&mut app, KeyEvent::from(KeyCode::Enter));
+    let [Effect::Watch { output, .. }] = effects[..] else {
+        panic!("should watch it, not {effects:?}");
+    };
+    let started = task_event::Event::Started(commandant_proto::TaskStarted {
+        task_id: "t2".into(),
+        output_pruned: true,
+        ..Default::default()
+    });
+    app.on_update(Update::Output(output, Ok(started)));
+    let printed = task_event::Event::Output(commandant_proto::TaskOutput {
+        stream: OutputStream::Stderr as i32,
+        data: b"oops\n".to_vec(),
+        ..Default::default()
+    });
+    app.on_update(Update::Output(output, Ok(printed)));
+    let buf = render(&mut app);
+    assert_eq!(find(&buf, "$ echo t2").1, 0);
+    assert!(find(&buf, "worker's directory").1 == 1);
+    find(&buf, "output pruned");
+    assert_eq!(buf[find(&buf, "oops")].fg, Color::Red);
+    find(&buf, "running");
+    find(&buf, "x stop");
+
+    let finished = task_event::Event::Finished(TaskFinished {
+        exit_code: Some(0),
+        ..Default::default()
+    });
+    app.on_update(Update::Output(output, Ok(finished)));
+    let buf = render(&mut app);
+    find(&buf, "exit 0");
+    assert!(absent(&buf, "x stop"));
+}
+
+#[test]
+fn the_line_to_run_is_typed_in_a_box_over_the_nodes() {
+    let mut app = app();
+    app.on_key(KeyEvent::from(KeyCode::Char('r')));
+    for c in "uptime".chars() {
+        app.on_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    let buf = render(&mut app);
+    let (_, label) = find(&buf, "A shell command to run on box-n1");
+    assert_eq!(find(&buf, "› uptime").1, label + 2);
+}

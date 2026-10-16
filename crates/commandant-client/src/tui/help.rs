@@ -40,21 +40,50 @@ pub const BANG: (&str, &str) = (
 );
 
 /// The keys that do what a command does.
-const COMMAND_KEYS: [(&str, &str); 6] = [
+const COMMAND_KEYS: [(&str, &str); 7] = [
     ("help", "F1"),
     ("new", "Ctrl-N"),
     ("sessions", "Ctrl-O"),
     ("close", "Ctrl-W"),
     ("nodes", "Ctrl-G"),
+    ("tasks", "Ctrl-H"),
     ("quit", "Ctrl-C"),
 ];
 
 /// The node list's keys.
-const NODE_KEYS: [(&str, &str, Option<Key>); 4] = [
+const NODE_KEYS: [(&str, &str, Option<Key>); 6] = [
     ("↑ ↓  j k", "move", None),
     ("Enter", "open the node's sessions", key(KeyCode::Enter)),
+    (
+        "r",
+        "run a shell command on the node, in its worker's directory",
+        key(KeyCode::Char('r')),
+    ),
+    ("Ctrl-H", "everything the nodes have run", ctrl('h')),
     ("F1  ?", "what every key does", None),
     ("q  Ctrl-C", "leave", key(KeyCode::Char('q'))),
+];
+
+/// The task list's keys.
+const TASK_KEYS: [(&str, &str, Option<Key>); 6] = [
+    ("↑ ↓  j k", "move", None),
+    (
+        "Enter",
+        "read a command's output, or open a prompt's session",
+        key(KeyCode::Enter),
+    ),
+    ("f", "only one node's tasks", key(KeyCode::Char('f'))),
+    ("x", "cancel a running task", key(KeyCode::Char('x'))),
+    ("Ctrl-G", "the nodes", ctrl('g')),
+    ("Esc  q", "back", key(KeyCode::Esc)),
+];
+
+/// An output's keys.
+const OUTPUT_KEYS: [(&str, &str, Option<Key>); 4] = [
+    ("↑ ↓  PgUp PgDn", "scroll", None),
+    ("x", "stop the command", key(KeyCode::Char('x'))),
+    ("Ctrl-H", "the tasks", ctrl('h')),
+    ("Esc  q", "back", key(KeyCode::Esc)),
 ];
 
 /// Labels are padded to line up the rows, up to this width.
@@ -137,6 +166,16 @@ impl Help {
     /// What every key of the node list does.
     pub fn nodes() -> Self {
         Self::new(keys(&NODE_KEYS).collect())
+    }
+
+    /// What every key of the task list does.
+    pub fn tasks() -> Self {
+        Self::new(keys(&TASK_KEYS).collect())
+    }
+
+    /// What every key of an output does.
+    pub fn output() -> Self {
+        Self::new(keys(&OUTPUT_KEYS).collect())
     }
 
     fn new(rows: Vec<(String, String, Does)>) -> Self {
