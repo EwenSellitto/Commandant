@@ -73,6 +73,8 @@ pub(crate) struct State {
     outputs: Vec<Output>,
     /// What new chats start with; `--session` only goes to the first.
     defaults: Settings,
+    /// The server's admin link, rebuilt from where the client found it.
+    pub link: String,
     next_id: ChatId,
     next_list: ListId,
     next_output: OutputId,
@@ -200,6 +202,14 @@ impl State {
                 let then = match command {
                     None => Outcome::default(),
                     Some(AppCommand::Quit) => Outcome::go(Go::Quit),
+                    Some(AppCommand::LogOut) => Outcome::go(Go::LogOut),
+                    Some(AppCommand::Link) => {
+                        self.ask = Some(Ask::Show {
+                            title: "Link".into(),
+                            text: self.link.clone(),
+                        });
+                        Outcome::default()
+                    }
                     Some(AppCommand::New) => self.another_chat(id),
                     Some(AppCommand::Sessions) => self.intent(Intent::Sessions(id)),
                     Some(AppCommand::Nodes) => Outcome::go(Go::Nodes),

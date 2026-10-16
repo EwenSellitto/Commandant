@@ -57,7 +57,7 @@ commandant-server serve --local-worker
 # 2. On every other machine:
 commandant-server worker commandant://…
 
-# 3. On your laptop, once:
+# 3. On your laptop, once (or paste it in `commandant tui`, which asks for it):
 commandant login commandant://…
 
 # 4. Use it:
@@ -134,7 +134,8 @@ helper. It never asks for a password.
 ## The terminal UI
 
 `commandant tui` opens on the list of nodes. Each node can have several chats
-(sessions) working at once.
+(sessions) working at once. With no server saved yet, it first asks for the
+link `commandant-server serve` printed, and saves it once it connects.
 
 ```
  ● my-box  opencode · linux/x86_64 · v0.1.0    ses_1f3a… · ~/src/app
@@ -169,6 +170,7 @@ to see the commands, or `/help` for all commands and keys. The main ones:
 | **r** on the nodes | Run a shell command on the highlighted node, in its worker's directory |
 | **a** on the nodes | Add a node: how long its token lasts (1h if empty), then the `commandant-server worker <link>` command to run on it; **c** copies it. The token works once and expires on its own |
 | **d** · **s** on the nodes | Remove the highlighted node, once confirmed · start an agent on a node that hosts none |
+| `/link` · `/logout` | The server's link, to connect another client (**c** copies it) · cancel what runs, forget the server and ask for another's link |
 
 ## Command reference
 
@@ -186,7 +188,8 @@ Every command has `--help`.
 
 | Command | |
 |---|---|
-| `login LINK` | Save the server and admin token for the client commands |
+| `login LINK` · `logout` | Save the server and admin token for the client commands · forget them |
+| `link` | Print the server's link, to connect another client |
 | `node ls` · `node rm NODE` | List nodes · forget one |
 | `node start-agent NODE HARNESS` | Start an agent on a node that has none |
 | `node sessions NODE` · `node commands NODE` · `node mcp NODE` | The agent's saved sessions, commands, MCP servers |

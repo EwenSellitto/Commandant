@@ -243,7 +243,7 @@ mod tests {
         let mut help = Help::chat(&chat());
         assert_eq!(search(&mut help, "ctrl-n"), ["/new"], "by its key");
         let mut help = Help::chat(&chat());
-        assert_eq!(search(&mut help, "login"), ["/providers"], "by an alias");
+        assert_eq!(search(&mut help, "exit"), ["/quit"], "by an alias");
     }
 
     #[test]

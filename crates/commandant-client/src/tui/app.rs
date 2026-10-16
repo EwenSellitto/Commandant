@@ -56,6 +56,8 @@ pub struct App {
     pub copied: Option<String>,
     /// Set once the person has asked to leave.
     pub quit: bool,
+    /// Set when leaving forgets the server, for another's link.
+    pub logging_out: bool,
 }
 
 impl App {
@@ -82,6 +84,7 @@ impl App {
             copying: None,
             copied: None,
             quit: false,
+            logging_out: false,
         }
     }
 
@@ -426,6 +429,10 @@ impl App {
             }
             Some(Go::Output(id)) => self.go_to(Screen::Output(id)),
             Some(Go::Quit) => self.quit = true,
+            Some(Go::LogOut) => {
+                self.quit = true;
+                self.logging_out = true;
+            }
             Some(Go::Help) => self.open_help(),
             // Still looking at it: open it.
             Some(Go::Ready(node)) => {
@@ -711,6 +718,16 @@ pub(crate) mod tests {
         type_text(&mut typing, "/quit");
         typing.on_key(key(KeyCode::Enter));
         assert!(typing.quit);
+        assert!(!typing.logging_out, "quitting keeps the server");
+    }
+
+    #[test]
+    fn logging_out_leaves_and_forgets_the_server() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Enter));
+        type_text(&mut app, "/logout");
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.quit && app.logging_out);
     }
 
     #[test]

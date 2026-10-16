@@ -225,12 +225,17 @@ pub(super) fn draw_entry(
     let first = label.next().map(|c| c.to_uppercase().collect::<String>());
     let label = format!("{}{}", first.unwrap_or_default(), label.as_str());
     frame.render_widget(Span::raw(label).bold().fg(accent), heading);
+    draw_line(frame, accent, input, line);
+    frame.render_widget(self::hints(&[("enter", enter), ("esc", "cancel")]), keys);
+}
+
+/// A line being typed, behind `›`, with the cursor in it.
+pub(super) fn draw_line(frame: &mut Frame, accent: Color, input: &Input, area: Rect) {
     // Scroll sideways so the cursor stays visible.
-    let room = (line.width as usize).saturating_sub(3);
+    let room = (area.width as usize).saturating_sub(3);
     let offset = input.cursor.saturating_sub(room);
     let visible: String = input.text.chars().skip(offset).take(room).collect();
-    frame.render_widget(Line::from(vec!["› ".fg(accent), Span::raw(visible)]), line);
-    let x = line.x + 2 + (input.cursor - offset) as u16;
-    frame.set_cursor_position((x, line.y));
-    frame.render_widget(self::hints(&[("enter", enter), ("esc", "cancel")]), keys);
+    frame.render_widget(Line::from(vec!["› ".fg(accent), Span::raw(visible)]), area);
+    let x = area.x + 2 + (input.cursor - offset) as u16;
+    frame.set_cursor_position((x, area.y));
 }

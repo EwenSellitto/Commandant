@@ -17,3 +17,6 @@ serde.workspace = true
 tokio.workspace = true
 toml.workspace = true
 tonic.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

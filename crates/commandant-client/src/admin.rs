@@ -31,6 +31,14 @@ pub async fn login(args: LoginArgs) -> Result<()> {
     Ok(())
 }
 
+pub fn logout() -> Result<()> {
+    match config::forget()? {
+        Some(path) => println!("Logged out; removed {}", path.display()),
+        None => println!("No server was saved"),
+    }
+    Ok(())
+}
+
 pub async fn create_token(client: &Client, ttl: Duration, reusable: bool) -> Result<()> {
     let created = client
         .connect()
