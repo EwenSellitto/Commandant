@@ -116,6 +116,9 @@ impl Connected {
             return;
         };
         self.last.insert(chat.node.id.clone(), id);
+        if let Some(from) = self.shown.filter(|from| *from != id) {
+            self.core.act(Intent::Leave { chat: from, to: id });
+        }
         self.shown = Some(id);
         self.core.act(Intent::Seen(id));
         self.pane(id, window, cx);

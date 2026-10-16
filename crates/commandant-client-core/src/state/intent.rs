@@ -27,6 +27,9 @@ pub enum Intent {
     Sessions(ChatId),
     /// Close a chat, unless its agent or a command is still at work.
     Close(ChatId),
+    /// The front end shows the chat `to` instead of `chat`, which closes if
+    /// it is blank and `to` isn't: nobody is left to write in it.
+    Leave { chat: ChatId, to: ChatId },
     /// A line typed in a chat: a prompt, a `/command` or a `!command`.
     Submit(ChatId, String),
     /// Offer what the chat's menu chooses from, as its `/command` does,

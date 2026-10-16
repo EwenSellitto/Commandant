@@ -106,7 +106,7 @@ code, so every front end shares it. Code used by several crates goes in
 | `gui/asks.rs` | Every ask: choose-asks a filter-as-you-type list (↑↓, Enter, Esc) on the shared picker, enter-asks one field (masked when secret) that leaves the thread usable, confirm-asks Yes and No (Enter, Esc), show-asks Copy. A chat's question covers only its pane and stays with it |
 | `gui/sidebar.rs` | The sidebar: every node (status dot, name, a spinner while it starts its agent, `[+]` for a new chat) and its open chats beneath it, each with a spinner while working, a dot or cross for how it ended unseen, a mark while it needs input, and a hover × |
 | `gui/chat.rs` | A chat in the main pane: header, thread and prompt (Enter sends, Shift+Enter breaks the line, Stop and Esc cancel), the `/` completions above it (↑↓, Tab, a click), and the agent · model · effort chips under it with the session's usage |
-| `gui/thread.rs` | The thread's rows as each role is drawn: markdown replies with copy buttons, thinking folded once the turn ends, tool calls grouped, commands' blocks |
+| `gui/thread.rs` | The thread's rows as each role is drawn: markdown replies with copy buttons, thinking folded once the turn ends, tool calls grouped, commands' blocks; raw HTML and images in replies shown as their text, never drawn or fetched |
 | `gui/rows.rs` | The thread as rows, and what the scroller is told as it grows; rows added or written to while scrolled up are the pill's "N new" |
 | `gui/placement.rs` | Where the window was when it last closed or stopped moving, so it reopens there |
 

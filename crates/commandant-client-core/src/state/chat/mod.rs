@@ -310,6 +310,21 @@ impl Chat {
         }
     }
 
+    /// Whether nothing has been said or run in it yet and nothing is under
+    /// way: a chat to start afresh in, or to drop once left.
+    pub fn is_blank(&self) -> bool {
+        let said = self
+            .thread
+            .iter()
+            .any(|e| matches!(e.role, Role::User | Role::Command));
+        self.settings.session_id.is_empty()
+            && !said
+            && self.ask.is_none()
+            && !self.at_work()
+            && self.signing_in.is_none()
+            && self.preparing.is_none()
+    }
+
     /// Whether the agent or a command is at work.
     pub fn at_work(&self) -> bool {
         self.activity.working() || self.runs().any(Run::running)

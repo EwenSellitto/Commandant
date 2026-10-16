@@ -56,6 +56,12 @@ fn finished(session_id: &str) -> Message {
     }))
 }
 
+/// Has the chat send a prompt and finish its turn, so it isn't blank.
+fn talked(state: &mut State, id: ChatId) {
+    send(state, id, "hi");
+    state.update(Update::Chat(id, finished("")));
+}
+
 fn chat(state: &State, id: ChatId) -> &Chat {
     state.chat(id).expect("the chat is open")
 }
@@ -319,10 +325,58 @@ fn a_chip_opens_its_menu_and_leaves_the_prompt_alone() {
 }
 
 #[test]
+fn a_new_chat_on_a_node_with_a_blank_one_is_that_one() {
+    let mut state = state();
+    let blank = chat_on(&mut state, "n1");
+    assert_eq!(another(&mut state, blank), blank, "nothing to start afresh");
+    let session = Intent::OpenSession {
+        node: "n1".into(),
+        session: None,
+    };
+    assert_eq!(shown(&state.intent(session)), blank);
+    assert_eq!(state.chats.len(), 1);
+
+    // Once something is said in it, a new chat is another.
+    send(&mut state, blank, "hi");
+    assert_ne!(another(&mut state, blank), blank);
+}
+
+#[test]
+fn leaving_a_blank_chat_for_one_with_history_closes_it() {
+    let mut state = state();
+    let used = chat_on(&mut state, "n1");
+    send(&mut state, used, "hi");
+    let blank = another(&mut state, used);
+    let elsewhere = chat_on(&mut state, "n2");
+
+    // Another blank one isn't worth dropping it for.
+    state.intent(Intent::Leave {
+        chat: blank,
+        to: elsewhere,
+    });
+    assert!(state.chat(blank).is_some());
+    let left = state.intent(Intent::Leave {
+        chat: blank,
+        to: used,
+    });
+    assert!(state.chat(blank).is_none());
+    assert_eq!(left.go, None, "the front end shows what it goes to");
+
+    // One with history stays.
+    state.intent(Intent::Leave {
+        chat: used,
+        to: elsewhere,
+    });
+    assert!(state.chat(used).is_some());
+}
+
+#[test]
 fn closing_a_chat_shows_its_neighbour() {
     let mut state = state();
     let first = chat_on(&mut state, "n1");
+    talked(&mut state, first);
     let middle = another(&mut state, first);
+    talked(&mut state, middle);
     let last = another(&mut state, middle);
 
     // The middle one gives way to the one after it...
@@ -467,6 +521,7 @@ fn the_session_picker_keeps_up_with_the_node() {
     assert!(last.contains("couldn't list the node's sessions"), "{last}");
 
     // "+ New session" is a new chat.
+    talked(&mut state, id);
     let new = state.intent(Intent::Choose(Scope::App, Choose::NewSession));
     assert_ne!(shown(&new), id);
     assert_eq!(state.chats.len(), 2);
@@ -612,6 +667,7 @@ fn an_mcp_switch_answers_its_chat_and_leaves_other_requests_alone() {
     let mut state = state();
     // Opening the node asks for its options; that request is open.
     let asking = chat_on(&mut state, "n1");
+    talked(&mut state, asking);
     let other = another(&mut state, asking);
     let switched = AgentOptions {
         default_agent: "plan".into(),
