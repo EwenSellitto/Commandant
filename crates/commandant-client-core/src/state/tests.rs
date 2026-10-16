@@ -216,14 +216,58 @@ fn saved_sessions_are_resumed_from_the_picker() {
     assert_eq!(choices(&state).unwrap().choices.len(), 3);
 }
 
+/// What the app asks to confirm, if that is what it asks.
+fn confirm(state: &State) -> Option<(&str, &Choose)> {
+    match state.ask(Scope::App)? {
+        Ask::Confirm { text, yes } => Some((text, yes)),
+        _ => None,
+    }
+}
+
 #[test]
-fn a_working_chat_stays_open() {
+fn closing_a_working_chat_asks_first() {
     let mut state = state();
     let first = chat_on(&mut state, "n1");
     send(&mut state, first, "hi");
-    let refused = state.intent(Intent::Close(first));
-    assert!(refused.go.is_none());
-    assert_eq!(chat(&state, first).thread.last().unwrap().role, Role::Info);
+    state.update(Update::Chat(first, started("t1")));
+    let asked = state.intent(Intent::Close(first));
+    assert!(asked.go.is_none() && asked.effects.is_empty());
+    assert_eq!(
+        confirm(&state),
+        Some(("Cancel the turn and close?", &Choose::CancelAndClose(first)))
+    );
+    // Saying no leaves it at work.
+    state.intent(Intent::Dismiss(Scope::App));
+    assert!(chat(&state, first).activity.working());
+
+    state.intent(Intent::Close(first));
+    let closed = state.intent(Intent::Confirm(Scope::App));
+    assert!(
+        matches!(&closed.effects[..], [Effect::Cancel(id, task)] if *id == first && task == "t1")
+    );
+    assert_eq!(closed.go, Some(Go::Nodes));
+    assert!(state.chats.is_empty() && state.ask(Scope::App).is_none());
+}
+
+#[test]
+fn a_turn_closed_before_it_starts_is_cancelled_once_it_does() {
+    let mut state = state();
+    let id = chat_on(&mut state, "n1");
+    send(&mut state, id, "hi");
+    state.intent(Intent::Close(id));
+    let closed = state.intent(Intent::Confirm(Scope::App));
+    assert!(closed.effects.is_empty() && state.chats.is_empty());
+    let late = state.update(Update::Chat(id, started("t1")));
+    assert!(
+        matches!(&late.effects[..], [Effect::Cancel(chat, task)] if *chat == id && task == "t1")
+    );
+}
+
+#[test]
+fn a_chat_closes_where_it_is_typed() {
+    let mut state = state();
+    let first = chat_on(&mut state, "n1");
+    send(&mut state, first, "hi");
 
     // `/close` closes the chat it is typed in.
     let second = another(&mut state, first);
@@ -299,14 +343,19 @@ fn a_running_command_keeps_its_chat_busy_and_open() {
     };
     assert!(state.busy(), "its block shows a spinner");
     assert!(chat(&state, id).at_work());
-    let refused = state.intent(Intent::Close(id));
-    assert!(refused.go.is_none());
-    let said = &chat(&state, id).thread.last().unwrap().text;
-    assert!(said.contains("command is still running"), "{said}");
+    state.update(Update::Chat(id, for_run(run, started("t9"))));
+    let asked = state.intent(Intent::Close(id));
+    assert!(asked.go.is_none());
+    assert_eq!(
+        confirm(&state).map(|(text, _)| text),
+        Some("Stop the command and close?")
+    );
 
     // Quitting stops it.
-    state.update(Update::Chat(id, for_run(run, started("t9"))));
     assert_eq!(state.running_tasks(), ["t9"]);
+    let closed = state.intent(Intent::Confirm(Scope::App));
+    assert!(matches!(&closed.effects[..], [Effect::Cancel(_, task)] if task == "t9"));
+    assert!(state.chats.is_empty());
 }
 
 #[test]

@@ -224,6 +224,7 @@ impl Chat {
             Choose::NewSession
             | Choose::Chat(_)
             | Choose::Saved(_)
+            | Choose::CancelAndClose(_)
             | Choose::Harness { .. }
             | Choose::TasksOf(_) => {}
         }

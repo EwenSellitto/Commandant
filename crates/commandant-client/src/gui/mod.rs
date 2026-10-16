@@ -4,9 +4,13 @@
 //! is left for the core's calls to the server. What those report is awaited
 //! in a GPUI task, which hands it to the core and redraws.
 
+mod chat;
+mod connected;
 mod login;
 mod placement;
+mod rows;
 mod sidebar;
+mod thread;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -15,15 +19,16 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use commandant_client_core::config::{self, Client};
-use commandant_client_core::{Core, Updates};
 use commandant_common::dirs;
 use gpui::{
-    App, AppContext as _, Bounds, Context, IntoElement, ParentElement as _, Render, Styled as _,
-    Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div, point, px, size,
+    App, AppContext as _, Bounds, Context, Entity, IntoElement, ParentElement as _, Render,
+    Styled as _, Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
+    point, px, size,
 };
-use gpui_component::{ActiveTheme as _, Root, Theme, ThemeMode, h_flex};
+use gpui_component::{ActiveTheme as _, Root, Theme, ThemeMode};
 use tokio::runtime::Handle;
 
+use self::connected::Connected;
 use self::login::Card;
 use self::placement::{MIN_HEIGHT, MIN_WIDTH, Placement};
 use crate::cli::{ClientArgs, GuiArgs, UiArgs};
@@ -56,7 +61,8 @@ pub fn run(args: GuiArgs, client: &ClientArgs, handle: Handle) -> Result<()> {
     );
     let failed = Rc::new(RefCell::new(None));
     let failure = failed.clone();
-    gpui_platform::application().run(move |cx| {
+    let app = gpui_platform::application().with_assets(gpui_kit_assets::Assets);
+    app.run(move |cx| {
         gpui_component::init(cx);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
@@ -181,7 +187,7 @@ impl Shell {
             _placing: placing,
         };
         if try_saved {
-            shell.retry(cx);
+            shell.retry(window, cx);
         }
         shell
     }
@@ -201,43 +207,7 @@ impl Shell {
 /// What the window shows.
 enum Screen {
     LogIn(Card),
-    Connected(Box<Connected>),
-}
-
-/// A core, and what keeps it current.
-struct Connected {
-    core: Core,
-    /// Hands the core what its calls report, for as long as it is shown.
-    _updates: Task<()>,
-}
-
-impl Connected {
-    fn new(core: Core, mut updates: Updates, cx: &mut Context<Shell>) -> Self {
-        let pump = cx.spawn(async move |shell, cx| {
-            while let Some(update) = updates.next().await {
-                let taken = shell.update(cx, |shell, cx| {
-                    let Screen::Connected(connected) = &mut shell.screen else {
-                        return;
-                    };
-                    // A reply streams in many small pieces: take what has
-                    // come before drawing again. Where to go waits for the
-                    // views that go anywhere.
-                    connected.core.on_update(update);
-                    while let Some(update) = updates.ready() {
-                        connected.core.on_update(update);
-                    }
-                    cx.notify();
-                });
-                if taken.is_err() {
-                    break;
-                }
-            }
-        });
-        Self {
-            core,
-            _updates: pump,
-        }
-    }
+    Connected(Entity<Connected>),
 }
 
 impl Render for Shell {
@@ -248,12 +218,7 @@ impl Render for Shell {
             .text_color(cx.theme().foreground);
         match &self.screen {
             Screen::LogIn(card) => base.child(self.render_card(card, cx)),
-            Screen::Connected(connected) => base.child(
-                h_flex()
-                    .size_full()
-                    .child(sidebar::sidebar(&connected.core, cx))
-                    .child(div().flex_1().h_full()),
-            ),
+            Screen::Connected(connected) => base.child(connected.clone()),
         }
     }
 }

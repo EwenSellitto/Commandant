@@ -24,7 +24,6 @@ pub enum Ask {
         wanted: Wanted,
     },
     /// Whether to go ahead with `yes`.
-    #[allow(dead_code, reason = "nothing asks for one yet")]
     Confirm {
         /// The question: "Remove box-1?".
         text: String,
@@ -103,6 +102,8 @@ pub enum Choose {
     Chat(ChatId),
     /// A session the node saved, to resume in a new chat.
     Saved(AgentSession),
+    /// Close a chat, stopping what it is at.
+    CancelAndClose(ChatId),
     /// Show the tasks of a node, or of every node.
     TasksOf(Option<String>),
     /// An agent harness to start on a node that hosts none.

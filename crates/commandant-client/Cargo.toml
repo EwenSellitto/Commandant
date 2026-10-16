@@ -11,7 +11,7 @@ path = "src/main.rs"
 [features]
 # The desktop GUI, off by default: GPUI is long to build and needs desktop
 # libraries. Without it the client is the CLI and TUI only.
-gui =["dep:gpui", "dep:gpui-component", "dep:gpui-platform", "dep:serde", "dep:toml"]
+gui =["dep:gpui", "dep:gpui-component", "dep:gpui-kit-assets", "dep:gpui-platform", "dep:serde", "dep:toml"]
 
 [dependencies]
 anyhow.workspace = true
@@ -22,6 +22,7 @@ commandant-proto.workspace = true
 crossterm.workspace = true
 gpui = { workspace = true, optional = true }
 gpui-component = { workspace = true, optional = true }
+gpui-kit-assets = { workspace = true, optional = true }
 gpui-platform = { workspace = true, optional = true }
 ratatui.workspace = true
 serde = { workspace = true, optional = true }

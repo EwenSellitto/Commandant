@@ -279,6 +279,34 @@ impl Chat {
         self.activity.working() || self.runs().any(Run::running)
     }
 
+    /// Whether it has been asked to stop, its turn or its commands, and
+    /// hasn't yet.
+    pub fn stopping(&self) -> bool {
+        let turn = matches!(
+            self.activity,
+            Activity::Working {
+                cancelling: true,
+                ..
+            }
+        );
+        turn || self.runs().any(Run::stopping)
+    }
+
+    /// Whether the entry at `at` is part of the turn the agent is still at.
+    pub fn in_running_turn(&self, at: usize) -> bool {
+        let asked = self.thread.iter().rposition(|e| e.role == Role::User);
+        self.activity.working() && asked.is_none_or(|asked| at > asked)
+    }
+
+    /// Where the node lists the agent named `name`, which tells agents
+    /// apart; 0 for one it doesn't list.
+    pub fn agent_index(&self, name: &str) -> usize {
+        self.options
+            .as_ref()
+            .and_then(|o| o.agents.iter().position(|a| a.name == name))
+            .unwrap_or(0)
+    }
+
     /// What was sent, oldest first.
     pub fn sent(&self) -> &[String] {
         &self.sent
@@ -394,6 +422,14 @@ impl Chat {
             Some(stops) => stops,
             None => self.cancel_turn().into_iter().collect(),
         }
+    }
+
+    /// Stops the commands still running and cancels the turn, as for
+    /// closing.
+    pub(super) fn stop_all(&mut self) -> Vec<Effect> {
+        let mut stops = self.cancel_runs().unwrap_or_default();
+        stops.extend(self.cancel_turn());
+        stops
     }
 
     fn cancel_turn(&mut self) -> Option<Effect> {

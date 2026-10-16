@@ -132,6 +132,42 @@ fn cancelling_before_the_task_starts_cancels_it_when_it_does() {
     ));
 }
 
+#[test]
+fn stopping_shows_until_the_turn_ends() {
+    let mut app = chat();
+    send(&mut app, "hi");
+    assert!(!app.stopping());
+    app.cancel();
+    assert!(app.stopping());
+    app.on_message(Message::Failed("cancelled".into()));
+    assert!(!app.stopping());
+}
+
+#[test]
+fn only_the_last_turn_is_running() {
+    let mut app = chat();
+    send(&mut app, "one");
+    app.on_message(output(OutputStream::Reasoning, b"hmm"));
+    app.on_message(Message::Failed("no".into()));
+    send(&mut app, "two");
+    app.on_message(output(OutputStream::Reasoning, b"hmm"));
+    let at = |role| app.thread.iter().rposition(|e| e.role == role).unwrap();
+    let (first, last) = (1, at(Role::Thinking));
+    assert!(!app.in_running_turn(first), "an earlier turn's thinking");
+    assert!(!app.in_running_turn(at(Role::User)), "the prompt itself");
+    assert!(app.in_running_turn(last));
+    app.on_message(Message::Failed("no".into()));
+    assert!(!app.in_running_turn(last), "once it has ended");
+}
+
+#[test]
+fn agents_are_told_apart_by_where_the_node_lists_them() {
+    let app = with_options();
+    assert_eq!(app.agent_index("plan"), 1);
+    assert_eq!(app.agent_index("gone"), 0);
+    assert_eq!(chat().agent_index("plan"), 0, "before the node has said");
+}
+
 fn with_options() -> Chat {
     let mut app = chat();
     let model = |id: &str, variants: &[&str]| ModelChoice {

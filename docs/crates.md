@@ -99,13 +99,18 @@ code, so every front end shares it. Code used by several crates goes in
 | `tui/ui/`, `tui/text.rs` | Drawing (`tasks.rs`: the task list, and an output filling the screen), and markdown styling |
 | `tui/asks.rs`, `tui/picker.rs` | What keys say to an ask: the floating list, narrowed down by typing, for a choose-ask, a panel for a confirm- or show-ask; a chat's enter-ask is typed in its prompt, the app's in a box of its own. The app's and each chat's picker are shown from one map |
 | `tui/help.rs` | The help (F1, `?` on the nodes, `/help`): every command, `!` to run one on the node, the agent's commands and skills, and the terminal's keys in one such list, searched by name, key, alias or what it does; choosing one runs it, starts it in the prompt, or presses the key |
-| `gui/mod.rs` | The GUI (the `gui` feature, off by default): GPUI on the main thread, one window, dark; the login card, then the core's views, redrawn as a GPUI task hands the core its updates |
+| `gui/mod.rs` | The GUI (the `gui` feature, off by default): GPUI on the main thread, one window, dark; the login card, then the connected view |
 | `gui/login.rs` | The login card: a link pasted on a first run (saved once it connects), or the saved server tried at start-up, with Retry and "Use a different link" when it can't be reached |
-| `gui/sidebar.rs` | The sidebar: every node, its status dot and name, offline ones dimmed |
+| `gui/connected.rs` | Once connected: the core, redrawn as a GPUI task hands it its updates; which chat is shown and the last one per node; what the core asks to confirm, over the window |
+| `gui/sidebar.rs` | The sidebar: every node (status dot, name, `[+]` for a new chat) and its open chats beneath, each with a spinner while working, a dot or cross when it ended unseen, and a hover × |
+| `gui/chat.rs` | A chat in the main pane: its header, its thread and the prompt (Enter sends, Shift+Enter a newline, Stop and Esc cancel) |
+| `gui/thread.rs` | The thread's rows as each role is drawn: markdown replies with copy buttons, thinking folded once the turn ends, tool calls grouped, commands' blocks |
+| `gui/rows.rs` | The thread as rows, and what the scroller is told as it grows; rows added or written to while scrolled up are the pill's "N new" |
 | `gui/placement.rs` | Where the window was when it last closed or stopped moving, so it reopens there |
 
-GPUI (`gpui-pre`, `gpui-pre-platform`) and `gpui-component` are pinned with
-`=` and bumped together: their weekly snapshots break freely.
+GPUI (`gpui-pre`, `gpui-pre-platform`), `gpui-component` and its icons
+(`gpui-kit-assets`) are pinned with `=` and bumped together: their weekly
+snapshots break freely.
 
 ## `commandant-client-core`
 
