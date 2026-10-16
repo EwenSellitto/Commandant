@@ -3,6 +3,7 @@ mod cli;
 #[cfg(feature = "gui")]
 mod gui;
 mod run;
+mod start;
 mod tui;
 
 use std::io::IsTerminal;
@@ -44,9 +45,11 @@ fn main() {
 /// main thread; everything else runs on the runtime.
 fn launch(cli: Cli, runtime: &Runtime) -> Result<i32> {
     match cli.command {
-        Some(Command::Gui(args)) => open_gui(args),
+        Some(Command::Gui(args)) => open_gui(args, &cli.client, runtime),
         // A double-click or a launcher has no terminal to print help to.
-        None if cfg!(feature = "gui") && !attached_to_terminal() => open_gui(GuiArgs::default()),
+        None if cfg!(feature = "gui") && !attached_to_terminal() => {
+            open_gui(GuiArgs::default(), &cli.client, runtime)
+        }
         None => {
             Cli::command().print_help()?;
             Ok(0)
@@ -62,13 +65,13 @@ fn attached_to_terminal() -> bool {
 }
 
 #[cfg(feature = "gui")]
-fn open_gui(args: GuiArgs) -> Result<i32> {
-    gui::run(args)?;
+fn open_gui(args: GuiArgs, client: &ClientArgs, runtime: &Runtime) -> Result<i32> {
+    gui::run(args, client, runtime.handle().clone())?;
     Ok(0)
 }
 
 #[cfg(not(feature = "gui"))]
-fn open_gui(_args: GuiArgs) -> Result<i32> {
+fn open_gui(_args: GuiArgs, _client: &ClientArgs, _runtime: &Runtime) -> Result<i32> {
     anyhow::bail!("this build has no GUI; rebuild with the `gui` feature")
 }
 

@@ -1,9 +1,12 @@
 //! `commandant gui`: the desktop window.
 //!
 //! GPUI owns the main thread; `main` runs it outside the tokio runtime, which
-//! is left for the calls to the server once the GUI makes any.
+//! is left for the core's calls to the server. What those report is awaited
+//! in a GPUI task, which hands it to the core and redraws.
 
+mod login;
 mod placement;
+mod sidebar;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -11,15 +14,19 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use commandant_client_core::config::{self, Client};
+use commandant_client_core::{Core, Updates};
 use commandant_common::dirs;
 use gpui::{
-    App, AppContext as _, Bounds, Context, IntoElement, Render, Styled as _, Subscription, Task,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, point, px, size,
+    App, AppContext as _, Bounds, Context, IntoElement, ParentElement as _, Render, Styled as _,
+    Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div, point, px, size,
 };
-use gpui_component::{ActiveTheme as _, Root, Theme};
+use gpui_component::{ActiveTheme as _, Root, Theme, ThemeMode, h_flex};
+use tokio::runtime::Handle;
 
+use self::login::Card;
 use self::placement::{MIN_HEIGHT, MIN_WIDTH, Placement};
-use crate::cli::GuiArgs;
+use crate::cli::{ClientArgs, GuiArgs, UiArgs};
 
 /// The window's size on a first run, before it has a saved placement.
 const FIRST_SIZE: (f32, f32) = (1200.0, 800.0);
@@ -27,10 +34,10 @@ const FIRST_SIZE: (f32, f32) = (1200.0, 800.0);
 /// How long the window stays put before its placement is saved.
 const SAVE_AFTER: Duration = Duration::from_millis(500);
 
-/// Opens the window and returns once it is closed. Linux keeps it in the
-/// foreground, so `--foreground` changes nothing yet; the other arguments
-/// wait for the views.
-pub fn run(_args: GuiArgs) -> Result<()> {
+/// Opens the window and returns once it is closed; the core's calls are
+/// made on `handle`. Linux keeps it in the foreground, so `--foreground`
+/// changes nothing yet.
+pub fn run(args: GuiArgs, client: &ClientArgs, handle: Handle) -> Result<()> {
     // With no display server GPUI runs headless: an invisible window that
     // never closes.
     #[cfg(target_os = "linux")]
@@ -40,6 +47,13 @@ pub fn run(_args: GuiArgs) -> Result<()> {
         );
     }
     let placement_file = dirs::gui_window()?;
+    // Flags and the environment name the server as for any command; a
+    // broken config file is said on the card, which then asks for a link.
+    let saved = config::find(
+        client.addr.clone(),
+        client.token.clone(),
+        client.token_file.clone(),
+    );
     let failed = Rc::new(RefCell::new(None));
     let failure = failed.clone();
     gpui_platform::application().run(move |cx| {
@@ -61,8 +75,10 @@ pub fn run(_args: GuiArgs) -> Result<()> {
             ..Default::default()
         };
         let opened = cx.open_window(options, |window, cx| {
-            Theme::sync_system_appearance(Some(window), cx);
-            let shell = cx.new(|cx| Shell::new(placement_file, window, cx));
+            // Dark whatever the system says: many Linux desktops don't tell
+            // GPUI, which then takes them for light.
+            Theme::change(ThemeMode::Dark, Some(window), cx);
+            let shell = cx.new(|cx| Shell::new(placement_file, args.ui, handle, saved, window, cx));
             cx.new(|cx| Root::new(shell, window, cx))
         });
         if let Err(e) = opened {
@@ -118,37 +134,56 @@ fn save(placement: Placement, placement_file: &Path) {
     }
 }
 
-/// The window's content: empty until the views come.
+/// The window's content: the login card, then the core's views.
 struct Shell {
+    screen: Screen,
+    /// Where the core makes its calls.
+    handle: Handle,
+    /// Where the views start.
+    args: UiArgs,
     placement_file: PathBuf,
     /// Saves the placement once the window has stopped moving, so it is kept
     /// even when the process is stopped rather than the window closed. It
     /// runs on the main thread, as the save on closing does, so the two
     /// never write at once.
     saving: Option<Task<()>>,
-    _subscriptions: [Subscription; 2],
+    _placing: Subscription,
 }
 
 impl Shell {
-    fn new(placement_file: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        placement_file: PathBuf,
+        args: UiArgs,
+        handle: Handle,
+        saved: Result<Option<Client>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let on_close = placement_file.clone();
         window.on_window_should_close(cx, move |window, _| {
             save(placement_of(window), &on_close);
             true
         });
-        let subscriptions = [
-            cx.observe_window_appearance(window, |_, window, cx| {
-                Theme::sync_system_appearance(Some(window), cx);
-            }),
-            cx.observe_window_bounds(window, |shell, window, cx| {
-                shell.save_soon(window, cx);
-            }),
-        ];
-        Self {
+        let placing = cx.observe_window_bounds(window, |shell, window, cx| {
+            shell.save_soon(window, cx);
+        });
+        let (saved, error) = match saved {
+            Ok(saved) => (saved, None),
+            Err(e) => (None, Some(format!("{e:#}").into())),
+        };
+        let try_saved = saved.is_some();
+        let mut shell = Self {
+            screen: Screen::LogIn(Card::new(saved, error, window, cx)),
+            handle,
+            args,
             placement_file,
             saving: None,
-            _subscriptions: subscriptions,
+            _placing: placing,
+        };
+        if try_saved {
+            shell.retry(cx);
         }
+        shell
     }
 
     fn save_soon(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -163,11 +198,62 @@ impl Shell {
     }
 }
 
+/// What the window shows.
+enum Screen {
+    LogIn(Card),
+    Connected(Box<Connected>),
+}
+
+/// A core, and what keeps it current.
+struct Connected {
+    core: Core,
+    /// Hands the core what its calls report, for as long as it is shown.
+    _updates: Task<()>,
+}
+
+impl Connected {
+    fn new(core: Core, mut updates: Updates, cx: &mut Context<Shell>) -> Self {
+        let pump = cx.spawn(async move |shell, cx| {
+            while let Some(update) = updates.next().await {
+                let taken = shell.update(cx, |shell, cx| {
+                    let Screen::Connected(connected) = &mut shell.screen else {
+                        return;
+                    };
+                    // A reply streams in many small pieces: take what has
+                    // come before drawing again. Where to go waits for the
+                    // views that go anywhere.
+                    connected.core.on_update(update);
+                    while let Some(update) = updates.ready() {
+                        connected.core.on_update(update);
+                    }
+                    cx.notify();
+                });
+                if taken.is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            core,
+            _updates: pump,
+        }
+    }
+}
+
 impl Render for Shell {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let base = div()
             .size_full()
             .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .text_color(cx.theme().foreground);
+        match &self.screen {
+            Screen::LogIn(card) => base.child(self.render_card(card, cx)),
+            Screen::Connected(connected) => base.child(
+                h_flex()
+                    .size_full()
+                    .child(sidebar::sidebar(&connected.core, cx))
+                    .child(div().flex_1().h_full()),
+            ),
+        }
     }
 }

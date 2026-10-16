@@ -140,8 +140,8 @@ pub struct UiArgs {
     /// Node name, id or id prefix; defaults to the only online node with an
     /// agent harness.
     pub node: Option<String>,
-    /// Continue this session instead of starting a new one.
-    #[arg(long, short)]
+    /// Continue this session, on that node, instead of starting a new one.
+    #[arg(long, short, requires = "node")]
     pub session: Option<String>,
     /// Working directory on the node; defaults to the session's, or the worker's.
     #[arg(long)]
@@ -283,6 +283,14 @@ mod tests {
         assert_eq!(tui.node.as_deref(), Some("box"));
         assert_eq!(tui.effort.as_deref(), Some("high"));
         assert!(!gui.foreground);
+    }
+
+    #[test]
+    fn a_session_needs_the_node_it_is_on() {
+        for front in ["tui", "gui"] {
+            assert!(try_parse(&[front, "-s", "ses_1"]).is_err(), "{front}");
+            assert!(try_parse(&[front, "box", "-s", "ses_1"]).is_ok(), "{front}");
+        }
     }
 
     #[test]

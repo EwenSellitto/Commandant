@@ -16,11 +16,9 @@ mod ui;
 use std::io::stdout;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use commandant_client_core::config::Client;
-use commandant_client_core::{Core, Intent, Settings, Updates};
-use commandant_common::lookup::{self, Match};
-use commandant_proto::NodeInfo;
+use commandant_client_core::{Core, Updates};
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, EventStream};
 use crossterm::execute;
 use ratatui::DefaultTerminal;
@@ -34,22 +32,8 @@ use crate::cli::UiArgs;
 const TICK: Duration = Duration::from_millis(100);
 
 pub async fn run(client: &Client, args: UiArgs, handle: Handle) -> Result<()> {
-    let defaults = Settings {
-        session_id: String::new(),
-        cwd: args.cwd.unwrap_or_default(),
-        model: args.model.unwrap_or_default(),
-        agent: args.agent.unwrap_or_default(),
-        effort: args.effort.unwrap_or_default(),
-    };
-    let (core, mut updates) = Core::start(client, defaults, handle).await?;
-    let first = match (args.node.as_deref(), args.session) {
-        (Some(needle), session) => Some(Intent::OpenSession {
-            node: find_node(core.nodes(), needle)?.id,
-            session,
-        }),
-        (None, Some(_)) => bail!("--session needs the node it is on"),
-        (None, None) => None,
-    };
+    let (core, mut updates) = Core::start(client, args.defaults(), handle).await?;
+    let first = args.first_open(core.nodes())?;
     let mut app = App::new(core);
     if let Some(open) = first {
         app.act(open);
@@ -100,14 +84,5 @@ async fn event_loop(
             app.core.shutdown().await;
             return Ok(());
         }
-    }
-}
-
-/// The node named by `needle`: a name, an id or an id prefix.
-fn find_node(nodes: &[NodeInfo], needle: &str) -> Result<NodeInfo> {
-    match lookup::find_named(nodes.to_vec(), needle, |n| &n.name, |n| &n.id) {
-        Match::One(node) => Ok(node),
-        Match::Ambiguous => bail!("{needle:?} is ambiguous"),
-        Match::None => bail!("no node matches {needle:?}"),
     }
 }
