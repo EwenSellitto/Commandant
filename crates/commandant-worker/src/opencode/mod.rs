@@ -162,6 +162,32 @@ fn warm_up(api: Api) {
     });
 }
 
+/// What a plugin tags the agent's messages with, for the model to read and
+/// not people: the Dynamic Context Pruning plugin ends each one with
+/// `<dcp-message-id>m0004</dcp-message-id>`.
+const PLUGIN_TAG: &str = "dcp-message-id";
+
+/// `text` without the [`PLUGIN_TAG`]s; one that ends it takes the space
+/// before it along.
+fn untagged(text: &str) -> String {
+    let (open, close) = (format!("<{PLUGIN_TAG}>"), format!("</{PLUGIN_TAG}>"));
+    let mut kept = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut tagged = false;
+    while let Some(start) = rest.find(&open)
+        && let Some(end) = rest[start..].find(&close)
+    {
+        kept.push_str(&rest[..start]);
+        rest = &rest[start + end + close.len()..];
+        tagged = true;
+    }
+    kept.push_str(rest);
+    if tagged && rest.trim().is_empty() {
+        kept.truncate(kept.trim_end().len());
+    }
+    kept
+}
+
 /// Runs `opencode serve` on a free loopback port, behind a random password.
 async fn start_server(binary: &Path) -> Result<Server> {
     let password = commandant_common::random_hex(32);
@@ -227,6 +253,22 @@ async fn forward_lines(pipe: impl AsyncRead + Unpin, lines: mpsc::Sender<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_plugins_tags_are_taken_out() {
+        let tag = "<dcp-message-id>m0004</dcp-message-id>";
+        assert_eq!(
+            untagged(&format!("a {tag} b")),
+            "a  b",
+            "the text around stays"
+        );
+        assert_eq!(untagged("pong\n"), "pong\n", "untagged text is left alone");
+        assert_eq!(
+            untagged("<b>bold</b> <dcp-message-id>m"),
+            "<b>bold</b> <dcp-message-id>m",
+            "a tag left open is the agent's own text"
+        );
+    }
 
     #[test]
     fn a_session_takes_one_prompt_at_a_time() {

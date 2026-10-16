@@ -3,8 +3,8 @@
 use anyhow::Result;
 use commandant_proto::{AgentSession, HistoryEntry};
 
-use super::Opencode;
 use super::api::{SavedMessage, SavedSession};
+use super::{Opencode, untagged};
 use crate::harness::keep_latest;
 
 /// How many sessions a listing shows.
@@ -43,7 +43,7 @@ fn entries(messages: Vec<SavedMessage>) -> Vec<HistoryEntry> {
                 ),
                 _ => continue,
             };
-            let text = text.trim().to_string();
+            let text = untagged(&text).trim().to_string();
             if !text.is_empty() {
                 entries.push(HistoryEntry {
                     role: role.into(),
@@ -145,6 +145,21 @@ mod tests {
             entries,
             expected.map(|(r, t)| (r.to_string(), t.to_string()))
         );
+    }
+
+    #[test]
+    fn history_leaves_out_the_ids_a_plugin_tags_messages_with() {
+        let messages: Vec<SavedMessage> = serde_json::from_value(json!([
+            { "info": { "role": "user" }, "parts": [
+                { "type": "text", "text": "fix it\n\n<dcp-message-id>m0003</dcp-message-id>" },
+            ]},
+            { "info": { "role": "assistant" }, "parts": [
+                { "type": "text", "text": "done\n\n<dcp-message-id>m0004</dcp-message-id>" },
+            ]},
+        ]))
+        .unwrap();
+        let said: Vec<_> = entries(messages).into_iter().map(|e| e.text).collect();
+        assert_eq!(said, ["fix it", "done"]);
     }
 
     #[test]
