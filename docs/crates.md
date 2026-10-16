@@ -99,7 +99,7 @@ code, so every front end shares it. Code used by several crates goes in
 | `tui/ui/`, `tui/text.rs` | Drawing, and markdown styling |
 | `tui/asks.rs`, `tui/picker.rs` | What keys say to an ask: the floating list, narrowed down by typing, for a choose-ask, a panel for a confirm- or show-ask; an enter-ask is typed in the prompt. The app's and each chat's picker are shown from one map |
 | `tui/help.rs` | The help (F1, `?` on the nodes, `/help`): every command, `!` to run one on the node, the agent's commands and skills, and the terminal's keys in one such list, searched by name, key, alias or what it does; choosing one runs it, starts it in the prompt, or presses the key |
-| `gui/mod.rs` | The GUI (the `gui` feature, off by default): GPUI on the main thread, one window themed light or dark with the system; the login card, then the core's views, redrawn as a GPUI task hands the core its updates |
+| `gui/mod.rs` | The GUI (the `gui` feature, off by default): GPUI on the main thread, one window, dark; the login card, then the core's views, redrawn as a GPUI task hands the core its updates |
 | `gui/login.rs` | The login card: a link pasted on a first run (saved once it connects), or the saved server tried at start-up, with Retry and "Use a different link" when it can't be reached |
 | `gui/sidebar.rs` | The sidebar: every node, its status dot and name, offline ones dimmed |
 | `gui/placement.rs` | Where the window was when it last closed or stopped moving, so it reopens there |

@@ -21,7 +21,7 @@ use gpui::{
     App, AppContext as _, Bounds, Context, IntoElement, ParentElement as _, Render, Styled as _,
     Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div, point, px, size,
 };
-use gpui_component::{ActiveTheme as _, Root, Theme, h_flex};
+use gpui_component::{ActiveTheme as _, Root, Theme, ThemeMode, h_flex};
 use tokio::runtime::Handle;
 
 use self::login::Card;
@@ -75,7 +75,9 @@ pub fn run(args: GuiArgs, client: &ClientArgs, handle: Handle) -> Result<()> {
             ..Default::default()
         };
         let opened = cx.open_window(options, |window, cx| {
-            Theme::sync_system_appearance(Some(window), cx);
+            // Dark whatever the system says: many Linux desktops don't tell
+            // GPUI, which then takes them for light.
+            Theme::change(ThemeMode::Dark, Some(window), cx);
             let shell = cx.new(|cx| Shell::new(placement_file, args.ui, handle, saved, window, cx));
             cx.new(|cx| Root::new(shell, window, cx))
         });
@@ -145,7 +147,7 @@ struct Shell {
     /// runs on the main thread, as the save on closing does, so the two
     /// never write at once.
     saving: Option<Task<()>>,
-    _subscriptions: [Subscription; 2],
+    _placing: Subscription,
 }
 
 impl Shell {
@@ -162,14 +164,9 @@ impl Shell {
             save(placement_of(window), &on_close);
             true
         });
-        let subscriptions = [
-            cx.observe_window_appearance(window, |_, window, cx| {
-                Theme::sync_system_appearance(Some(window), cx);
-            }),
-            cx.observe_window_bounds(window, |shell, window, cx| {
-                shell.save_soon(window, cx);
-            }),
-        ];
+        let placing = cx.observe_window_bounds(window, |shell, window, cx| {
+            shell.save_soon(window, cx);
+        });
         let (saved, error) = match saved {
             Ok(saved) => (saved, None),
             Err(e) => (None, Some(format!("{e:#}").into())),
@@ -181,7 +178,7 @@ impl Shell {
             args,
             placement_file,
             saving: None,
-            _subscriptions: subscriptions,
+            _placing: placing,
         };
         if try_saved {
             shell.retry(cx);
