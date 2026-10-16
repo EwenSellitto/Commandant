@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use commandant_client_core::chat::{self, Activity, Chat, Ended, Entry, Role, Run, Unseen};
-use commandant_client_core::{Ask, ChatId, Scope};
+use commandant_client_core::{Ask, ChatId, Scope, Wanted};
 use commandant_common::or;
 
 use super::app::{App, Screen};
@@ -108,10 +108,14 @@ fn draw_asks(frame: &mut Frame, app: &App, accent: Color) {
         match (app.pickers.get(&scope), app.core.ask(scope)) {
             (Some(picker), _) => draw_picker(frame, accent, picker),
             // A chat's line is typed in its prompt.
-            (None, Some(Ask::Enter { label, .. })) if scope == Scope::App => {
-                draw_entry(frame, accent, label, &app.entry)
+            (None, Some(Ask::Enter { label, wanted, .. })) if scope == Scope::App => {
+                let enter = match wanted {
+                    Wanted::Lifetime => "make the token",
+                    _ => "run",
+                };
+                draw_entry(frame, accent, label, enter, &app.entry)
             }
-            (None, ask) => draw_dialog(frame, accent, ask),
+            (None, ask) => draw_dialog(frame, accent, ask, app.copied.as_deref()),
         }
     }
     if let Some(help) = &app.help {
@@ -633,11 +637,11 @@ fn status_dot(online: bool) -> Span<'static> {
 
 /// `opencode`, `linux/x86_64`: what a node runs, and on what.
 fn facts(node: &commandant_proto::NodeInfo) -> Vec<String> {
-    let harness = node
-        .harnesses
-        .first()
-        .map_or("no agent harness", String::as_str);
-    vec![harness.to_string(), format!("{}/{}", node.os, node.arch)]
+    let agents = match node.harnesses.join(", ") {
+        none if none.is_empty() => "no agent".to_string(),
+        agents => agents,
+    };
+    vec![agents, format!("{}/{}", node.os, node.arch)]
 }
 
 /// The spinner's frame now; every spinner on screen turns together.

@@ -30,7 +30,7 @@ pub(super) fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
         header,
     );
     if core.nodes().is_empty() {
-        let empty = "No nodes yet. Add a worker with `commandant-server worker <link>`.";
+        let empty = "No nodes yet: press a to add one.";
         frame.render_widget(Line::from(empty).fg(MUTED), list);
     }
     let name_width = core
@@ -45,6 +45,9 @@ pub(super) fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
         .map(|node| {
             let dot = status_dot(node.online);
             let mut facts = facts(node);
+            if !node.version.is_empty() {
+                facts.push(format!("v{}", node.version));
+            }
             if !node.online {
                 facts.push(format!(
                     "seen {}",
@@ -83,6 +86,8 @@ pub(super) fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
         hints(&[
             ("↑↓", "move"),
             ("enter", "open"),
+            ("a", "add"),
+            ("d", "remove"),
             ("?", "help"),
             ("q", "quit"),
         ]),

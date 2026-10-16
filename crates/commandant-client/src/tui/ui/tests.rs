@@ -59,6 +59,47 @@ fn secondary_text_stays_readable() {
 }
 
 #[test]
+fn a_node_says_what_it_runs_on_and_hosts() {
+    let box1 = commandant_proto::NodeInfo {
+        os: "linux".into(),
+        arch: "x86_64".into(),
+        version: "0.4.0".into(),
+        harnesses: vec!["opencode".into(), "claude-code".into()],
+        ..commandant_client_core::state::fixtures::node("n1", true)
+    };
+    let mut app = App::new(Core::offline(vec![box1], Default::default()));
+    let buf = render(&mut app);
+    let (_, row) = find(&buf, "box-n1");
+    for fact in ["opencode, claude-code", "linux/x86_64", "v0.4.0"] {
+        assert_eq!(find(&buf, fact).1, row, "{fact}");
+    }
+    assert!(!absent(&buf, "a add") && !absent(&buf, "d remove"));
+
+    let mut nobody = App::new(Core::offline(Vec::new(), Default::default()));
+    let buf = render(&mut nobody);
+    find(&buf, "press a to add one");
+}
+
+#[test]
+fn the_worker_command_is_shown_plainly_and_says_once_copied() {
+    let mut app = app();
+    app.on_key(KeyEvent::from(KeyCode::Char('a')));
+    let buf = render(&mut app);
+    find(&buf, "make the token");
+    app.on_key(KeyEvent::from(KeyCode::Enter));
+    app.on_update(Update::TokenCreated {
+        ttl: std::time::Duration::from_secs(3600),
+        link: Ok("commandant://abc".into()),
+    });
+    let buf = render(&mut app);
+    find(&buf, "commandant-server worker commandant://abc");
+    find(&buf, "c copy");
+    app.on_key(KeyEvent::from(KeyCode::Char('c')));
+    let buf = render(&mut app);
+    find(&buf, "copied ✓");
+}
+
+#[test]
 fn nodes_list_their_open_chats() {
     let mut app = app();
     let buf = render(&mut app);

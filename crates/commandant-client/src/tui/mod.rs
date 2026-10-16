@@ -19,6 +19,7 @@ use std::time::Duration;
 use anyhow::Result;
 use commandant_client_core::config::Client;
 use commandant_client_core::{Core, Updates};
+use crossterm::clipboard::CopyToClipboard;
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, EventStream};
 use crossterm::execute;
 use ratatui::DefaultTerminal;
@@ -79,6 +80,10 @@ async fn event_loop(
         // started is known and cancelled.
         while let Some(update) = updates.ready() {
             app.on_update(update);
+        }
+        // OSC 52: the terminal puts it on the clipboard, even over SSH.
+        if let Some(text) = app.copying.take() {
+            execute!(stdout(), CopyToClipboard::to_clipboard_from(text))?;
         }
         if app.quit {
             app.core.shutdown().await;

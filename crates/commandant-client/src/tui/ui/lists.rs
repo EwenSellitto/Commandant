@@ -150,11 +150,19 @@ fn draw_list<R: Row>(
 }
 
 /// A question to confirm or read, if that is what `ask` is: a solid panel
-/// centred over everything else.
-pub(super) fn draw_dialog(frame: &mut Frame, accent: Color, ask: Option<&Ask>) {
+/// centred over everything else. What is to read says once it is `copied`.
+pub(super) fn draw_dialog(
+    frame: &mut Frame,
+    accent: Color,
+    ask: Option<&Ask>,
+    copied: Option<&str>,
+) {
     let (title, said, hints): (&str, &str, &[(&str, &str)]) = match ask {
         Some(Ask::Confirm { text, .. }) => ("", text, &[("enter", "yes"), ("esc", "no")]),
-        Some(Ask::Show { title, text }) => (title, text, &[("esc", "close")]),
+        Some(Ask::Show { title, text }) if copied == Some(text) => {
+            (title, text, &[("c", "copied ✓"), ("esc", "close")])
+        }
+        Some(Ask::Show { title, text }) => (title, text, &[("c", "copy"), ("esc", "close")]),
         _ => return,
     };
     let screen = frame.area();
@@ -188,8 +196,14 @@ pub(super) fn draw_dialog(frame: &mut Frame, accent: Color, ask: Option<&Ask>) {
 }
 
 /// The line the app asks for, typed in a box of its own: a solid panel
-/// centred over everything else.
-pub(super) fn draw_entry(frame: &mut Frame, accent: Color, label: &str, input: &Input) {
+/// centred over everything else, Enter doing what `enter` says.
+pub(super) fn draw_entry(
+    frame: &mut Frame,
+    accent: Color,
+    label: &str,
+    enter: &'static str,
+    input: &Input,
+) {
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(80);
     // Label and gap, the line, gap, hints; plus a padding row each end.
@@ -218,5 +232,5 @@ pub(super) fn draw_entry(frame: &mut Frame, accent: Color, label: &str, input: &
     frame.render_widget(Line::from(vec!["› ".fg(accent), Span::raw(visible)]), line);
     let x = line.x + 2 + (input.cursor - offset) as u16;
     frame.set_cursor_position((x, line.y));
-    frame.render_widget(self::hints(&[("enter", "run"), ("esc", "cancel")]), keys);
+    frame.render_widget(self::hints(&[("enter", enter), ("esc", "cancel")]), keys);
 }

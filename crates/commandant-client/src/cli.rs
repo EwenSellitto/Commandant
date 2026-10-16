@@ -171,7 +171,7 @@ pub enum TokenCommand {
     /// Create a join token.
     Create {
         /// Lifetime, e.g. 30m, 1h, 7d. 0 = never expires.
-        #[arg(long, default_value = "1h", value_parser = parse_duration)]
+        #[arg(long, default_value = "1h", value_parser = commandant_common::time::parse_duration)]
         ttl: Duration,
         /// Allow the token to be used by several nodes.
         #[arg(long)]
@@ -238,23 +238,6 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
         .ok_or_else(|| format!("expected KEY=VALUE, got {s:?}"))
 }
 
-fn parse_duration(s: &str) -> Result<Duration, String> {
-    let s = s.trim();
-    let unit_start = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
-    let (amount, unit) = s.split_at(unit_start);
-    let amount: u64 = amount
-        .parse()
-        .map_err(|_| format!("invalid duration {s:?}"))?;
-    let seconds_per_unit = match unit {
-        "" | "s" => 1,
-        "m" => 60,
-        "h" => 60 * 60,
-        "d" => 24 * 60 * 60,
-        _ => return Err(format!("invalid duration unit {unit:?} (use s, m, h or d)")),
-    };
-    Ok(Duration::from_secs(amount * seconds_per_unit))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,14 +295,5 @@ mod tests {
         assert!(try_parse(&["--token-file", "/t"]).is_err());
         assert!(parse(&["node", "ls", "--addr", "http://box:7400"]).is_some());
         assert!(parse(&["--addr", "http://box:7400", "node", "ls"]).is_some());
-    }
-
-    #[test]
-    fn parses_durations() {
-        assert_eq!(parse_duration("90"), Ok(Duration::from_secs(90)));
-        assert_eq!(parse_duration("30m"), Ok(Duration::from_secs(1800)));
-        assert_eq!(parse_duration("7d"), Ok(Duration::from_secs(7 * 86400)));
-        assert!(parse_duration("1w").is_err());
-        assert!(parse_duration("h").is_err());
     }
 }

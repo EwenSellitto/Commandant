@@ -12,6 +12,7 @@ pub mod chat;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
 mod intent;
+mod nodes;
 pub mod tasks;
 #[cfg(test)]
 mod tests;
@@ -64,6 +65,8 @@ pub(crate) struct State {
     /// Chats closed while at work: a task of theirs that starts after is
     /// cancelled, as nobody is left to see it.
     abandoned: HashSet<ChatId>,
+    /// Nodes the server forgot: a listing made before then still has them.
+    removed: HashSet<String>,
     /// The tasks, while they are shown.
     tasks: Option<Tasks>,
     /// The output views open, oldest first.
@@ -213,6 +216,10 @@ impl State {
                     wanted: Wanted::Command { node },
                     ..
                 }) if !text.trim().is_empty() => self.run_on(&node, &text),
+                Some(Ask::Enter {
+                    wanted: Wanted::Lifetime,
+                    ..
+                }) => self.create_token(&text),
                 asked => {
                     self.ask = asked;
                     Outcome::default()
@@ -248,6 +255,9 @@ impl State {
             Intent::CloseOutput(id) => self.close_output(id),
             Intent::CancelTask(task_id) => self.cancel_task(task_id),
             Intent::Run { node, line } => self.run_on(&node, &line),
+            Intent::AddNode => self.add_node(),
+            Intent::RemoveNode(node) => self.ask_to_remove(&node),
+            Intent::StartAgent(node) => self.start_agent(&node),
         }
     }
 
@@ -488,6 +498,7 @@ impl State {
             Choose::CancelAndClose(id) => self.cancel_and_close(id),
             Choose::Harness { node, harness } => self.start_harness(node, harness),
             Choose::TasksOf(node) => self.list_tasks(node),
+            Choose::RemoveNode(node) => self.remove_node(node),
             _ => Outcome::default(),
         }
     }
@@ -604,8 +615,13 @@ impl State {
                 }
                 Outcome::default()
             }
-            Update::Nodes(nodes) if nodes == self.nodes => Outcome::default(),
-            Update::Nodes(nodes) => {
+            Update::Nodes(mut nodes) => {
+                // Once the server no longer lists one, it is gone for good.
+                self.removed.retain(|id| nodes.iter().any(|n| &n.id == id));
+                nodes.retain(|n| !self.removed.contains(&n.id));
+                if nodes == self.nodes {
+                    return Outcome::default();
+                }
                 for chat in &mut self.chats {
                     if let Some(node) = nodes.iter().find(|n| n.id == chat.node.id) {
                         chat.on_message(Message::Node(node.clone()));
@@ -639,6 +655,8 @@ impl State {
                 outcome
             }
             Update::Tasks { list, tasks } => self.on_tasks(list, tasks),
+            Update::TokenCreated { ttl, link } => self.on_token(ttl, link),
+            Update::NodeRemoved(node, removed) => self.on_removed(&node, removed),
             Update::Output(id, event) => self.on_output(id, event),
             Update::CancelFailed { task_id, error } => {
                 self.notice = format!("couldn't cancel task {task_id}: {error}");

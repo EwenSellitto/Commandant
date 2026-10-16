@@ -31,7 +31,6 @@ pub enum Ask {
         yes: Choose,
     },
     /// Something to read, or copy.
-    #[allow(dead_code, reason = "nothing asks for one yet")]
     Show {
         /// What it is: "Link".
         title: String,
@@ -69,6 +68,8 @@ pub enum Wanted {
     Code { provider: String, index: u32 },
     /// A shell command to run on a node, in its worker's directory.
     Command { node: String },
+    /// How long a new node's join token lasts.
+    Lifetime,
 }
 
 /// What choosing one of the [`Choices`] means.
@@ -106,6 +107,8 @@ pub enum Choose {
     CancelAndClose(ChatId),
     /// Show the tasks of a node, or of every node.
     TasksOf(Option<String>),
+    /// Remove a node.
+    RemoveNode(String),
     /// An agent harness to start on a node that hosts none.
     Harness {
         node: String,

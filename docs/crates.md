@@ -37,7 +37,7 @@ code, so every front end shares it. Code used by several crates goes in
 | `fs.rs` | Private (0600) files, written atomically; reading optional and single-value files; deleting a file or directory |
 | `dirs.rs` | Default data, state and config directories |
 | `lookup.rs` | Finding a node by name, id or id prefix, and a task by id or id prefix |
-| `time.rs` | Unix time, and `12s ago` for tables |
+| `time.rs` | Unix time, `12s ago` for tables, and lifetimes as typed (`30m`, `1h`, `7d`) |
 
 ## `commandant-proto`
 
@@ -94,7 +94,7 @@ code, so every front end shares it. Code used by several crates goes in
 | `admin.rs`, `run.rs` | `login`, `token`, `node`, `task`; `run`, `prompt` and `task watch`: plain gRPC calls |
 | `start.rs` | What `tui` and `gui` give the core: new chats' defaults, and the chat `--node` and `--session` open first |
 | `tui/mod.rs` | The TUI's event loop: draws, reads keys, hands the core's updates back to it |
-| `tui/app.rs` | The screen shown (nodes, a chat, the tasks or a task's output) and where Esc goes back to, the highlighted node and task, the last chat per node, the app's own line (`r` on the nodes); routes keys to intents |
+| `tui/app.rs` | The screen shown (nodes, a chat, the tasks or a task's output) and where Esc goes back to, the highlighted node and task, the last chat per node, the app's own line (`r` and `a` on the nodes), what to copy to the clipboard (OSC 52, `c` on a show-ask); routes keys to intents |
 | `tui/chat.rs` | A chat's prompt (editing, history recall, completion highlight) and scroll |
 | `tui/ui/`, `tui/text.rs` | Drawing (`tasks.rs`: the task list, and an output filling the screen), and markdown styling |
 | `tui/asks.rs`, `tui/picker.rs` | What keys say to an ask: the floating list, narrowed down by typing, for a choose-ask, a panel for a confirm- or show-ask; a chat's enter-ask is typed in its prompt, the app's in a box of its own. The app's and each chat's picker are shown from one map |
@@ -122,10 +122,11 @@ server, which keeps the calls it would make.
 | File | |
 |---|---|
 | `lib.rs` | `Core`: starts on a working connection, takes intents and updates, makes the calls they ask for on the tokio runtime it is given, and is read through `&` accessors; `shutdown` cancels running tasks |
-| `calls.rs` | The connection to the server and every call made on it: prompt and command streams, questions to nodes, cancels, the 5-second node poll, task listings, and the watches that feed output views and attached turns |
+| `calls.rs` | The connection to the server and every call made on it: prompt and command streams, questions to nodes, cancels, the 5-second node poll, task listings, the watches that feed output views and attached turns, join tokens (turned into a worker's link to the server as logged in to) and removing nodes |
 | `config.rs` | Where clients find the server and token (none yet before the first log in), reading a pasted link, saving the server, and connecting |
 | `state/mod.rs` | What the client knows: the nodes and every chat |
 | `state/tasks/` | The task list, refreshed while open and filtered by node; output views fed by `WatchTask` (or by a command run on a node), followed while their task runs; opening a prompt task resumes its session, attached to its turn while that runs |
+| `state/nodes/` | Managing the nodes: adding one (an enter-ask for its token's lifetime, then a show-ask with the worker's command), removing one once confirmed (its chats close), starting an agent on one that hosts none |
 | `state/intent.rs`, `state/ask.rs` | What goes in (intents, updates) and comes out (effects, where to go, prompt edits); the asks (choose, enter, confirm, show), one per chat and one for the app |
 | `state/chat/` | One chat: its session, settings, thread and line language (`/model`, `/project`, the agent's `/skill`, `!command`); what it offers to choose, provider sign-in, projects, and the commands run with `!` (`run.rs`: a block each, beside the agent's turn) in their own files |
 

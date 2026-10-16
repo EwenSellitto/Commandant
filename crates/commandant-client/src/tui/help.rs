@@ -51,13 +51,24 @@ const COMMAND_KEYS: [(&str, &str); 7] = [
 ];
 
 /// The node list's keys.
-const NODE_KEYS: [(&str, &str, Option<Key>); 6] = [
+const NODE_KEYS: [(&str, &str, Option<Key>); 9] = [
     ("↑ ↓  j k", "move", None),
     ("Enter", "open the node's sessions", key(KeyCode::Enter)),
     (
         "r",
         "run a shell command on the node, in its worker's directory",
         key(KeyCode::Char('r')),
+    ),
+    (
+        "a",
+        "add a node: the command that enrols a machine",
+        key(KeyCode::Char('a')),
+    ),
+    ("d", "remove the node", key(KeyCode::Char('d'))),
+    (
+        "s",
+        "start an agent on a node that hosts none",
+        key(KeyCode::Char('s')),
     ),
     ("Ctrl-H", "everything the nodes have run", ctrl('h')),
     ("F1  ?", "what every key does", None),

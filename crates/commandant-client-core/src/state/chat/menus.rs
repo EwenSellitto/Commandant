@@ -226,7 +226,8 @@ impl Chat {
             | Choose::Saved(_)
             | Choose::CancelAndClose(_)
             | Choose::Harness { .. }
-            | Choose::TasksOf(_) => {}
+            | Choose::TasksOf(_)
+            | Choose::RemoveNode(_) => {}
         }
         Outcome::default()
     }
