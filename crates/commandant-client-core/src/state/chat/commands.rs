@@ -149,6 +149,23 @@ impl Chat {
             .collect()
     }
 
+    /// `text` with its completion `at` filled in, ready for its arguments.
+    pub fn completed(&self, text: &str, at: usize) -> Option<String> {
+        let (name, _) = self.completions(text).into_iter().nth(at)?;
+        Some(format!("/{name} "))
+    }
+
+    /// What Enter sends of `text`, its completion `at` highlighted: a partly
+    /// typed command runs that one.
+    pub fn sent_for(&self, text: &str, at: usize) -> String {
+        match self.completed(text, at) {
+            Some(command) if text.len() > 1 && !self.is_command(&text[1..]) => {
+                command.trim_end().to_string()
+            }
+            _ => text.to_string(),
+        }
+    }
+
     /// Whether `name` is one of the chat's commands or the agent's.
     pub fn is_command(&self, name: &str) -> bool {
         let own = COMMANDS.iter().chain(&ALIASES).any(|(n, _)| *n == name);

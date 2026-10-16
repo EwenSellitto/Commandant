@@ -596,6 +596,14 @@ fn slash_commands_complete_by_name() {
     assert_eq!(app.command_len("/model smart"), 6);
     assert_eq!(app.command_len("/review it"), 7);
     assert_eq!(app.command_len("/nope x"), 0);
+
+    // Filled in ready for arguments; Enter runs a partly typed one.
+    assert_eq!(app.completed("/s", 1).as_deref(), Some("/sessions "));
+    assert_eq!(app.completed("/s", 5), None);
+    assert_eq!(app.sent_for("/s", 1), "/sessions");
+    assert_eq!(app.sent_for("/review", 0), "/review", "already a command");
+    assert_eq!(app.sent_for("/", 0), "/", "nothing typed to complete");
+    assert_eq!(app.sent_for("hi", 0), "hi");
 }
 
 #[test]

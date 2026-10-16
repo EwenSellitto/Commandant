@@ -9,9 +9,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 
 use super::{MUTED, PANEL, SELECTED, hints, spinner};
+use crate::picker::{Filtered, Picker, Row};
 use crate::tui::chat::Input;
 use crate::tui::help::Help;
-use crate::tui::picker::{Filtered, Picker, Row};
 use crate::tui::text;
 
 /// The commands completing what is typed, on a panel at the bottom of

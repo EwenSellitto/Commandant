@@ -13,7 +13,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::asks;
 use super::chat::{ChatView, Input};
 use super::help::{Does, Help};
-use super::picker::{Picked, Picker};
+use crate::picker::{Picked, Picker};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Screen {

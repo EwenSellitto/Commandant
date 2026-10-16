@@ -1,5 +1,5 @@
-//! A list narrowed down by typing, and the floating window for answering
-//! an [`Ask::Choose`] with one.
+//! A list narrowed down by typing, and what answers an [`Ask::Choose`]
+//! with one: driven by keys in the TUI, by the GUI's filter field.
 //!
 //! [`Ask::Choose`]: commandant_client_core::Ask::Choose
 

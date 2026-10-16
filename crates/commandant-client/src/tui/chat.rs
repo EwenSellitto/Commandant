@@ -65,16 +65,7 @@ impl ChatView {
             KeyCode::Down if completing => self.suggested = (self.suggested + 1) % count,
             KeyCode::Up => self.recall(chat.sent(), -1),
             KeyCode::Down => self.recall(chat.sent(), 1),
-            KeyCode::Tab if completing => self.complete(&suggestions),
-            // A partly typed command runs the one highlighted.
-            KeyCode::Enter
-                if completing
-                    && self.input.text.len() > 1
-                    && !chat.is_command(&self.input.text[1..]) =>
-            {
-                self.complete(&suggestions);
-                return self.submit(chat);
-            }
+            KeyCode::Tab if completing => self.complete(chat),
             KeyCode::Char('t') if ctrl => return Some(Intent::CycleEffort(id)),
             KeyCode::Tab => return Some(Intent::CycleAgent(id, 1)),
             KeyCode::BackTab => return Some(Intent::CycleAgent(id, -1)),
@@ -103,14 +94,19 @@ impl ChatView {
             self.input.clear();
             return Some(Intent::Enter(Scope::Chat(chat.id), text));
         }
-        self.recalled = None;
+        // A partly typed command runs the one highlighted; a recalled one
+        // was complete when sent.
+        let text = match self.recalled.take() {
+            None => chat.sent_for(&text, self.suggested),
+            Some(_) => text,
+        };
         Some(Intent::Submit(chat.id, text))
     }
 
     /// Fills in the highlighted completion, ready for its arguments.
-    fn complete(&mut self, suggestions: &[(String, String)]) {
-        if let Some((name, _)) = suggestions.get(self.suggested) {
-            self.input.set(&format!("/{name} "));
+    fn complete(&mut self, chat: &Chat) {
+        if let Some(text) = chat.completed(&self.input.text, self.suggested) {
+            self.input.set(&text);
         }
         self.suggested = 0;
     }

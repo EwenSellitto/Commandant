@@ -7,7 +7,7 @@ use commandant_client_core::{ChatId, Core, Edit, Go, Intent, Next, Scope, Update
 use gpui::{Context, IntoElement, ParentElement as _, Render, Styled as _, Task, Window, div};
 use gpui_component::h_flex;
 
-use super::asks::Field;
+use super::asks::Question;
 use super::chat::Pane;
 use super::rows::{Change, rows};
 
@@ -21,8 +21,8 @@ pub(super) struct Connected {
     pub(super) last: HashMap<String, ChatId>,
     /// What the window keeps of each open chat.
     pub(super) panes: HashMap<ChatId, Pane>,
-    /// Where each question that takes typing is typed, by scope.
-    pub(super) fields: HashMap<Scope, Field>,
+    /// What the window keeps of each open question, by scope.
+    pub(super) questions: HashMap<Scope, Question>,
     /// Hands the core what its calls report, for as long as it is shown.
     _updates: Task<()>,
 }
@@ -64,7 +64,7 @@ impl Connected {
             shown: None,
             last: HashMap::new(),
             panes: HashMap::new(),
-            fields: HashMap::new(),
+            questions: HashMap::new(),
             _updates: pump,
         };
         if let Some(open) = open {
@@ -127,12 +127,12 @@ impl Connected {
     /// Puts the keys where they go: the question over the window, else the
     /// one over the chat shown, else its prompt.
     fn refocus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let field = [Some(Scope::App), self.shown.map(Scope::Chat)]
+        let question = [Some(Scope::App), self.shown.map(Scope::Chat)]
             .into_iter()
             .flatten()
-            .find_map(|scope| self.fields.get(&scope));
-        if let Some(field) = field {
-            return field.focus(window, cx);
+            .find_map(|scope| self.questions.get(&scope));
+        if let Some(question) = question {
+            return question.focus(window, cx);
         }
         if let Some(pane) = self.shown.and_then(|id| self.panes.get(&id)) {
             let composer = pane.composer.clone();
@@ -156,14 +156,14 @@ impl Connected {
             .chain(core.chats().iter().map(|c| Scope::Chat(c.id)))
             .collect();
         // A question that comes or goes takes the keys or gives them back.
-        let mut shown = std::mem::take(&mut self.fields);
+        let mut shown = std::mem::take(&mut self.questions);
         let mut moved = false;
         for scope in scopes {
             let kept = shown.remove(&scope);
-            let was = kept.as_ref().map(|f| f.input.clone());
-            let field = Field::sync(self.core.ask(scope), kept, scope, window, cx);
-            moved |= field.as_ref().map(|f| f.input.clone()) != was;
-            self.fields.extend(field.map(|f| (scope, f)));
+            let was = kept.as_ref().map(|q| q.focus.clone());
+            let question = Question::sync(self.core.ask(scope), kept, scope, window, cx);
+            moved |= question.as_ref().map(|q| q.focus.clone()) != was;
+            self.questions.extend(question.map(|q| (scope, q)));
         }
         if moved {
             self.refocus(window, cx);

@@ -94,34 +94,37 @@ impl Connected {
         let (Some(chat), Some(pane)) = (self.core.chat(id), self.panes.get(&id)) else {
             return;
         };
-        let mut text = pane.composer.read(cx).value().to_string();
+        let text = pane.composer.read(cx).value();
         if text.trim().is_empty() {
             return;
         }
         // A partly typed command runs the one highlighted.
-        if let Some((name, _)) = suggestions(chat, pane, cx).get(pane.suggested)
-            && text.len() > 1
-            && !chat.is_command(&text[1..])
-        {
-            text = format!("/{name}");
-        }
+        let text = chat.sent_for(&text, pane.suggested);
         // The core clears the prompt once it has taken it.
         self.act(Intent::Submit(id, text), window, cx);
     }
 
-    /// Fills in the completion `at`, ready for its arguments.
-    fn complete(&mut self, id: ChatId, at: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// Fills in the completion `at`, ready for its arguments; `false` when
+    /// there is none.
+    fn complete(
+        &mut self,
+        id: ChatId,
+        at: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let (Some(chat), Some(pane)) = (self.core.chat(id), self.panes.get_mut(&id)) else {
-            return;
+            return false;
         };
-        if let Some((name, _)) = suggestions(chat, pane, cx).get(at) {
-            let text = format!("/{name} ");
-            pane.composer.update(cx, |composer, cx| {
-                composer.set_value(text, window, cx);
-                composer.focus(window, cx);
-            });
-        }
         pane.suggested = 0;
+        let Some(text) = chat.completed(&pane.composer.read(cx).value(), at) else {
+            return false;
+        };
+        pane.composer.update(cx, |composer, cx| {
+            composer.set_value(text, window, cx);
+            composer.focus(window, cx);
+        });
+        true
     }
 
     /// ↑↓ through the completions; `false` when there are none, so the
@@ -300,16 +303,8 @@ fn render_composer(
         }))
         // Tab completes the highlighted command.
         .capture_action(cx.listener(move |this, _: &IndentInline, window, cx| {
-            let Some(pane) = this.panes.get(&id) else {
-                return;
-            };
-            let at = pane.suggested;
-            let completing = this
-                .core
-                .chat(id)
-                .is_some_and(|chat| !suggestions(chat, pane, cx).is_empty());
-            if completing {
-                this.complete(id, at, window, cx);
+            let at = this.panes.get(&id).map_or(0, |pane| pane.suggested);
+            if this.complete(id, at, window, cx) {
                 cx.stop_propagation();
             }
         }))
@@ -334,8 +329,11 @@ fn render_completions(chat: &Chat, pane: &Pane, cx: &mut Context<Connected>) -> 
     let color = agent_color(chat, chat.agent(), cx);
     let rows = suggestions.iter().enumerate().map(|(at, (name, about))| {
         let name = div().text_color(color).child(format!("/{name}"));
-        list_row(("completion", at), name, about, at == pane.suggested, cx)
-            .on_click(cx.listener(move |this, _, window, cx| this.complete(id, at, window, cx)))
+        list_row(("completion", at), name, about, at == pane.suggested, cx).on_click(cx.listener(
+            move |this, _, window, cx| {
+                this.complete(id, at, window, cx);
+            },
+        ))
     });
     Some(
         div().absolute().bottom_full().left_3().right_3().child(
