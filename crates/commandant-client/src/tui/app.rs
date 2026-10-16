@@ -24,6 +24,14 @@ pub enum Screen {
     Output(OutputId),
 }
 
+/// How the person leaves the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leave {
+    Quit,
+    /// Forgetting the server, for another's link.
+    LogOut,
+}
+
 /// Lines moved by PageUp / PageDown in an output.
 const PAGE: u16 = 10;
 
@@ -55,7 +63,7 @@ pub struct App {
     /// What was put on it last, to say it was.
     pub copied: Option<String>,
     /// Set once the person has asked to leave.
-    pub quit: bool,
+    pub leaving: Option<Leave>,
 }
 
 impl App {
@@ -81,7 +89,7 @@ impl App {
             help: None,
             copying: None,
             copied: None,
-            quit: false,
+            leaving: None,
         }
     }
 
@@ -150,7 +158,7 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         if ctrl && matches!(key.code, KeyCode::Char('c' | 'd')) {
-            self.quit = true;
+            self.leaving = Some(Leave::Quit);
             return;
         }
         if let Some(help) = &mut self.help {
@@ -215,7 +223,7 @@ impl App {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => self.selected = (self.selected + 1).min(last),
-            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('q') => self.leaving = Some(Leave::Quit),
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Enter => self.open_selected_node(),
             KeyCode::Char('r') => {
@@ -425,7 +433,8 @@ impl App {
                 self.go_to(Screen::Tasks);
             }
             Some(Go::Output(id)) => self.go_to(Screen::Output(id)),
-            Some(Go::Quit) => self.quit = true,
+            Some(Go::Quit) => self.leaving = Some(Leave::Quit),
+            Some(Go::LogOut) => self.leaving = Some(Leave::LogOut),
             Some(Go::Help) => self.open_help(),
             // Still looking at it: open it.
             Some(Go::Ready(node)) => {
@@ -700,17 +709,30 @@ pub(crate) mod tests {
         let (id, _) = send(&mut working, "one");
         working.on_update(Update::Chat(id, started("t1")));
         working.on_key(ctrl('c'));
-        assert!(working.quit);
+        assert_eq!(working.leaving, Some(Leave::Quit));
 
         let mut listing = app();
         listing.on_key(key(KeyCode::Char('q')));
-        assert!(listing.quit);
+        assert_eq!(listing.leaving, Some(Leave::Quit));
 
         let mut typing = app();
         typing.on_key(key(KeyCode::Enter));
         type_text(&mut typing, "/quit");
         typing.on_key(key(KeyCode::Enter));
-        assert!(typing.quit);
+        assert_eq!(
+            typing.leaving,
+            Some(Leave::Quit),
+            "quitting keeps the server"
+        );
+    }
+
+    #[test]
+    fn logging_out_leaves_for_another_server() {
+        let mut app = app();
+        app.on_key(key(KeyCode::Enter));
+        type_text(&mut app, "/logout");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.leaving, Some(Leave::LogOut));
     }
 
     #[test]

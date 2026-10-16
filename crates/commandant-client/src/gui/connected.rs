@@ -96,9 +96,10 @@ impl Connected {
         match go {
             Some(Go::Chat(id)) => self.show(id, window, cx),
             Some(Go::Nodes) => self.shown = None,
-            // Quitting, the help, and the nodes, tasks and output views
-            // come with the views that go there.
-            Some(Go::Quit | Go::Help | Go::Ready(_) | Go::Tasks | Go::Output(_)) | None => {}
+            // Quitting, logging out, the help, and the nodes, tasks and
+            // output views come with the views that go there.
+            Some(Go::Quit | Go::LogOut | Go::Help | Go::Ready(_) | Go::Tasks | Go::Output(_))
+            | None => {}
         }
     }
 

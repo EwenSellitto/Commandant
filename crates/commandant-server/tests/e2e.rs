@@ -1383,6 +1383,19 @@ mod agents {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_core_shows_the_link_of_the_server_it_is_on() {
+        let cluster = cluster().await;
+        let (mut core, _updates, chat) = core_with_a_chat(&cluster.connection).await;
+        core.act(Intent::Submit(chat, "/link".into()));
+        let Some(Ask::Show { text, .. }) = core.ask(Scope::App) else {
+            panic!("the link should be shown");
+        };
+        let shown = Client::from_link(text).unwrap();
+        assert_eq!(shown.addr, cluster.connection.addr);
+        assert_eq!(shown.token, cluster.connection.token);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_core_sends_a_prompt_and_shows_the_reply() {
         let cluster = cluster().await;
         let (mut core, mut updates, chat) = core_with_a_chat(&cluster.connection).await;

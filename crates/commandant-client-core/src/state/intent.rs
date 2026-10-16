@@ -86,6 +86,8 @@ pub enum Go {
     /// One task's output.
     Output(OutputId),
     Quit,
+    /// Leave, forgetting the server: back to pasting a link.
+    LogOut,
     /// What every command and key does.
     Help,
     /// The node hosts an agent now: worth opening, if it is the one in view.

@@ -1,6 +1,6 @@
 //! Client settings: flags/env first, then `~/.config/commandant/config.toml`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use commandant_common::link::Link;
@@ -12,6 +12,13 @@ use serde::{Deserialize, Serialize};
 pub struct FileConfig {
     pub addr: Option<String>,
     pub token: Option<String>,
+}
+
+impl FileConfig {
+    /// Whether this is where `client`'s server is saved.
+    fn names(&self, client: &Client) -> bool {
+        self.addr.as_ref() == Some(&client.addr) && self.token.as_ref() == Some(&client.token)
+    }
 }
 
 pub fn load() -> Result<FileConfig> {
@@ -63,6 +70,32 @@ pub fn remember(client: &Client) -> Result<PathBuf> {
         addr: Some(client.addr.clone()),
         token: Some(client.token.clone()),
     })
+}
+
+/// Forgets the saved server, so the next client run asks for a link; the
+/// config file it was saved in, if it was.
+pub fn forget() -> Result<Option<PathBuf>> {
+    let path = dirs::client_config()?;
+    Ok(forget_at(&path)?.then_some(path))
+}
+
+/// Forgets the saved server if it is `client`'s, and not one flags or the
+/// environment named instead; a config file that can't be read goes too.
+/// Whether it was forgotten.
+pub fn forget_if_saved(client: &Client) -> Result<bool> {
+    if load().is_ok_and(|saved| !saved.names(client)) {
+        return Ok(false);
+    }
+    Ok(forget()?.is_some())
+}
+
+/// Removes the config file at `path`; whether there was one.
+fn forget_at(path: &Path) -> Result<bool> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("removing {}", path.display())),
+    }
 }
 
 pub fn resolve(
@@ -141,6 +174,32 @@ mod tests {
             panic!("a URL was taken for a link");
         };
         assert!(e.to_string().contains("commandant://"), "{e:#}");
+    }
+
+    #[test]
+    fn a_config_names_the_server_it_saved_and_no_other() {
+        let client = Client::from_link(&link().to_string()).unwrap();
+        let saved = FileConfig {
+            addr: Some(client.addr.clone()),
+            token: Some(client.token.clone()),
+        };
+        assert!(saved.names(&client));
+        let elsewhere = Client {
+            addr: "https://10.0.0.2:7400".into(),
+            ..client.clone()
+        };
+        assert!(!saved.names(&elsewhere));
+        assert!(!FileConfig::default().names(&client), "nothing is saved");
+    }
+
+    #[test]
+    fn a_forgotten_server_is_no_longer_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "addr = \"x\"\ntoken = \"y\"\n").unwrap();
+        assert!(forget_at(&path).unwrap(), "it was saved");
+        assert!(!path.exists());
+        assert!(!forget_at(&path).unwrap(), "nothing is left to forget");
     }
 
     #[test]

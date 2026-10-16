@@ -11,6 +11,10 @@ use crate::state::{Edit, Effect, Outcome};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::state) enum AppCommand {
     Quit,
+    /// Leave, forgetting the server.
+    LogOut,
+    /// Show the server's link.
+    Link,
     New,
     Sessions,
     Nodes,
@@ -20,7 +24,7 @@ pub(in crate::state) enum AppCommand {
 }
 
 /// The chat's own commands, for completing and for a front end's help.
-pub const COMMANDS: [(&str, &str); 14] = [
+pub const COMMANDS: [(&str, &str); 16] = [
     ("help", "what every command and key does"),
     ("agent", "choose an agent"),
     ("model", "choose a model"),
@@ -40,17 +44,13 @@ pub const COMMANDS: [(&str, &str); 14] = [
         "tasks",
         "everything the nodes have run, to read, follow or cancel",
     ),
+    ("link", "the server's link, to connect another client"),
+    ("logout", "forget this server, to paste another's link"),
     ("quit", "leave"),
 ];
 /// Other names for some of the [`COMMANDS`]: each alias, and the command it
 /// stands for.
-pub const ALIASES: [(&str, &str); 5] = [
-    ("commands", "skills"),
-    ("login", "providers"),
-    ("exit", "quit"),
-    ("logout", "providers"),
-    ("?", "help"),
-];
+pub const ALIASES: [(&str, &str); 3] = [("commands", "skills"), ("exit", "quit"), ("?", "help")];
 
 impl Chat {
     /// Takes a line: a prompt or a `/command`. A line that is the app's to
@@ -75,6 +75,8 @@ impl Chat {
             let (command, filter) = command.split_once(' ').unwrap_or((command, ""));
             let app = match command {
                 "quit" | "exit" => return (Outcome::default(), Some(AppCommand::Quit)),
+                "logout" => return (Outcome::default(), Some(AppCommand::LogOut)),
+                "link" => Some(AppCommand::Link),
                 "new" => Some(AppCommand::New),
                 "sessions" => Some(AppCommand::Sessions),
                 "nodes" => Some(AppCommand::Nodes),
@@ -92,7 +94,15 @@ impl Chat {
                 "effort" => Menu::Effort,
                 "commands" | "skills" => Menu::Command,
                 "mcp" => Menu::Mcp,
-                "providers" | "login" | "logout" => {
+                // Logging in is the client's, and done: no way to sign in.
+                "login" => {
+                    self.info(
+                        "this client is logged in to its server: /logout forgets it; \
+                         /providers signs the agent in to a model provider",
+                    );
+                    return (self.cleared(None), None);
+                }
+                "providers" => {
                     let effect = self.list_providers(filter.trim());
                     return (self.cleared(effect), None);
                 }
