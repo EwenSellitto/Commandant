@@ -1,6 +1,7 @@
 //! Drawing, without boxes. A chat: a status line and the node's chats on top,
 //! the thread, the prompt on a solid slab, the settings underneath, and the
-//! question asked floating over it all. Or the list of nodes.
+//! question asked floating over it all. Or the list of nodes, the list of
+//! tasks, or one task's output.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -9,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use commandant_client_core::chat::{self, Activity, Chat, Ended, Entry, Role, Run, Unseen};
-use commandant_client_core::{Ask, ChatId};
+use commandant_client_core::{Ask, ChatId, Scope};
 use commandant_common::or;
 
 use super::app::{App, Screen};
@@ -19,11 +20,13 @@ use super::text::{self, MUTED};
 
 mod lists;
 mod nodes;
+mod tasks;
 #[cfg(test)]
 mod tests;
 
-use self::lists::{draw_dialog, draw_help, draw_picker, draw_suggestions};
+use self::lists::{draw_dialog, draw_entry, draw_help, draw_picker, draw_suggestions};
 use self::nodes::draw_nodes;
+use self::tasks::{draw_output, draw_tasks};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// The prompt's slab.
@@ -51,10 +54,17 @@ const INDENT: &str = "  ";
 pub fn draw(frame: &mut Frame, app: &mut App) {
     app.sync();
     let area = frame.area().inner(ratatui::layout::Margin::new(1, 0));
-    let Screen::Chat(id) = app.screen else {
-        draw_nodes(frame, app, area);
-        draw_asks(frame, app, Color::Cyan);
-        return;
+    let id = match app.screen {
+        Screen::Chat(id) => id,
+        Screen::Nodes => return draw_alone(frame, app, |f, app| draw_nodes(f, app, area)),
+        Screen::Tasks => return draw_alone(frame, app, |f, app| draw_tasks(f, app, area)),
+        Screen::Output(id) => {
+            return draw_alone(frame, app, |f, app| {
+                if let Some(output) = app.core.output(id) {
+                    draw_output(f, output, &mut app.output_scroll, area);
+                }
+            });
+        }
     };
     let [header, tabs, thread, status, input, footer] = Layout::vertical([
         Constraint::Length(1),
@@ -85,13 +95,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_asks(frame, app, accent);
 }
 
+/// A screen with no chat on it, then what is asked over it.
+fn draw_alone(frame: &mut Frame, app: &mut App, draw: impl FnOnce(&mut Frame, &mut App)) {
+    draw(frame, app);
+    draw_asks(frame, app, Color::Cyan);
+}
+
 /// What is asked on screen, the one on top drawn last, then the help over
 /// it all.
 fn draw_asks(frame: &mut Frame, app: &App, accent: Color) {
     for scope in app.scopes().into_iter().rev() {
-        match app.pickers.get(&scope) {
-            Some(picker) => draw_picker(frame, accent, picker),
-            None => draw_dialog(frame, accent, app.core.ask(scope)),
+        match (app.pickers.get(&scope), app.core.ask(scope)) {
+            (Some(picker), _) => draw_picker(frame, accent, picker),
+            // A chat's line is typed in its prompt.
+            (None, Some(Ask::Enter { label, .. })) if scope == Scope::App => {
+                draw_entry(frame, accent, label, &app.entry)
+            }
+            (None, ask) => draw_dialog(frame, accent, ask),
         }
     }
     if let Some(help) = &app.help {
@@ -297,23 +317,38 @@ fn command_rows(entry: &Entry, width: usize) -> Vec<Line<'static>> {
     let Some(run) = &entry.run else {
         return rows;
     };
+    rows.extend(output_rows(run, width));
+    rows.extend(text::wrap(
+        end_line(run),
+        width,
+        &"└ ".fg(MUTED),
+        &INDENT.into(),
+    ));
+    rows
+}
+
+/// What a command printed, behind its gutter, wrapped to `width`.
+fn output_rows(run: &Run, width: usize) -> Vec<Line<'static>> {
     let gutter = "│ ".fg(MUTED);
     let dropped = run
         .dropped
         .then(|| Line::from("… its earlier output wasn't kept".fg(MUTED).italic()));
-    for line in dropped.into_iter().chain(output_lines(run)) {
-        rows.extend(text::wrap(line, width, &gutter, &gutter));
-    }
-    let end = match &run.ended {
+    let lines = dropped.into_iter().chain(output_lines(run));
+    lines
+        .flat_map(|line| text::wrap(line, width, &gutter, &gutter))
+        .collect()
+}
+
+/// How a command ended, or that it still runs.
+fn end_line(run: &Run) -> Line<'static> {
+    match &run.ended {
         None if run.stopping() => stopping(),
         None => Line::from(format!("{} running", spinner())).cyan(),
         Some(ended) if ended.succeeded() => Line::from("exit 0").fg(MUTED),
         Some(Ended::Exited(code)) => Line::from(format!("exit {code}")).red(),
         Some(Ended::Cancelled) => Line::from("cancelled").yellow(),
         Some(Ended::Failed(why)) => Line::from(why.clone()).red(),
-    };
-    rows.extend(text::wrap(end, width, &"└ ".fg(MUTED), &INDENT.into()));
-    rows
+    }
 }
 
 /// What a command printed, line by line; a line can hold pieces of both

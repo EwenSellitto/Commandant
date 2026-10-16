@@ -1069,7 +1069,7 @@ mod fake_opencode;
 mod agents {
     use commandant_client_core::chat::{Ended, Role};
     use commandant_client_core::config::Client;
-    use commandant_client_core::{ChatId, Core, Go, Intent, Settings, Updates};
+    use commandant_client_core::{ChatId, Core, Go, Intent, OutputId, Scope, Settings, Updates};
     use commandant_worker::HarnessKind;
 
     use super::fake_opencode::FakeOpencode;
@@ -1490,6 +1490,221 @@ mod agents {
         follow(&mut core, &mut updates, "the command never stopped", over).await;
         assert_eq!(last_run(&core).unwrap().0, Some(Ended::Cancelled));
         assert!(!core.busy());
+    }
+
+    /// The id of the listed task whose command line is `line`, once listed
+    /// with status `status`.
+    fn listed(core: &Core, line: &str, status: &str) -> Option<String> {
+        let tasks = core.tasks()?;
+        let task = tasks
+            .tasks
+            .iter()
+            .find(|t| t.argv.last().is_some_and(|l| l == line))?;
+        (task.status == status).then(|| task.id.clone())
+    }
+
+    /// What an output view shows: its output, stdout and stderr together.
+    fn printed(core: &Core, id: OutputId) -> String {
+        let output = core.output(id).unwrap();
+        output.run.output.iter().map(|p| p.text.as_str()).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_core_lists_commands_and_prompts_newest_first_by_node() {
+        let cluster = cluster().await;
+        // A second node, which runs commands only.
+        let other = tokio::spawn(commandant_worker::run(WorkerConfig {
+            name: Some("w2".into()),
+            ..worker_config(
+                &cluster.connection.addr,
+                Some(cluster.connection.token.clone()),
+                &cluster._tmp.path().join("w2"),
+            )
+        }));
+        let mut client = cluster.client.clone();
+        let w2 = wait_for_named(&mut client, "w2", true).await;
+        let (mut core, mut updates, chat) = core_with_a_chat(&cluster.connection).await;
+        core.act(Intent::Submit(chat, "hello".into()));
+        let idle = |core: &Core| !working(core, chat);
+        follow(&mut core, &mut updates, "the turn never ended", idle).await;
+        core.act(Intent::Submit(chat, "!echo hi".into()));
+        let ran = |core: &Core| core.chat(chat).unwrap().runs().all(|r| !r.running());
+        follow(&mut core, &mut updates, "the command never ended", ran).await;
+        let request = RunCommandRequest {
+            node: "w2".into(),
+            argv: vec!["true".into()],
+            ..Default::default()
+        };
+        collect(
+            started(client.run_command(request).await.unwrap().into_inner())
+                .await
+                .1,
+        )
+        .await;
+
+        assert_eq!(
+            core.act(Intent::ListTasks { node: None }).go,
+            Some(Go::Tasks)
+        );
+        let three = |core: &Core| core.tasks().is_some_and(|t| t.tasks.len() == 3);
+        follow(
+            &mut core,
+            &mut updates,
+            "the tasks were never listed",
+            three,
+        )
+        .await;
+        let tasks = &core.tasks().unwrap().tasks;
+        let what: Vec<_> = tasks
+            .iter()
+            .map(|t| (t.node_name.as_str(), t.kind.as_str(), t.status.as_str()))
+            .collect();
+        assert_eq!(
+            what,
+            [
+                ("w2", "command", "succeeded"),
+                ("w1", "command", "succeeded"),
+                ("w1", "prompt", "succeeded"),
+            ]
+        );
+        assert_eq!(
+            tasks[2].session_id,
+            core.chat(chat).unwrap().settings.session_id
+        );
+
+        // Only w2's, and the list keeps up with what it runs next.
+        core.act(Intent::ListTasks {
+            node: Some(w2.id.clone()),
+        });
+        let one = |core: &Core| core.tasks().is_some_and(|t| t.tasks.len() == 1);
+        follow(&mut core, &mut updates, "w2's tasks were never listed", one).await;
+        let request = RunCommandRequest {
+            node: "w2".into(),
+            argv: vec!["sh".into(), "-c".into(), "echo again".into()],
+            ..Default::default()
+        };
+        collect(
+            started(client.run_command(request).await.unwrap().into_inner())
+                .await
+                .1,
+        )
+        .await;
+        let again = |core: &Core| listed(core, "echo again", "succeeded").is_some();
+        follow(&mut core, &mut updates, "the list never refreshed", again).await;
+        assert!(
+            core.tasks()
+                .unwrap()
+                .tasks
+                .iter()
+                .all(|t| t.node_id == w2.id)
+        );
+        other.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_core_runs_a_command_on_a_node_and_watches_tasks() {
+        let cluster = cluster().await;
+        let (mut core, mut updates, _) = core_with_a_chat(&cluster.connection).await;
+        let node = core.nodes()[0].id.clone();
+        let go = cluster._tmp.path().join("go");
+        let line = format!(
+            "pwd; while [ ! -e {} ]; do sleep 0.02; done; echo done",
+            go.display()
+        );
+
+        // It asks for the line, then shows its output as it comes.
+        let asked = core.act(Intent::Run {
+            node: node.clone(),
+            line: String::new(),
+        });
+        assert!(asked.go.is_none());
+        assert!(core.ask(Scope::App).is_some_and(|a| a.wants_line()));
+        let Some(Go::Output(ran)) = core.act(Intent::Enter(Scope::App, line.clone())).go else {
+            panic!("running should show its output");
+        };
+        let worker_dir = |core: &Core| printed(core, ran).ends_with('\n');
+        follow(&mut core, &mut updates, "it never printed", worker_dir).await;
+        let pwd = printed(&core, ran);
+
+        // Watched from the list while it runs, it replays, then follows.
+        core.act(Intent::ListTasks { node: None });
+        let running = |core: &Core| listed(core, &line, "running").is_some();
+        follow(&mut core, &mut updates, "it was never listed", running).await;
+        let task = listed(&core, &line, "running").unwrap();
+        let Some(Go::Output(watched)) = core.act(Intent::OpenTask(task.clone())).go else {
+            panic!("a command should open on its output");
+        };
+        let replayed = |core: &Core| printed(core, watched) == pwd;
+        follow(&mut core, &mut updates, "it was never replayed", replayed).await;
+        assert!(core.output(watched).unwrap().following());
+        std::fs::write(&go, "").unwrap();
+        let over = |core: &Core| {
+            [ran, watched]
+                .iter()
+                .all(|&id| !core.output(id).unwrap().following())
+        };
+        follow(&mut core, &mut updates, "it never ended", over).await;
+        for id in [ran, watched] {
+            assert_eq!(printed(&core, id), format!("{pwd}done\n"));
+            assert_eq!(core.output(id).unwrap().run.ended, Some(Ended::Exited(0)));
+        }
+
+        // Finished, it replays what it printed.
+        core.act(Intent::CloseOutput(watched));
+        let Some(Go::Output(again)) = core.act(Intent::OpenTask(task)).go else {
+            panic!("a command should open on its output");
+        };
+        let ended = |core: &Core| !core.output(again).unwrap().following();
+        follow(&mut core, &mut updates, "it was never replayed", ended).await;
+        assert_eq!(printed(&core, again), format!("{pwd}done\n"));
+        assert!(!core.output(again).unwrap().pruned);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_core_attaches_to_a_busy_turn_from_the_tasks() {
+        let mut cluster = cluster().await;
+        let first = prompt(&mut cluster.client, ask("hello")).await;
+        ok(&first);
+        let session = first.finished.session_id;
+        let (task_id, events) = start(&mut cluster.client, resume(&session, "hold it")).await;
+        cluster.fake.wait_held(1).await;
+
+        let handle = tokio::runtime::Handle::current();
+        let (mut core, mut updates) = Core::start(&cluster.connection, Settings::default(), handle)
+            .await
+            .unwrap();
+        core.act(Intent::ListTasks { node: None });
+        let running = |core: &Core| listed(core, "hold it", "running").is_some();
+        follow(
+            &mut core,
+            &mut updates,
+            "the turn was never listed",
+            running,
+        )
+        .await;
+        let Some(Go::Chat(chat)) = core.act(Intent::OpenTask(task_id.clone())).go else {
+            panic!("a prompt should open on its session");
+        };
+        assert!(working(&core, chat));
+        assert_eq!(core.chat(chat).unwrap().settings.session_id, session);
+        let loaded = |core: &Core| !core.chat(chat).unwrap().loading_history;
+        follow(&mut core, &mut updates, "the history never came", loaded).await;
+
+        // Started elsewhere, it isn't this core's to cancel on quitting.
+        core.shutdown().await;
+        assert!(!cluster.fake.log().iter().any(|l| l.ends_with("/abort")));
+
+        cluster.fake.release(&session);
+        collect(events).await;
+        let idle = |core: &Core| !working(core, chat);
+        follow(&mut core, &mut updates, "the turn never ended", idle).await;
+        let thread = &core.chat(chat).unwrap().thread;
+        let said: Vec<_> = thread
+            .iter()
+            .filter(|e| matches!(e.role, Role::User | Role::Agent))
+            .map(|e| e.text.trim())
+            .collect();
+        assert_eq!(said, ["hello", "echo: hello", "hold it", "echo: hold it"]);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -67,6 +67,8 @@ pub enum Wanted {
     ApiKey { provider: String },
     /// The code a provider's page showed, to finish its OAuth method `index`.
     Code { provider: String, index: u32 },
+    /// A shell command to run on a node, in its worker's directory.
+    Command { node: String },
 }
 
 /// What choosing one of the [`Choices`] means.
@@ -102,6 +104,8 @@ pub enum Choose {
     Saved(AgentSession),
     /// Close a chat, stopping what it is at.
     CancelAndClose(ChatId),
+    /// Show the tasks of a node, or of every node.
+    TasksOf(Option<String>),
     /// An agent harness to start on a node that hosts none.
     Harness {
         node: String,

@@ -6,6 +6,7 @@ use std::time::Duration;
 use commandant_proto::*;
 
 use super::chat::{Message, RunId};
+use super::tasks::{ListId, OutputId};
 use super::{ChatId, Choose};
 
 /// What the person asks for.
@@ -44,6 +45,21 @@ pub enum Intent {
     CycleEffort(ChatId),
     /// The chat has been looked at, so how its last turn ended is no news.
     Seen(ChatId),
+    /// Show the tasks of a node, or of every node, kept fresh until closed.
+    ListTasks { node: Option<String> },
+    /// Choose which node's tasks to show.
+    FilterTasks,
+    /// The tasks are no longer shown.
+    CloseTasks,
+    /// Show what a listed task did: a command's output, followed while it runs.
+    OpenTask(String),
+    /// The output view is no longer shown.
+    CloseOutput(OutputId),
+    /// Cancel a task, wherever it was started.
+    CancelTask(String),
+    /// Run a shell command on a node, in its worker's directory, in an
+    /// output view; an empty line asks for one.
+    Run { node: String, line: String },
 }
 
 /// Where a question, or an intent about one, belongs.
@@ -58,6 +74,10 @@ pub enum Scope {
 pub enum Go {
     Chat(ChatId),
     Nodes,
+    /// The tasks the system has run.
+    Tasks,
+    /// One task's output.
+    Output(OutputId),
     Quit,
     /// What every command and key does.
     Help,
@@ -187,6 +207,33 @@ pub enum Effect {
         node: String,
         harness: String,
     },
+    /// Follow a task's output, for an output view: what it printed so far,
+    /// then what it prints until it ends.
+    Watch {
+        output: OutputId,
+        task_id: String,
+    },
+    /// Follow a chat's turn started elsewhere: what it said so far, then
+    /// the rest.
+    WatchTurn {
+        chat: ChatId,
+        task_id: String,
+    },
+    /// Run a command for an output view.
+    RunOn {
+        output: OutputId,
+        request: RunCommandRequest,
+    },
+    /// Stop following the task of an output view.
+    StopWatching(OutputId),
+    /// Cancel a task; a failure is told in the notice.
+    CancelTask(String),
+    /// List the tasks of a node, or of every node, after a pause.
+    FetchTasks {
+        node: Option<String>,
+        after: Duration,
+        list: ListId,
+    },
 }
 
 impl Effect {
@@ -214,6 +261,18 @@ pub enum Update {
     Sessions(String, Result<Vec<AgentSession>, String>),
     /// The node, once it hosts the harness it was asked to start.
     HarnessStarted(String, Result<NodeInfo, String>),
+    /// What an output view's task reports, or why its stream broke.
+    Output(OutputId, Result<task_event::Event, String>),
+    /// A task couldn't be cancelled.
+    CancelFailed {
+        task_id: String,
+        error: String,
+    },
+    /// The tasks listed for a list, newest first.
+    Tasks {
+        list: ListId,
+        tasks: Result<Vec<TaskInfo>, String>,
+    },
 }
 
 /// Why a node couldn't say what its agent offers.

@@ -7,7 +7,7 @@ use commandant_proto::*;
 
 use super::events::decode;
 use super::{Chat, Entry, Role, Unseen};
-use crate::state::{ChatId, Effect, Outcome};
+use crate::state::{Effect, Outcome};
 
 /// Tells a chat's commands apart.
 pub type RunId = u64;
@@ -24,6 +24,8 @@ pub struct Run {
     pub output: Vec<Printed>,
     /// Whether the start of its output was dropped.
     pub dropped: bool,
+    /// How much of its output is kept, at most: the end of it.
+    keep: usize,
     /// How it ended; `None` while it runs.
     pub ended: Option<Ended>,
     /// Known once the server has started it.
@@ -59,11 +61,13 @@ impl Ended {
 }
 
 impl Run {
-    fn new(id: RunId) -> Self {
+    /// A command just asked for, keeping the last `keep` bytes it prints.
+    pub(in crate::state) fn new(id: RunId, keep: usize) -> Self {
         Self {
             id,
             output: Vec::new(),
             dropped: false,
+            keep,
             ended: None,
             task_id: None,
             cancelling: false,
@@ -82,18 +86,39 @@ impl Run {
     }
 
     /// Its task, while it runs.
-    fn task(&self) -> Option<&String> {
+    pub fn task(&self) -> Option<&String> {
         self.task_id.as_ref().filter(|_| self.running())
     }
 
-    /// Asks it to stop, once; its task is cancelled now if it has started.
-    fn cancel(&mut self, chat: ChatId) -> Option<Effect> {
+    /// Asks it to stop, once: the task to cancel now, if it has started.
+    pub(in crate::state) fn stop(&mut self) -> Option<String> {
         if !self.running() || self.cancelling {
             return None;
         }
         self.cancelling = true;
-        let task_id = self.task_id.clone()?;
-        Some(Effect::Cancel(chat, task_id))
+        self.task_id.clone()
+    }
+
+    /// Takes in what its task reports: the task to cancel, if it was asked
+    /// to stop before it had started.
+    pub(in crate::state) fn on_event(
+        &mut self,
+        event: Result<TaskEvent, String>,
+    ) -> Option<String> {
+        let ended = match event {
+            Ok(TaskEvent::Started(started)) => {
+                self.task_id = Some(started.task_id.clone());
+                return self.cancelling.then_some(started.task_id);
+            }
+            Ok(TaskEvent::Output(output)) => {
+                self.print(output.stream() == OutputStream::Stderr, &output.data);
+                return None;
+            }
+            Ok(TaskEvent::Finished(finished)) => Ended::from(finished),
+            Err(error) => Ended::Failed(error),
+        };
+        self.end(ended);
+        None
     }
 
     /// Adds what a stream printed, to the last piece if it came from the same one.
@@ -113,11 +138,11 @@ impl Run {
         self.keep_the_end();
     }
 
-    /// Drops the start of the output past [`KEPT`], up to the end of a
-    /// line, so the first line kept is whole.
+    /// Drops the start of the output past what is kept, up to the end of
+    /// a line, so the first line kept is whole.
     fn keep_the_end(&mut self) {
         let size: usize = self.output.iter().map(|p| p.text.len()).sum();
-        let mut excess = size.saturating_sub(KEPT);
+        let mut excess = size.saturating_sub(self.keep);
         while excess > 0
             && let Some(first) = self.output.first_mut()
         {
@@ -165,7 +190,7 @@ impl Chat {
             role: Role::Command,
             text: line.to_string(),
             agent: self.agent().to_string(),
-            run: Some(Run::new(id)),
+            run: Some(Run::new(id, KEPT)),
         });
         let request = RunCommandRequest {
             node: self.node.id.clone(),
@@ -206,7 +231,8 @@ impl Chat {
         let chat = self.id;
         let mut runs = self.runs_mut().filter(|r| r.running()).peekable();
         runs.peek()?;
-        Some(runs.filter_map(|r| r.cancel(chat)).collect())
+        let stops = runs.filter_map(|r| r.stop());
+        Some(stops.map(|task_id| Effect::Cancel(chat, task_id)).collect())
     }
 
     /// Takes in what a command's task reports, which may call for an effect.
@@ -214,28 +240,17 @@ impl Chat {
         let chat = self.id;
         // What comes after its end is too late to matter.
         let run = self.runs_mut().find(|r| r.id == id && r.running())?;
-        let ended = match event {
-            Ok(TaskEvent::Started(started)) => {
-                run.task_id = Some(started.task_id.clone());
-                // Esc was pressed before the task had an id.
-                return run
-                    .cancelling
-                    .then(|| Effect::Cancel(chat, started.task_id));
-            }
-            Ok(TaskEvent::Output(output)) => {
-                run.print(output.stream() == OutputStream::Stderr, &output.data);
-                return None;
-            }
-            Ok(TaskEvent::Finished(finished)) => Ended::from(finished),
-            Err(error) => Ended::Failed(error),
-        };
-        let unseen = match ended.succeeded() {
-            true => Unseen::Done,
-            false => Unseen::Failed,
-        };
-        run.end(ended);
-        self.unseen = Some(unseen);
-        None
+        // Esc was pressed before the task had an id.
+        let cancel = run
+            .on_event(event)
+            .map(|task_id| Effect::Cancel(chat, task_id));
+        if let Some(ended) = &run.ended {
+            self.unseen = Some(match ended.succeeded() {
+                true => Unseen::Done,
+                false => Unseen::Failed,
+            });
+        }
+        cancel
     }
 
     /// The command whose task wouldn't stop, which can then be asked to

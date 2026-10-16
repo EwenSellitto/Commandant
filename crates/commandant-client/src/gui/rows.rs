@@ -149,6 +149,7 @@ mod tests {
                 cancelling: false,
                 agent: String::new(),
                 effort: String::new(),
+                watched: false,
             };
         }
         chat

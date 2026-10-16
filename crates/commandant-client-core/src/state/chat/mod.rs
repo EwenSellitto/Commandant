@@ -99,6 +99,8 @@ pub enum Activity {
         /// What the prompt was sent with, for the turn's summary.
         agent: String,
         effort: String,
+        /// Started elsewhere and watched here, so left running on quitting.
+        watched: bool,
     },
 }
 
@@ -137,6 +139,9 @@ pub struct Chat {
     pub fetching_options: bool,
     /// Waiting for a resumed session's earlier turns.
     pub loading_history: bool,
+    /// The prompt of the turn attached to, which its history, still to
+    /// come, ends with.
+    attached: Option<String>,
     /// The node's model providers, as last listed; the filter to choose
     /// from them with while they're listed.
     providers: Vec<ModelProvider>,
@@ -239,10 +244,34 @@ impl Chat {
         }
     }
 
-    /// Every task of the chat's still running: the turn's, then the commands'.
+    /// Every task the chat started still running: the turn's, then the
+    /// commands'. A turn only watched isn't among them.
     pub fn tasks(&self) -> impl Iterator<Item = String> {
-        let runs = self.run_tasks().cloned();
-        self.running_task().into_iter().chain(runs)
+        let watched = matches!(self.activity, Activity::Working { watched: true, .. });
+        let turn = self.running_task().filter(|_| !watched);
+        turn.into_iter().chain(self.run_tasks().cloned())
+    }
+
+    /// Follows a turn `prompt` started elsewhere on the chat's session, as
+    /// if it had been sent here.
+    pub(in crate::state) fn attach(&mut self, prompt: &str, task_id: String) -> Effect {
+        self.push(Role::User, prompt);
+        self.activity = Activity::Working {
+            task_id: Some(task_id.clone()),
+            since: Instant::now(),
+            cancelling: false,
+            agent: self.agent().to_string(),
+            effort: self.settings.effort.clone(),
+            watched: true,
+        };
+        // The history on its way has the turn's start, which the watch replays.
+        if self.loading_history {
+            self.attached = Some(prompt.to_string());
+        }
+        Effect::WatchTurn {
+            chat: self.id,
+            task_id,
+        }
     }
 
     /// Whether the agent or a command is at work.
@@ -331,6 +360,7 @@ impl Chat {
             cancelling: false,
             agent: self.agent().to_string(),
             effort: self.settings.effort.clone(),
+            watched: false,
         };
         let request = PromptRequest {
             node: self.node.id.clone(),
