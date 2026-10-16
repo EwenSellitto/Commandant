@@ -5,7 +5,7 @@
 use commandant_client_core::{Ask, Intent, Scope};
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::picker::Picker;
+use crate::picker::Picker;
 
 /// What a key says to `ask`, asked in `scope` and shown with `picker` when
 /// it is one to choose from; nothing while it stays open.

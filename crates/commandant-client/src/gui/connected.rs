@@ -1,13 +1,13 @@
 //! The window once connected: the sidebar, the chat shown beside it, and
-//! what the core asks to confirm over both.
+//! what the core asks over both.
 
 use std::collections::HashMap;
 
-use commandant_client_core::{Ask, ChatId, Core, Edit, Go, Intent, Next, Scope, Updates};
-use gpui::{Context, IntoElement, ParentElement as _, Render, Styled as _, Task, Window, div, px};
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::{ActiveTheme as _, h_flex, v_flex};
+use commandant_client_core::{ChatId, Core, Edit, Go, Intent, Next, Scope, Updates};
+use gpui::{Context, IntoElement, ParentElement as _, Render, Styled as _, Task, Window, div};
+use gpui_component::h_flex;
 
+use super::asks::Question;
 use super::chat::Pane;
 use super::rows::{Change, rows};
 
@@ -21,6 +21,8 @@ pub(super) struct Connected {
     pub(super) last: HashMap<String, ChatId>,
     /// What the window keeps of each open chat.
     pub(super) panes: HashMap<ChatId, Pane>,
+    /// What the window keeps of each open question, by scope.
+    pub(super) questions: HashMap<Scope, Question>,
     /// Hands the core what its calls report, for as long as it is shown.
     _updates: Task<()>,
 }
@@ -49,7 +51,7 @@ impl Connected {
                     if let Some(id) = this.shown {
                         this.core.act(Intent::Seen(id));
                     }
-                    this.sync(cx);
+                    this.sync(window, cx);
                     cx.notify();
                 });
                 if taken.is_err() {
@@ -62,6 +64,7 @@ impl Connected {
             shown: None,
             last: HashMap::new(),
             panes: HashMap::new(),
+            questions: HashMap::new(),
             _updates: pump,
         };
         if let Some(open) = open {
@@ -74,7 +77,7 @@ impl Connected {
     pub(super) fn act(&mut self, intent: Intent, window: &mut Window, cx: &mut Context<Self>) {
         let next = self.core.act(intent);
         self.apply(next, window, cx);
-        self.sync(cx);
+        self.sync(window, cx);
         cx.notify();
     }
 
@@ -96,6 +99,11 @@ impl Connected {
         match go {
             Some(Go::Chat(id)) => self.show(id, window, cx),
             Some(Go::Nodes) => self.shown = None,
+            // Its agent started while nothing else was opened: open it.
+            Some(Go::Ready(node)) if self.shown.is_none() => {
+                let next = self.core.act(Intent::Open { node, chat: None });
+                self.apply(next, window, cx);
+            }
             // Quitting, the help, and the nodes, tasks and output views
             // come with the views that go there.
             Some(Go::Quit | Go::Help | Go::Ready(_) | Go::Tasks | Go::Output(_)) | None => {}
@@ -110,10 +118,26 @@ impl Connected {
         self.last.insert(chat.node.id.clone(), id);
         self.shown = Some(id);
         self.core.act(Intent::Seen(id));
-        let composer = self.pane(id, window, cx).composer.clone();
-        composer.update(cx, |composer, cx| composer.focus(window, cx));
+        self.pane(id, window, cx);
         // A pane new to the window learns its thread.
-        self.sync(cx);
+        self.sync(window, cx);
+        self.refocus(window, cx);
+    }
+
+    /// Puts the keys where they go: the question over the window, else the
+    /// one over the chat shown, else its prompt.
+    fn refocus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let question = [Some(Scope::App), self.shown.map(Scope::Chat)]
+            .into_iter()
+            .flatten()
+            .find_map(|scope| self.questions.get(&scope));
+        if let Some(question) = question {
+            return question.focus(window, cx);
+        }
+        if let Some(pane) = self.shown.and_then(|id| self.panes.get(&id)) {
+            let composer = pane.composer.clone();
+            composer.update(cx, |composer, cx| composer.focus(window, cx));
+        }
     }
 
     /// What the window keeps of the chat `id`, kept from now on.
@@ -123,11 +147,28 @@ impl Connected {
             .or_insert_with(|| Pane::new(id, window, cx))
     }
 
-    /// Forgets closed chats, and tells each thread's scroller how its
-    /// thread has changed.
-    fn sync(&mut self, cx: &mut Context<Self>) {
+    /// Forgets closed chats, follows what the core asks, and tells each
+    /// thread's scroller how its thread has changed.
+    fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let core = &self.core;
         self.panes.retain(|id, _| core.chat(*id).is_some());
+        let scopes: Vec<Scope> = std::iter::once(Scope::App)
+            .chain(core.chats().iter().map(|c| Scope::Chat(c.id)))
+            .collect();
+        // A question that comes or goes takes the keys or gives them back.
+        let mut shown = std::mem::take(&mut self.questions);
+        let mut moved = false;
+        for scope in scopes {
+            let kept = shown.remove(&scope);
+            let was = kept.as_ref().map(|q| q.focus.clone());
+            let question = Question::sync(self.core.ask(scope), kept, scope, window, cx);
+            moved |= question.as_ref().map(|q| q.focus.clone()) != was;
+            self.questions.extend(question.map(|q| (scope, q)));
+        }
+        if moved {
+            self.refocus(window, cx);
+        }
+        let core = &self.core;
         for (id, pane) in &mut self.panes {
             let Some(chat) = core.chat(*id) else {
                 continue;
@@ -158,50 +199,6 @@ impl Connected {
             });
         }
     }
-
-    /// Asks the core what it asks to confirm, if anything, over the window.
-    fn render_confirm(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let Some(Ask::Confirm { text, .. }) = self.core.ask(Scope::App) else {
-            return None;
-        };
-        let theme = cx.theme();
-        let card = v_flex()
-            .w(px(360.0))
-            .gap_4()
-            .p_5()
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.popover)
-            .text_color(theme.popover_foreground)
-            .child(text.clone())
-            .child(
-                h_flex()
-                    .gap_2()
-                    .justify_end()
-                    .child(Button::new("no").ghost().label("No").on_click(cx.listener(
-                        |this, _, window, cx| this.act(Intent::Dismiss(Scope::App), window, cx),
-                    )))
-                    .child(
-                        Button::new("yes")
-                            .primary()
-                            .label("Yes")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.act(Intent::Confirm(Scope::App), window, cx)
-                            })),
-                    ),
-            );
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(theme.overlay)
-                .child(card),
-        )
-    }
 }
 
 impl Render for Connected {
@@ -219,6 +216,6 @@ impl Render for Connected {
                     .child(self.render_sidebar(cx))
                     .child(div().flex_1().h_full().min_w_0().child(main)),
             )
-            .children(self.render_confirm(cx))
+            .children(self.render_ask(Scope::App, cx))
     }
 }

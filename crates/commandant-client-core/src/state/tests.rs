@@ -1,4 +1,4 @@
-use super::chat::{Message, Role, Unseen};
+use super::chat::{Menu, Message, Role, Unseen};
 use super::fixtures::{acme, bare, for_run, method, node, output, started};
 use super::*;
 
@@ -296,6 +296,26 @@ fn options_reach_every_chat_on_the_node() {
     let later = state.intent(Intent::NewChat(first));
     assert!(later.effects.is_empty());
     assert_eq!(chat(&state, shown(&later)).agent(), "build");
+}
+
+#[test]
+fn a_chip_opens_its_menu_and_leaves_the_prompt_alone() {
+    let mut state = state();
+    let id = chat_on(&mut state, "n1");
+    let options = AgentOptions {
+        agents: vec![AgentChoice {
+            name: "build".into(),
+            ..Default::default()
+        }],
+        default_agent: "build".into(),
+        ..Default::default()
+    };
+    state.update(Update::Options("n1".into(), Ok(options)));
+    let opened = state.intent(Intent::Menu(id, Menu::Agent));
+    assert_eq!(opened.prompt, None, "what is typed stays");
+    let pick = chat(&state, id).ask().and_then(Ask::choices).unwrap();
+    assert_eq!(pick.title, "Agent");
+    assert_eq!(pick.current, Some(Choose::Agent("build".into())));
 }
 
 #[test]

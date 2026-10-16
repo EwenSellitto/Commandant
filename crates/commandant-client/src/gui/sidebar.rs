@@ -78,8 +78,9 @@ impl Connected {
             .children(notice)
     }
 
-    /// A node's status dot and name, dimmed while it is offline; a click
-    /// opens its last chat, `[+]` a new one.
+    /// A node's status dot and name, dimmed while it is offline and turning
+    /// while it starts its agent; a click opens its last chat, `[+]` a new
+    /// one.
     fn node_row(&self, at: usize, node: &NodeInfo, cx: &Context<Self>) -> Stateful<Div> {
         let theme = cx.theme();
         let id = node.id.clone();
@@ -119,6 +120,11 @@ impl Connected {
             .on_click(open)
             .child(status_dot(node.online, cx))
             .child(div().flex_1().truncate().child(node.name.clone()))
+            .children(
+                self.core
+                    .starting(&node.id)
+                    .then(|| Spinner::new().xsmall().color(theme.info)),
+            )
             .children(new);
         if node.online {
             row
@@ -127,8 +133,8 @@ impl Connected {
         }
     }
 
-    /// A chat's title and what it is at, or how it ended out of sight; a
-    /// hover × closes it.
+    /// A chat's title and what it is at, how it ended out of sight, or that
+    /// it needs input; a hover × closes it.
     fn chat_row(&self, chat: &Chat, cx: &Context<Self>) -> Stateful<Div> {
         let theme = cx.theme();
         let id = chat.id;
@@ -139,6 +145,10 @@ impl Connected {
             .items_center()
             .justify_center();
         let mark = match (chat.at_work(), chat.unseen) {
+            // A question waits for an answer, whatever else goes on.
+            _ if chat.ask().is_some() => {
+                mark.child(Icon::new(IconName::Info).xsmall().text_color(theme.warning))
+            }
             (true, _) => mark.child(Spinner::new().xsmall().color(theme.info)),
             (false, Some(Unseen::Done)) => {
                 mark.child(div().size(px(7.0)).rounded_full().bg(theme.success))

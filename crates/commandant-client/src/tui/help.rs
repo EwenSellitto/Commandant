@@ -4,7 +4,7 @@
 use commandant_client_core::chat::{ALIASES, COMMANDS, Chat};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::picker::{Filtered, Row};
+use crate::picker::{Filtered, Row};
 
 /// A key, as written in the [`KEYS`].
 type Key = (KeyCode, KeyModifiers);
@@ -218,7 +218,7 @@ fn keys(keys: &[(&str, &str, Option<Key>)]) -> impl Iterator<Item = (String, Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::picker::Picked;
+    use crate::picker::Picked;
 
     fn search(help: &mut Help, text: &str) -> Vec<String> {
         for c in text.chars() {

@@ -4,6 +4,7 @@
 //! is left for the core's calls to the server. What those report is awaited
 //! in a GPUI task, which hands it to the core and redraws.
 
+mod asks;
 mod chat;
 mod connected;
 mod login;
@@ -64,6 +65,7 @@ pub fn run(args: GuiArgs, client: &ClientArgs, handle: Handle) -> Result<()> {
     let app = gpui_platform::application().with_assets(gpui_kit_assets::Assets);
     app.run(move |cx| {
         gpui_component::init(cx);
+        asks::bind_keys(cx);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
