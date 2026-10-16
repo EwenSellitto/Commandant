@@ -92,13 +92,16 @@ code, so every front end shares it. Code used by several crates goes in
 |---|---|
 | `main.rs`, `cli.rs` | Logging, the tokio runtime, and the command line (clap); a bare `commandant` prints help in a terminal and opens the GUI elsewhere |
 | `admin.rs`, `run.rs` | `login`, `token`, `node`, `task`; `run`, `prompt` and `task watch`: plain gRPC calls |
+| `start.rs` | What `tui` and `gui` give the core: new chats' defaults, and the chat `--node` and `--session` open first |
 | `tui/mod.rs` | The TUI's event loop: draws, reads keys, hands the core's updates back to it |
 | `tui/app.rs` | The screen shown, the highlighted node, the last chat per node; routes keys to intents |
 | `tui/chat.rs` | A chat's prompt (editing, history recall, completion highlight) and scroll |
 | `tui/ui/`, `tui/text.rs` | Drawing, and markdown styling |
 | `tui/asks.rs`, `tui/picker.rs` | What keys say to an ask: the floating list, narrowed down by typing, for a choose-ask, a panel for a confirm- or show-ask; an enter-ask is typed in the prompt. The app's and each chat's picker are shown from one map |
 | `tui/help.rs` | The help (F1, `?` on the nodes, `/help`): every command, `!` to run one on the node, the agent's commands and skills, and the terminal's keys in one such list, searched by name, key, alias or what it does; choosing one runs it, starts it in the prompt, or presses the key |
-| `gui/mod.rs` | The GUI (the `gui` feature, off by default): GPUI on the main thread, one window themed light or dark with the system |
+| `gui/mod.rs` | The GUI (the `gui` feature, off by default): GPUI on the main thread, one window themed light or dark with the system; the login card, then the core's views, redrawn as a GPUI task hands the core its updates |
+| `gui/login.rs` | The login card: a link pasted on a first run (saved once it connects), or the saved server tried at start-up, with Retry and "Use a different link" when it can't be reached |
+| `gui/sidebar.rs` | The sidebar: every node, its status dot and name, offline ones dimmed |
 | `gui/placement.rs` | Where the window was when it last closed or stopped moving, so it reopens there |
 
 GPUI (`gpui-pre`, `gpui-pre-platform`) and `gpui-component` are pinned with
@@ -115,7 +118,7 @@ server, which keeps the calls it would make.
 |---|---|
 | `lib.rs` | `Core`: starts on a working connection, takes intents and updates, makes the calls they ask for on the tokio runtime it is given, and is read through `&` accessors; `shutdown` cancels running tasks |
 | `calls.rs` | The connection to the server and every call made on it: prompt and command streams, questions to nodes, cancels, the 5-second node poll |
-| `config.rs` | Where clients find the server and token, and connecting |
+| `config.rs` | Where clients find the server and token (none yet before the first log in), reading a pasted link, saving the server, and connecting |
 | `state/mod.rs` | What the client knows: the nodes and every chat |
 | `state/intent.rs`, `state/ask.rs` | What goes in (intents, updates) and comes out (effects, where to go, prompt edits); the asks (choose, enter, confirm, show), one per chat and one for the app |
 | `state/chat/` | One chat: its session, settings, thread and line language (`/model`, `/project`, the agent's `/skill`, `!command`); what it offers to choose, provider sign-in, projects, and the commands run with `!` (`run.rs`: a block each, beside the agent's turn) in their own files |
