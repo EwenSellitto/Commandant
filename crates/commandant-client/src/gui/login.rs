@@ -43,9 +43,9 @@ impl Card {
                 None => state,
             }
         });
-        let enter = cx.subscribe_in(&link, window, |shell, _, event, _, cx| {
+        let enter = cx.subscribe_in(&link, window, |shell, _, event, window, cx| {
             if let InputEvent::PressEnter { .. } = event {
-                shell.connect_pasted(cx);
+                shell.connect_pasted(window, cx);
             }
         });
         if saved.is_none() {
@@ -70,7 +70,7 @@ impl Shell {
     }
 
     /// Connects with the link in the field, and saves it once it works.
-    fn connect_pasted(&mut self, cx: &mut Context<Self>) {
+    fn connect_pasted(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(card) = self.card() else { return };
         if card.saved.is_some() || card.connecting.is_some() {
             return;
@@ -78,7 +78,7 @@ impl Shell {
         let text = card.link.read(cx).value();
         match Client::from_link(&text) {
             Ok(client) => {
-                let connecting = self.connect(client, true, cx);
+                let connecting = self.connect(client, true, window, cx);
                 self.trying(connecting);
             }
             Err(e) => {
@@ -89,11 +89,11 @@ impl Shell {
     }
 
     /// Tries the saved server, again after a failure.
-    pub(super) fn retry(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn retry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(saved) = self.card().and_then(|card| card.saved.clone()) else {
             return;
         };
-        let connecting = self.connect(saved, false, cx);
+        let connecting = self.connect(saved, false, window, cx);
         self.trying(connecting);
         cx.notify();
     }
@@ -120,18 +120,24 @@ impl Shell {
 
     /// Starts a core on `client`, in the background; once it is up the
     /// shell shows it, and `remember` saves the server for the next run.
-    fn connect(&self, client: Client, remember: bool, cx: &mut Context<Self>) -> Task<()> {
+    fn connect(
+        &self,
+        client: Client,
+        remember: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
         let defaults = self.args.defaults();
         let handle = self.handle.clone();
-        cx.spawn(async move |shell, cx| {
+        cx.spawn_in(window, async move |shell, cx| {
             let started = Core::start(&client, defaults, handle).await;
-            let _ = shell.update(cx, |shell, cx| {
+            let _ = shell.update_in(cx, |shell, window, cx| {
                 match started {
                     Ok((core, updates)) => {
                         if remember && let Err(e) = config::remember(&client) {
                             eprintln!("warning: cannot save the server's link: {e:#}");
                         }
-                        shell.connected(core, updates, cx);
+                        shell.connected(core, updates, window, cx);
                     }
                     Err(e) => {
                         if let Some(card) = shell.card() {
@@ -146,16 +152,19 @@ impl Shell {
     }
 
     /// Shows the core, opening the chat the command line names, if any.
-    fn connected(&mut self, mut core: Core, updates: Updates, cx: &mut Context<Self>) {
-        match self.args.first_open(core.nodes()) {
-            // The chat itself is not shown yet.
-            Ok(Some(open)) => {
-                core.act(open);
-            }
-            Ok(None) => {}
-            Err(e) => eprintln!("warning: {e:#}"),
-        }
-        self.screen = Screen::Connected(Box::new(Connected::new(core, updates, cx)));
+    fn connected(
+        &mut self,
+        core: Core,
+        updates: Updates,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let open = self.args.first_open(core.nodes()).unwrap_or_else(|e| {
+            eprintln!("warning: {e:#}");
+            None
+        });
+        let connected = cx.new(|cx| Connected::new(core, updates, open, window, cx));
+        self.screen = Screen::Connected(connected);
     }
 
     pub(super) fn render_card(&self, card: &Card, cx: &mut Context<Self>) -> impl IntoElement {
@@ -175,8 +184,11 @@ impl Shell {
             .loading(connecting)
             .disabled(connecting);
         let primary = match card.saved {
-            Some(_) => primary.on_click(cx.listener(|shell, _, _, cx| shell.retry(cx))),
-            None => primary.on_click(cx.listener(|shell, _, _, cx| shell.connect_pasted(cx))),
+            Some(_) => {
+                primary.on_click(cx.listener(|shell, _, window, cx| shell.retry(window, cx)))
+            }
+            None => primary
+                .on_click(cx.listener(|shell, _, window, cx| shell.connect_pasted(window, cx))),
         };
         let buttons = h_flex().gap_2().justify_end().child(primary);
         let buttons = match card.saved {

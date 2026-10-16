@@ -1208,6 +1208,7 @@ dependencies = [
  "commandant-proto",
  "crossterm",
  "gpui-component",
+ "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-platform",
  "ratatui",

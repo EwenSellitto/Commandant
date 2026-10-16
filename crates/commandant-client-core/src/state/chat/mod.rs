@@ -366,6 +366,14 @@ impl Chat {
         }
     }
 
+    /// Stops the commands still running and cancels the turn, as for
+    /// closing.
+    pub(super) fn stop_all(&mut self) -> Vec<Effect> {
+        let mut stops = self.cancel_runs().unwrap_or_default();
+        stops.extend(self.cancel_turn());
+        stops
+    }
+
     fn cancel_turn(&mut self) -> Option<Effect> {
         let Activity::Working {
             task_id,

@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use commandant_common::time::ago;
+use commandant_proto::task_event::Event as TaskEvent;
 use commandant_proto::*;
 
 use self::chat::{Activity, AppCommand, Chat, Message, Settings};
@@ -58,6 +59,9 @@ pub(crate) struct State {
     pub notice: String,
     /// Nodes starting a harness, which can take minutes.
     pub starting: HashSet<String>,
+    /// Chats closed while at work: a task of theirs that starts after is
+    /// cancelled, as nobody is left to see it.
+    abandoned: HashSet<ChatId>,
     /// What new chats start with; `--session` only goes to the first.
     defaults: Settings,
     next_id: ChatId,
@@ -326,21 +330,40 @@ impl State {
         self.new_chat(chat.node.clone(), settings)
     }
 
-    /// Closes a chat, unless its agent or a command is still at work, and
-    /// says which of its node's chats to show instead: the one after it, else the one
-    /// before, else the node list.
+    /// Closes a chat, asking first if its agent or a command is still at
+    /// work.
     fn close(&mut self, id: ChatId) -> Outcome {
+        let Some(chat) = self.chat(id) else {
+            return Outcome::default();
+        };
+        let text = match () {
+            _ if chat.activity.working() => "Cancel the turn and close?",
+            _ if chat.at_work() => "Stop the command and close?",
+            _ => return self.remove(id),
+        };
+        self.ask = Some(Ask::Confirm {
+            text: text.into(),
+            yes: Choose::CancelAndClose(id),
+        });
+        Outcome::default()
+    }
+
+    /// Stops what a chat is at, then closes it.
+    fn cancel_and_close(&mut self, id: ChatId) -> Outcome {
         let Some(chat) = self.chat_mut(id) else {
             return Outcome::default();
         };
-        if chat.activity.working() {
-            chat.info("the agent is still working: cancel with Esc first, or switch away");
+        let stops = chat.stop_all();
+        self.abandoned.insert(id);
+        Outcome::from(stops).and(self.remove(id))
+    }
+
+    /// Closes a chat, and says which of its node's chats to show instead:
+    /// the one after it, else the one before, else the node list.
+    fn remove(&mut self, id: ChatId) -> Outcome {
+        let Some(chat) = self.chat(id) else {
             return Outcome::default();
-        }
-        if chat.at_work() {
-            chat.info("a command is still running: stop it with Esc first, or switch away");
-            return Outcome::default();
-        }
+        };
         let node = chat.node.id.clone();
         let siblings: Vec<ChatId> = self.chats_on(&node).map(|c| c.id).collect();
         let at = siblings.iter().position(|&c| c == id).unwrap_or(0);
@@ -417,6 +440,7 @@ impl State {
             Choose::NewSession => from.map_or_else(Outcome::default, |id| self.another_chat(id)),
             Choose::Chat(id) => Outcome::go(Go::Chat(id)),
             Choose::Saved(saved) => from.map_or_else(Outcome::default, |id| self.resume(id, saved)),
+            Choose::CancelAndClose(id) => self.cancel_and_close(id),
             Choose::Harness { node, harness } => self.start_harness(node, harness),
             _ => Outcome::default(),
         }
@@ -470,6 +494,15 @@ impl State {
     /// Takes in what a background call reports, which may call for more.
     pub fn update(&mut self, update: Update) -> Outcome {
         match update {
+            Update::Chat(id, message) if self.chat(id).is_none() => {
+                let started = match message {
+                    Message::Task(TaskEvent::Started(s))
+                    | Message::Run(_, Ok(TaskEvent::Started(s))) => s,
+                    _ => return Outcome::default(),
+                };
+                let cancel = self.abandoned.contains(&id);
+                cancel.then(|| Effect::Cancel(id, started.task_id)).into()
+            }
             // Signing in asks for the options again, maybe while they're being asked for.
             Update::Chat(id, message) => self.in_chat(id, |c| c.on_message(message)),
             Update::Options(node, Err(failure)) if failure.transient => {
