@@ -7,6 +7,7 @@ mod options;
 mod prompt;
 mod sessions;
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -165,27 +166,28 @@ fn warm_up(api: Api) {
 /// What a plugin tags the agent's messages with, for the model to read and
 /// not people: the Dynamic Context Pruning plugin ends each one with
 /// `<dcp-message-id>m0004</dcp-message-id>`.
-const PLUGIN_TAG: &str = "dcp-message-id";
+const PLUGIN_TAG: (&str, &str) = ("<dcp-message-id>", "</dcp-message-id>");
 
 /// `text` without the [`PLUGIN_TAG`]s; one that ends it takes the space
-/// before it along.
-fn untagged(text: &str) -> String {
-    let (open, close) = (format!("<{PLUGIN_TAG}>"), format!("</{PLUGIN_TAG}>"));
+/// before it along. Text with none, nearly all of it, isn't copied.
+fn untagged(text: &str) -> Cow<'_, str> {
+    let (open, close) = PLUGIN_TAG;
+    if !text.contains(open) {
+        return Cow::Borrowed(text);
+    }
     let mut kept = String::with_capacity(text.len());
     let mut rest = text;
-    let mut tagged = false;
-    while let Some(start) = rest.find(&open)
-        && let Some(end) = rest[start..].find(&close)
+    while let Some(start) = rest.find(open)
+        && let Some(end) = rest[start..].find(close)
     {
         kept.push_str(&rest[..start]);
         rest = &rest[start + end + close.len()..];
-        tagged = true;
     }
     kept.push_str(rest);
-    if tagged && rest.trim().is_empty() {
+    if rest.len() < text.len() && rest.trim().is_empty() {
         kept.truncate(kept.trim_end().len());
     }
-    kept
+    Cow::Owned(kept)
 }
 
 /// Runs `opencode serve` on a free loopback port, behind a random password.

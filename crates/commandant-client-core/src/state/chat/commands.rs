@@ -94,14 +94,6 @@ impl Chat {
                 "effort" => Menu::Effort,
                 "commands" | "skills" => Menu::Command,
                 "mcp" => Menu::Mcp,
-                // Logging in is the client's, and done: no way to sign in.
-                "login" => {
-                    self.info(
-                        "this client is logged in to its server: /logout forgets it; \
-                         /providers signs the agent in to a model provider",
-                    );
-                    return (self.cleared(None), None);
-                }
                 "providers" => {
                     let effect = self.list_providers(filter.trim());
                     return (self.cleared(effect), None);
@@ -114,6 +106,15 @@ impl Chat {
                 name if self.is_agent_command(name) => {
                     let (name, arguments) = (name.to_string(), filter.trim().to_string());
                     return (self.send(text, name, arguments), None);
+                }
+                // Unless the agent has its own, logging in is the client's,
+                // and done: no way to sign in.
+                "login" => {
+                    self.info(
+                        "this client is logged in to its server: /logout forgets it; \
+                         /providers signs the agent in to a model provider",
+                    );
+                    return (self.cleared(None), None);
                 }
                 // It may be one of those, once they've loaded.
                 _ if self.loading() => {

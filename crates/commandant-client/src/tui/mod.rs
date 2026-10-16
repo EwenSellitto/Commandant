@@ -17,9 +17,9 @@ mod ui;
 use std::io::stdout;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use commandant_client_core::config::{self, Client};
-use commandant_client_core::{Core, Intent, Updates};
+use commandant_client_core::{Core, Settings, Updates};
 use crossterm::clipboard::CopyToClipboard;
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, EventStream};
 use crossterm::execute;
@@ -36,22 +36,19 @@ const TICK: Duration = Duration::from_millis(100);
 
 /// Runs on the `saved` server, or first asks for a link when there is none.
 pub async fn run(saved: Option<Client>, args: UiArgs, handle: Handle) -> Result<()> {
-    // A saved server that can't be reached ends the TUI with the error.
-    let on = match saved {
+    // A saved server that can't be reached, or that hasn't the node named,
+    // ends the TUI with the error.
+    let started = match saved {
         Some(client) => {
             let (core, updates) = Core::start(&client, args.defaults(), handle.clone()).await?;
-            let first = args.first_open(core.nodes())?;
-            Some(On {
-                client,
-                app: open(core, first),
-                updates,
-            })
+            args.first_open(core.nodes())?;
+            Some((client, core, updates))
         }
         None => None,
     };
     let mut terminal = ratatui::init();
     execute!(stdout(), EnableBracketedPaste)?;
-    let result = run_until_left(&mut terminal, on, &args, &handle).await;
+    let result = run_until_left(&mut terminal, started, &args, &handle).await;
     execute!(stdout(), DisableBracketedPaste)?;
     ratatui::restore();
     let Some(app) = result? else {
@@ -69,103 +66,83 @@ pub async fn run(saved: Option<Client>, args: UiArgs, handle: Handle) -> Result<
     Ok(())
 }
 
-/// The app on a server, and what its core's calls report.
-struct On {
-    client: Client,
-    app: App,
-    updates: Updates,
-}
-
-/// The app on `core`, showing the `first` chat if one is named.
-fn open(core: Core, first: Option<Intent>) -> App {
-    let mut app = App::new(core);
-    if let Some(open) = first {
-        app.act(open);
-    }
-    app
-}
+/// A core on a server, and what its calls report.
+type Started = (Client, Core, Updates);
 
 /// Runs the app on a server, logging in first when there is none, and
 /// again after each log out; the app last left, unless it was by logging
 /// out, or leaving before logging in.
 async fn run_until_left(
     terminal: &mut DefaultTerminal,
-    mut on: Option<On>,
+    mut started: Option<Started>,
     args: &UiArgs,
     handle: &Handle,
 ) -> Result<Option<App>> {
     loop {
-        let mut on = match on.take() {
-            Some(on) => on,
-            None => match log_in(terminal, args, handle).await? {
-                Some((client, core, updates)) => {
-                    // The node named may well be on another server.
-                    let first = args.first_open(core.nodes()).ok().flatten();
-                    On {
-                        client,
-                        app: open(core, first),
-                        updates,
-                    }
-                }
-                None => return Ok(None),
-            },
+        let started = match started.take() {
+            Some(started) => Some(started),
+            None => log_in(terminal, args, handle).await?,
         };
-        event_loop(terminal, &mut on.app, &mut on.updates).await?;
-        if on.app.leaving != Some(Leave::LogOut) {
-            return Ok(Some(on.app));
+        let Some((client, core, mut updates)) = started else {
+            return Ok(None);
+        };
+        let mut app = App::new(core);
+        // After logging in, the node named may well be on another server.
+        if let Ok(Some(open)) = args.first_open(app.core.nodes()) {
+            app.act(open);
+        }
+        event_loop(terminal, &mut app, &mut updates).await?;
+        if app.leaving != Some(Leave::LogOut) {
+            return Ok(Some(app));
         }
         // A server flags or the environment named keeps the saved one.
-        config::forget_if_saved(&on.client)?;
+        config::forget_if_saved(&client)?;
     }
 }
 
 /// The first-run screen, until a pasted link is connected to, and saved;
-/// none if the person leaves instead.
+/// none if the person leaves instead. The keys still work while
+/// connecting, to give up.
 async fn log_in(
     terminal: &mut DefaultTerminal,
     args: &UiArgs,
     handle: &Handle,
-) -> Result<Option<(Client, Core, Updates)>> {
+) -> Result<Option<Started>> {
     let mut screen = LogIn::default();
     let mut input = EventStream::new();
+    let mut connecting = None;
     loop {
         terminal.draw(|frame| ui::draw_log_in(frame, &screen))?;
-        let Some(event) = input.next().await else {
-            return Ok(None);
-        };
-        let client = match screen.on_input(event?) {
-            Step::Connect(client) => client,
-            Step::Leave => return Ok(None),
-            Step::Wait | Step::Cancel => continue,
-        };
-        terminal.draw(|frame| ui::draw_log_in(frame, &screen))?;
-        let started = {
-            let connecting = Core::start(&client, args.defaults(), handle.clone());
-            tokio::pin!(connecting);
-            // The keys still work, to give up.
-            loop {
-                tokio::select! {
-                    started = &mut connecting => break Some(started),
-                    event = input.next() => match event {
-                        Some(event) => match screen.on_input(event?) {
-                            Step::Leave => return Ok(None),
-                            Step::Cancel => break None,
-                            _ => {}
-                        },
-                        None => return Ok(None),
-                    },
+        tokio::select! {
+            started = async { connecting.as_mut().expect("connecting").await }, if connecting.is_some() => {
+                connecting = None;
+                match started {
+                    Ok(started) => return Ok(Some(started)),
+                    Err(e) => screen.failed(&e),
                 }
             }
-        };
-        match started {
-            Some(Ok((core, updates))) => match config::remember(&client) {
-                Ok(_) => return Ok(Some((client, core, updates))),
-                Err(e) => screen.failed(&e.context("saving the link")),
-            },
-            Some(Err(e)) => screen.failed(&e),
-            None => {}
+            event = input.next() => {
+                let Some(event) = event else {
+                    return Ok(None);
+                };
+                match screen.on_input(event?) {
+                    Step::Connect(client) => {
+                        connecting = Some(Box::pin(connect(client, args.defaults(), handle.clone())));
+                    }
+                    Step::Cancel => connecting = None,
+                    Step::Leave => return Ok(None),
+                    Step::Wait => {}
+                }
+            }
         }
     }
+}
+
+/// Connects to `client`'s server, and saves it once that works.
+async fn connect(client: Client, defaults: Settings, handle: Handle) -> Result<Started> {
+    let (core, updates) = Core::start(&client, defaults, handle).await?;
+    config::remember(&client).context("saving the link")?;
+    Ok((client, core, updates))
 }
 
 async fn event_loop(

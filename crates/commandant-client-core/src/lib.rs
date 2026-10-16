@@ -69,10 +69,8 @@ impl Core {
         handle: Handle,
     ) -> Result<(Self, Updates)> {
         let (server, nodes, updates) = Server::connect(client, handle).await?;
-        let mut state = State::new(nodes, defaults);
-        state.link = client.link();
         let core = Self {
-            state,
+            state: State::new(nodes, defaults).with_link(client.link()),
             server: Some(server),
             kept: Vec::new(),
         };

@@ -1,6 +1,6 @@
 //! Client settings: flags/env first, then `~/.config/commandant/config.toml`.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use commandant_common::link::Link;
@@ -76,25 +76,15 @@ pub fn remember(client: &Client) -> Result<PathBuf> {
 /// config file it was saved in, if it was.
 pub fn forget() -> Result<Option<PathBuf>> {
     let path = dirs::client_config()?;
-    Ok(forget_at(&path)?.then_some(path))
+    Ok(fs::remove(&path)?.then_some(path))
 }
 
 /// Forgets the saved server if it is `client`'s, and not one flags or the
 /// environment named instead; a config file that can't be read goes too.
-/// Whether it was forgotten.
-pub fn forget_if_saved(client: &Client) -> Result<bool> {
-    if load().is_ok_and(|saved| !saved.names(client)) {
-        return Ok(false);
-    }
-    Ok(forget()?.is_some())
-}
-
-/// Removes the config file at `path`; whether there was one.
-fn forget_at(path: &Path) -> Result<bool> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e).with_context(|| format!("removing {}", path.display())),
+pub fn forget_if_saved(client: &Client) -> Result<()> {
+    match load() {
+        Ok(saved) if !saved.names(client) => Ok(()),
+        _ => forget().map(drop),
     }
 }
 
@@ -151,14 +141,8 @@ fn local_server() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use commandant_common::link::Pin;
-
     use super::*;
-
-    fn link() -> Link {
-        let admin = format!("cmda_{}", "ab".repeat(16));
-        Link::new(&admin, "192.168.1.15:7400").with_pin(Some(Pin::of(b"a certificate")))
-    }
+    use crate::state::fixtures::link;
 
     #[test]
     fn a_pasted_link_names_the_server_and_its_token() {
@@ -190,16 +174,6 @@ mod tests {
         };
         assert!(!saved.names(&elsewhere));
         assert!(!FileConfig::default().names(&client), "nothing is saved");
-    }
-
-    #[test]
-    fn a_forgotten_server_is_no_longer_saved() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "addr = \"x\"\ntoken = \"y\"\n").unwrap();
-        assert!(forget_at(&path).unwrap(), "it was saved");
-        assert!(!path.exists());
-        assert!(!forget_at(&path).unwrap(), "nothing is left to forget");
     }
 
     #[test]

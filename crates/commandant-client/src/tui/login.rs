@@ -73,15 +73,10 @@ impl LogIn {
 
 #[cfg(test)]
 mod tests {
-    use commandant_common::link::{Link, Pin};
+    use commandant_client_core::state::fixtures::link;
     use crossterm::event::KeyEvent;
 
     use super::*;
-
-    fn link() -> Link {
-        let admin = format!("cmda_{}", "ab".repeat(16));
-        Link::new(&admin, "192.168.1.15:7400").with_pin(Some(Pin::of(b"a certificate")))
-    }
 
     fn key(code: KeyCode) -> Event {
         Event::Key(KeyEvent::from(code))

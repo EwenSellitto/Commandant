@@ -74,7 +74,7 @@ pub(crate) struct State {
     /// What new chats start with; `--session` only goes to the first.
     defaults: Settings,
     /// The server's admin link, rebuilt from where the client found it.
-    pub link: String,
+    link: String,
     next_id: ChatId,
     next_list: ListId,
     next_output: OutputId,
@@ -88,6 +88,11 @@ impl State {
             next_id: 1,
             ..Default::default()
         }
+    }
+
+    /// The same, `/link` showing `link`.
+    pub fn with_link(self, link: String) -> Self {
+        Self { link, ..self }
     }
 
     pub fn chat(&self, id: ChatId) -> Option<&Chat> {
