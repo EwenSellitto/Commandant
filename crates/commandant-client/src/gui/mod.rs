@@ -18,7 +18,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use commandant_client_core::config::Client;
+use commandant_client_core::config::{self, Client};
 use commandant_common::dirs;
 use gpui::{
     App, AppContext as _, Bounds, Context, Entity, IntoElement, ParentElement as _, Render,
@@ -54,7 +54,11 @@ pub fn run(args: GuiArgs, client: &ClientArgs, handle: Handle) -> Result<()> {
     let placement_file = dirs::gui_window()?;
     // Flags and the environment name the server as for any command; a
     // broken config file is said on the card, which then asks for a link.
-    let saved = client.find();
+    let saved = config::find(
+        client.addr.clone(),
+        client.token.clone(),
+        client.token_file.clone(),
+    );
     let failed = Rc::new(RefCell::new(None));
     let failure = failed.clone();
     let app = gpui_platform::application().with_assets(gpui_kit_assets::Assets);
