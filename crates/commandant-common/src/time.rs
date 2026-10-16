@@ -1,4 +1,5 @@
-//! Unix timestamps, as stored in the database and sent over the wire.
+//! Unix timestamps, as stored in the database and sent over the wire, and
+//! lifetimes as people type them.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -35,7 +36,10 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
         "d" => 24 * 60 * 60,
         _ => return Err(format!("invalid duration unit {unit:?} (use s, m, h or d)")),
     };
-    Ok(Duration::from_secs(amount * seconds_per_unit))
+    let seconds = amount
+        .checked_mul(seconds_per_unit)
+        .ok_or_else(|| format!("{s:?} is too long"))?;
+    Ok(Duration::from_secs(seconds))
 }
 
 /// A lifetime as [`parse_duration`] reads it, in its largest whole unit.
@@ -59,6 +63,7 @@ mod tests {
         assert_eq!(parse_duration("7d"), Ok(Duration::from_secs(7 * 86400)));
         assert!(parse_duration("1w").is_err());
         assert!(parse_duration("h").is_err());
+        assert!(parse_duration("999999999999999d").is_err());
     }
 
     #[test]

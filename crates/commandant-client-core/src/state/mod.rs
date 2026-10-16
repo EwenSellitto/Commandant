@@ -65,6 +65,8 @@ pub(crate) struct State {
     /// Chats closed while at work: a task of theirs that starts after is
     /// cancelled, as nobody is left to see it.
     abandoned: HashSet<ChatId>,
+    /// Nodes the server forgot: a listing made before then still has them.
+    removed: HashSet<String>,
     /// The tasks, while they are shown.
     tasks: Option<Tasks>,
     /// The output views open, oldest first.
@@ -613,8 +615,13 @@ impl State {
                 }
                 Outcome::default()
             }
-            Update::Nodes(nodes) if nodes == self.nodes => Outcome::default(),
-            Update::Nodes(nodes) => {
+            Update::Nodes(mut nodes) => {
+                // Once the server no longer lists one, it is gone for good.
+                self.removed.retain(|id| nodes.iter().any(|n| &n.id == id));
+                nodes.retain(|n| !self.removed.contains(&n.id));
+                if nodes == self.nodes {
+                    return Outcome::default();
+                }
                 for chat in &mut self.chats {
                     if let Some(node) = nodes.iter().find(|n| n.id == chat.node.id) {
                         chat.on_message(Message::Node(node.clone()));

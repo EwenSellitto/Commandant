@@ -50,9 +50,9 @@ pub struct App {
     pub pickers: HashMap<Scope, Picker>,
     /// The help, open over everything else.
     pub help: Option<Help>,
-    /// What to put on the terminal's clipboard next, and what was put
-    /// there last.
+    /// What to put on the terminal's clipboard next.
     pub copying: Option<String>,
+    /// What was put on it last, to say it was.
     pub copied: Option<String>,
     /// Set once the person has asked to leave.
     pub quit: bool,
@@ -219,8 +219,7 @@ impl App {
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Enter => self.open_selected_node(),
             KeyCode::Char('r') => {
-                if let Some(node) = self.core.nodes().get(self.selected) {
-                    let node = node.id.clone();
+                if let Some(node) = self.selected_node() {
                     self.entry.clear();
                     self.act(Intent::Run {
                         node,
@@ -233,17 +232,22 @@ impl App {
                 self.act(Intent::AddNode);
             }
             KeyCode::Char('d') => {
-                if let Some(node) = self.core.nodes().get(self.selected) {
-                    self.act(Intent::RemoveNode(node.id.clone()));
+                if let Some(node) = self.selected_node() {
+                    self.act(Intent::RemoveNode(node));
                 }
             }
             KeyCode::Char('s') => {
-                if let Some(node) = self.core.nodes().get(self.selected) {
-                    self.act(Intent::StartAgent(node.id.clone()));
+                if let Some(node) = self.selected_node() {
+                    self.act(Intent::StartAgent(node));
                 }
             }
             _ => {}
         }
+    }
+
+    /// The id of the highlighted node, if any.
+    fn selected_node(&self) -> Option<String> {
+        self.core.nodes().get(self.selected).map(|n| n.id.clone())
     }
 
     /// Puts `text` on the terminal's clipboard.

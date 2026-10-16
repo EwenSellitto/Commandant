@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::super::fixtures::{bare, node};
+use super::super::fixtures::{bare, node, started};
 use crate::state::{Ask, Choose, Effect, Go, Intent, Scope, Settings, State, Update, Wanted};
 
 const HOUR: Duration = Duration::from_secs(3600);
@@ -136,4 +136,45 @@ fn a_node_is_removed_once_confirmed_and_its_chats_close() {
     state.update(Update::NodeRemoved("n2".into(), Err("not found".into())));
     assert_eq!(state.notice, "couldn't remove box-n2: not found");
     assert!(state.node("n2").is_some());
+}
+
+#[test]
+fn removing_a_node_stops_what_its_chats_are_at() {
+    let mut state = state();
+    let open = Intent::Open {
+        node: "n1".into(),
+        chat: None,
+    };
+    let Some(Go::Chat(chat)) = state.intent(open).go else {
+        panic!("should open a chat");
+    };
+    state.intent(Intent::Submit(chat, "hold it".into()));
+    state.update(Update::Chat(chat, started("t1")));
+
+    // Asking says so; once confirmed, its turn is cancelled.
+    state.intent(Intent::RemoveNode("n1".into()));
+    let Some(Ask::Confirm { text, .. }) = state.ask(Scope::App) else {
+        panic!("should ask first");
+    };
+    assert!(text.contains("still at work"), "{text}");
+    let effects = state.intent(Intent::Confirm(Scope::App)).effects;
+    assert!(
+        effects.contains(&Effect::Cancel(chat, "t1".into())),
+        "{effects:?}"
+    );
+    state.update(Update::NodeRemoved("n1".into(), Ok(())));
+    assert!(state.chat(chat).is_none());
+}
+
+#[test]
+fn a_node_removed_stays_gone_from_a_listing_made_before() {
+    let mut state = state();
+    state.intent(Intent::RemoveNode("n1".into()));
+    state.intent(Intent::Confirm(Scope::App));
+    state.update(Update::NodeRemoved("n1".into(), Ok(())));
+    // A poll the server answered just before forgetting it.
+    let stale = vec![node("n1", true), node("n2", true), node("n3", false)];
+    state.update(Update::Nodes(stale));
+    assert!(state.node("n1").is_none());
+    assert_eq!(state.nodes.len(), 2);
 }

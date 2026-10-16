@@ -37,7 +37,7 @@ code, so every front end shares it. Code used by several crates goes in
 | `fs.rs` | Private (0600) files, written atomically; reading optional and single-value files; deleting a file or directory |
 | `dirs.rs` | Default data, state and config directories |
 | `lookup.rs` | Finding a node by name, id or id prefix, and a task by id or id prefix |
-| `time.rs` | Unix time, and `12s ago` for tables |
+| `time.rs` | Unix time, `12s ago` for tables, and lifetimes as typed (`30m`, `1h`, `7d`) |
 
 ## `commandant-proto`
 

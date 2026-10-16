@@ -637,11 +637,11 @@ fn status_dot(online: bool) -> Span<'static> {
 
 /// `opencode`, `linux/x86_64`: what a node runs, and on what.
 fn facts(node: &commandant_proto::NodeInfo) -> Vec<String> {
-    let harness = node
-        .harnesses
-        .first()
-        .map_or("no agent harness", String::as_str);
-    vec![harness.to_string(), format!("{}/{}", node.os, node.arch)]
+    let agents = match node.harnesses.join(", ") {
+        none if none.is_empty() => "no agent".to_string(),
+        agents => agents,
+    };
+    vec![agents, format!("{}/{}", node.os, node.arch)]
 }
 
 /// The spinner's frame now; every spinner on screen turns together.

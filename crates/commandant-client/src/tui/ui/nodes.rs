@@ -7,7 +7,7 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState};
 
-use super::{MUTED, SELECTED, dotted, hints, spinner, status_dot};
+use super::{MUTED, SELECTED, dotted, facts, hints, spinner, status_dot};
 use crate::tui::app::App;
 
 /// The node list: what each runs, and how many of its chats are open here.
@@ -44,11 +44,7 @@ pub(super) fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|node| {
             let dot = status_dot(node.online);
-            let agents = match node.harnesses.join(", ") {
-                none if none.is_empty() => "no agent".to_string(),
-                agents => agents,
-            };
-            let mut facts = vec![agents, format!("{}/{}", node.os, node.arch)];
+            let mut facts = facts(node);
             if !node.version.is_empty() {
                 facts.push(format!("v{}", node.version));
             }
