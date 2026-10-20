@@ -367,15 +367,9 @@ fn agent_name(chat: &Chat) -> &str {
 }
 
 /// What the node is getting ready for the chat, with a spinner: a copy of
-/// a project, the list of them, or a resumed session's earlier turns.
+/// a project, a resumed session's earlier turns, and the like.
 fn render_progress(chat: &Chat, cx: &App) -> Option<Div> {
-    let node = &chat.node.name;
-    let doing = match &chat.preparing {
-        Some(repository) => format!("getting {repository} ready on {node}…"),
-        None if chat.listing_projects => format!("listing {node}'s projects…"),
-        None if chat.loading_history => "loading the session's earlier messages…".into(),
-        None => return None,
-    };
+    let doing = chat.getting_ready()?;
     let theme = cx.theme();
     Some(
         h_flex()

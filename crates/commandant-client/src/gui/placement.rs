@@ -19,7 +19,8 @@ pub const SIDEBAR_MIN: f32 = 160.0;
 /// See [`SIDEBAR_MIN`]: room is left for the chat beside it.
 pub const SIDEBAR_MAX: f32 = 480.0;
 
-/// The window's bounds when it last closed, in logical pixels.
+/// The window's bounds and its sidebar's width when it last closed, in
+/// logical pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Placement {
     pub x: f32,
@@ -29,11 +30,13 @@ pub struct Placement {
     /// The bounds above are then the size it restores to.
     #[serde(default)]
     pub maximized: bool,
-    /// How wide the sidebar was dragged.
+    /// How wide the sidebar was dragged; [`SIDEBAR_WIDTH`] in a file saved
+    /// before it could be.
     #[serde(default = "sidebar_width")]
     pub sidebar: f32,
 }
 
+/// [`SIDEBAR_WIDTH`], for serde.
 fn sidebar_width() -> f32 {
     SIDEBAR_WIDTH
 }
@@ -45,8 +48,8 @@ pub fn sidebar_within(width: f32) -> f32 {
 
 impl Placement {
     /// The saved placement, grown to the minimum size with its sidebar
-    /// within bounds; none when nothing
-    /// usable is saved, and the window opens centred instead.
+    /// within bounds; none when nothing usable is saved, and the window
+    /// opens centred instead.
     pub fn load(path: &Path) -> Option<Self> {
         let read = fs::read_optional(path).and_then(|text| match text {
             Some(text) => Ok(Some(toml::from_str::<Self>(&text)?)),

@@ -63,7 +63,7 @@ impl Connected {
             .id("sidebar-edge")
             .absolute()
             .top_0()
-            .right(px(-EDGE / 2.0))
+            .right_0()
             .w(px(EDGE))
             .h_full()
             .cursor_col_resize()
@@ -108,26 +108,9 @@ impl Connected {
         }
     }
 
-    /// A node's sessions to choose from, over the chat it opens on.
-    fn node_sessions(&mut self, node: String, window: &mut Window, cx: &mut Context<Self>) {
-        let chat = self.last.get(&node).copied();
-        self.act(
-            Intent::Open {
-                node: node.clone(),
-                chat,
-            },
-            window,
-            cx,
-        );
-        let opened = self.shown.and_then(|id| self.core.chat(id));
-        if let Some(id) = opened.filter(|c| c.node.id == node).map(|c| c.id) {
-            self.act(Intent::Sessions(id), window, cx);
-        }
-    }
-
     /// A node's status dot and name, dimmed while it is offline and turning
     /// while it starts its agent; a click opens its last chat, `[+]` a new
-    /// one.
+    /// one or its sessions.
     fn node_row(&self, at: usize, node: &NodeInfo, cx: &Context<Self>) -> Stateful<Div> {
         let theme = cx.theme();
         let id = node.id.clone();
@@ -136,8 +119,15 @@ impl Connected {
             let node = id.clone();
             this.act(Intent::Open { node, chat }, window, cx);
         });
-        let id = node.id.clone();
-        let this = cx.entity().downgrade();
+        let connected = cx.entity().downgrade();
+        let new_chat = Intent::OpenSession {
+            node: node.id.clone(),
+            session: None,
+        };
+        let sessions = Intent::NodeSessions {
+            node: node.id.clone(),
+            chat: self.last.get(&node.id).copied(),
+        };
         let new = node.online.then(|| {
             Button::new(("new-chat", at))
                 .ghost()
@@ -145,27 +135,16 @@ impl Connected {
                 .icon(IconName::Plus)
                 .tooltip("New chat or session")
                 .dropdown_menu(move |menu, _, _| {
-                    let (new, sessions) = (this.clone(), this.clone());
-                    let (node, again) = (id.clone(), id.clone());
-                    menu.item(
-                        PopupMenuItem::new("New chat").on_click(move |_, window, cx| {
-                            let node = node.clone();
-                            let _ = new.update(cx, |this, cx| {
-                                let intent = Intent::OpenSession {
-                                    node,
-                                    session: None,
-                                };
-                                this.act(intent, window, cx);
-                            });
-                        }),
-                    )
-                    .item(
-                        PopupMenuItem::new("Sessions…").on_click(move |_, window, cx| {
-                            let node = again.clone();
-                            let _ = sessions
-                                .update(cx, |this, cx| this.node_sessions(node, window, cx));
-                        }),
-                    )
+                    // An item asking the core for `intent`.
+                    let item = |label: &'static str, intent: &Intent| {
+                        let (connected, intent) = (connected.clone(), intent.clone());
+                        PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                            let intent = intent.clone();
+                            let _ = connected.update(cx, |this, cx| this.act(intent, window, cx));
+                        })
+                    };
+                    menu.item(item("New chat", &new_chat))
+                        .item(item("Sessions…", &sessions))
                 })
         });
         let row = h_flex()

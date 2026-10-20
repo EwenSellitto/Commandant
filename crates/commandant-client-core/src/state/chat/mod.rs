@@ -394,6 +394,25 @@ impl Chat {
         self.options.as_ref().is_some_and(|o| o.loading)
     }
 
+    /// What the node is getting ready for the chat, while it is: a copy of
+    /// a project, a list, a resumed session's turns, what its agent offers.
+    pub fn getting_ready(&self) -> Option<String> {
+        let node = &self.node.name;
+        Some(match &self.preparing {
+            Some(repository) => format!("getting {repository} ready on {node}…"),
+            None if self.listing_projects => format!("listing {node}'s projects…"),
+            None if self.listing_providers.is_some() => {
+                format!("listing {node}'s model providers…")
+            }
+            None if self.loading_history => "loading the session's earlier messages…".into(),
+            None if self.options.is_none() && self.fetching_options => {
+                format!("asking {node} what its agent offers…")
+            }
+            None if self.loading() => "connecting MCP servers; commands follow…".into(),
+            None => return None,
+        })
+    }
+
     /// Sends `prompt` (or runs `command` with it), showing `text` in the
     /// thread. While the agent works the text stays in the prompt, to send
     /// once it is done.

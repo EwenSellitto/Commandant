@@ -2,7 +2,7 @@
 //! closing, the nodes, the tasks, the chat before or after, the next
 //! effort; and Ctrl-B, which folds the sidebar away.
 
-use commandant_client_core::{ChatId, Go, Intent, Next, cycle};
+use commandant_client_core::{ChatId, Go, Intent};
 use gpui::{App, Context, KeyBinding, Window};
 
 use super::connected::Connected;
@@ -22,10 +22,12 @@ gpui::actions!(
     ]
 );
 
-/// Where the chords work: the sidebar and the views, not under a question
-/// over the whole window, which takes the keys as the TUI's does.
+/// Where the chords work: the sidebar and the views. A question takes the
+/// keys instead, as the TUI's does: one over the whole window is outside
+/// it, and one over the chat shown leaves only Ctrl-B.
 pub(super) const KEYS: &str = "Connected";
 
+/// Binds the chords where they work.
 pub(super) fn bind_keys(cx: &mut App) {
     // Over the prompt's own bindings too: Ctrl-H replaces in a text box,
     // and Alt-←/→ moves by word on macOS.
@@ -47,8 +49,8 @@ pub(super) fn bind_keys(cx: &mut App) {
 }
 
 impl Connected {
-    /// What the chat shown asks for, if one is.
-    fn in_shown(
+    /// Asks the core for something about the chat shown, if one is.
+    fn for_shown(
         &mut self,
         intent: impl FnOnce(ChatId) -> Intent,
         window: &mut Window,
@@ -60,7 +62,7 @@ impl Connected {
     }
 
     pub(super) fn on_new_chat(&mut self, _: &NewChat, window: &mut Window, cx: &mut Context<Self>) {
-        self.in_shown(Intent::NewChat, window, cx);
+        self.for_shown(Intent::NewChat, window, cx);
     }
 
     pub(super) fn on_sessions(
@@ -69,7 +71,7 @@ impl Connected {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.in_shown(Intent::Sessions, window, cx);
+        self.for_shown(Intent::Sessions, window, cx);
     }
 
     pub(super) fn on_close_chat(
@@ -78,7 +80,7 @@ impl Connected {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.in_shown(Intent::Close, window, cx);
+        self.for_shown(Intent::Close, window, cx);
     }
 
     pub(super) fn on_show_nodes(
@@ -87,12 +89,7 @@ impl Connected {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let next = Next {
-            go: Some(Go::Nodes),
-            prompt: None,
-            sent: None,
-        };
-        self.apply(next, window, cx);
+        self.go(Some(Go::Nodes), window, cx);
         cx.notify();
     }
 
@@ -106,7 +103,7 @@ impl Connected {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.cycle_chat(-1, window, cx);
+        self.show_beside(-1, window, cx);
     }
 
     pub(super) fn on_next_chat(
@@ -115,17 +112,14 @@ impl Connected {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.cycle_chat(1, window, cx);
+        self.show_beside(1, window, cx);
     }
 
     /// Shows the chat `step` away from the one shown, among its node's.
-    fn cycle_chat(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(chat) = self.shown.and_then(|id| self.core.chat(id)) else {
-            return;
-        };
-        let ids: Vec<ChatId> = self.core.chats_on(&chat.node.id).map(|c| c.id).collect();
-        if let Some(next) = cycle(&ids, chat.id, step) {
-            self.show(next, window, cx);
+    fn show_beside(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let beside = self.shown.and_then(|id| self.core.chat_beside(id, step));
+        if let Some(id) = beside {
+            self.show(id, window, cx);
             cx.notify();
         }
     }
@@ -136,7 +130,7 @@ impl Connected {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.in_shown(Intent::CycleEffort, window, cx);
+        self.for_shown(Intent::CycleEffort, window, cx);
     }
 
     pub(super) fn on_toggle_sidebar(

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use commandant_client_core::{ChatId, Core, Edit, Go, Intent, Next, Scope, Updates};
 use gpui::{
     Context, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, Styled as _, Task, Window, div,
+    Render, Styled as _, Task, Window, div, prelude::FluentBuilder as _,
 };
 use gpui_component::h_flex;
 
@@ -111,6 +111,11 @@ impl Connected {
             let scroller = self.pane(id, window, cx).scroller.clone();
             scroller.update(cx, |scroller, cx| scroller.scroll_to_end(cx));
         }
+        self.go(go, window, cx);
+    }
+
+    /// Goes where the core says to, if anywhere.
+    pub(super) fn go(&mut self, go: Option<Go>, window: &mut Window, cx: &mut Context<Self>) {
         match go {
             Some(Go::Chat(id)) => self.show(id, window, cx),
             // The prompt that had the keys is gone with its chat.
@@ -236,6 +241,9 @@ impl Render for Connected {
         let sidebar = self
             .sidebar_open
             .then(|| self.render_sidebar(cx).into_any_element());
+        let asked = self
+            .shown
+            .is_some_and(|id| self.core.ask(Scope::Chat(id)).is_some());
         div()
             .relative()
             .size_full()
@@ -244,14 +252,18 @@ impl Render for Connected {
                     .size_full()
                     .key_context(KEYS)
                     .track_focus(&self.focus)
-                    .on_action(cx.listener(Self::on_new_chat))
-                    .on_action(cx.listener(Self::on_sessions))
-                    .on_action(cx.listener(Self::on_close_chat))
-                    .on_action(cx.listener(Self::on_show_nodes))
-                    .on_action(cx.listener(Self::on_show_tasks))
-                    .on_action(cx.listener(Self::on_previous_chat))
-                    .on_action(cx.listener(Self::on_next_chat))
-                    .on_action(cx.listener(Self::on_next_effort))
+                    // A question over the chat shown takes its keys.
+                    .when(!asked, |chords| {
+                        chords
+                            .on_action(cx.listener(Self::on_new_chat))
+                            .on_action(cx.listener(Self::on_sessions))
+                            .on_action(cx.listener(Self::on_close_chat))
+                            .on_action(cx.listener(Self::on_show_nodes))
+                            .on_action(cx.listener(Self::on_show_tasks))
+                            .on_action(cx.listener(Self::on_previous_chat))
+                            .on_action(cx.listener(Self::on_next_chat))
+                            .on_action(cx.listener(Self::on_next_effort))
+                    })
                     .on_action(cx.listener(Self::on_toggle_sidebar))
                     .on_drag_move(cx.listener(Self::on_drag_sidebar))
                     .children(sidebar)
