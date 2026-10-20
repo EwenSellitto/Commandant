@@ -2,6 +2,7 @@ mod admin;
 mod cli;
 #[cfg(feature = "gui")]
 mod gui;
+mod picker;
 mod run;
 mod start;
 mod tui;

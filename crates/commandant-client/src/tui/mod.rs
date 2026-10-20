@@ -10,7 +10,6 @@ mod asks;
 mod chat;
 mod help;
 mod login;
-mod picker;
 mod text;
 mod ui;
 

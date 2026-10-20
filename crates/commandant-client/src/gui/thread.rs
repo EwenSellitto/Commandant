@@ -10,7 +10,10 @@ use gpui::{
     ParentElement as _, StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 use gpui_component::clipboard::Clipboard;
-use gpui_component::text::TextView;
+use gpui_component::text::markdown_ast::Node;
+use gpui_component::text::{
+    MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin, TextView,
+};
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 
 use super::connected::Connected;
@@ -22,7 +25,7 @@ impl Connected {
         &mut self,
         id: ChatId,
         index: usize,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (Some(chat), Some(pane)) = (self.core.chat(id), self.panes.get(&id)) else {
@@ -35,7 +38,7 @@ impl Connected {
         match row {
             Row::Tools(range) => self.render_tools(chat, range, open, cx),
             Row::Entry(at) => match chat.thread.get(at) {
-                Some(entry) => self.render_entry(chat, at, entry, open, cx),
+                Some(entry) => self.render_entry(chat, at, entry, open, window, cx),
                 None => div().into_any_element(),
             },
         }
@@ -64,6 +67,7 @@ impl Connected {
         at: usize,
         entry: &Entry,
         open: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme();
@@ -80,6 +84,11 @@ impl Connected {
                 .child(div().flex_1().min_w_0().py_1().child(text))
                 .into_any_element(),
             Role::Agent => TextView::markdown(("reply", at), text)
+                .markdown_extensions(
+                    MarkdownExtensions::default()
+                        .plugin(Inert { block: false })
+                        .plugin(Inert { block: true }),
+                )
                 .selectable(true)
                 .code_block_actions(|block, _, _| Clipboard::new("copy").value(block.code()))
                 .into_any_element(),
@@ -103,7 +112,14 @@ impl Connected {
                     .gap_1()
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle(id, at, cx)))
-                    .child(muted_icon(icon, theme.muted_foreground))
+                    // Level with the first line, however many follow.
+                    .child(
+                        div()
+                            .h(window.line_height())
+                            .flex()
+                            .items_center()
+                            .child(muted_icon(icon, theme.muted_foreground)),
+                    )
                     .child(body.flex_1().min_w_0())
                     .into_any_element()
             }
@@ -229,6 +245,42 @@ fn end_label(run: &Run, cx: &App) -> (String, Hsla) {
     }
 }
 
+/// Raw HTML and images in a reply, shown as the text they are. Drawn, an
+/// image would be fetched from wherever the reply points, telling that
+/// server whatever the agent put in its address.
+struct Inert {
+    block: bool,
+}
+
+impl MarkdownPlugin for Inert {
+    fn is_block(&self) -> bool {
+        self.block
+    }
+
+    fn name(&self) -> &str {
+        match self.block {
+            true => "inert-block",
+            false => "inert",
+        }
+    }
+
+    fn parse(&self, node: &Node, cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let text = inert(node, cx.node_source(node))?;
+        Some(MarkdownNode::new(self.name().to_string(), ()).text(text))
+    }
+}
+
+/// What `node`, written as `source`, is shown as instead of drawn, if it
+/// is one not to draw.
+fn inert(node: &Node, source: Option<&str>) -> Option<String> {
+    match node {
+        Node::Html(html) => Some(html.value.clone()),
+        Node::Image(image) => Some(source.unwrap_or(&image.url).to_string()),
+        Node::ImageReference(image) => Some(source.unwrap_or(&image.alt).to_string()),
+        _ => None,
+    }
+}
+
 /// What a folded row shows of its text.
 fn first_line(text: &str) -> &str {
     text.trim().lines().next().unwrap_or_default()
@@ -251,4 +303,40 @@ pub(super) fn agent_color(chat: &Chat, name: &str, cx: &App) -> Hsla {
         theme.red,
     ];
     colors[chat.agent_index(name) % colors.len()]
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_component::text::markdown_ast::{Html, Image, Node, Text};
+
+    use super::*;
+
+    #[test]
+    fn html_and_images_in_a_reply_are_shown_as_their_text() {
+        let html = Node::Html(Html {
+            value: "<img src=\"https://x.test/?k=secret\">".into(),
+            position: None,
+        });
+        assert_eq!(
+            inert(&html, None).as_deref(),
+            Some("<img src=\"https://x.test/?k=secret\">")
+        );
+        let image = Node::Image(Image {
+            alt: "a".into(),
+            url: "https://x.test/?k=secret".into(),
+            title: None,
+            position: None,
+        });
+        let source = "![a](https://x.test/?k=secret)";
+        assert_eq!(inert(&image, Some(source)).as_deref(), Some(source));
+        assert_eq!(
+            inert(&image, None).as_deref(),
+            Some("https://x.test/?k=secret")
+        );
+        let text = Node::Text(Text {
+            value: "plain".into(),
+            position: None,
+        });
+        assert_eq!(inert(&text, Some("plain")), None, "drawn as it is");
+    }
 }

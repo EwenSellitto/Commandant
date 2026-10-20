@@ -13,7 +13,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::asks;
 use super::chat::{ChatView, Input};
 use super::help::{Does, Help};
-use super::picker::{Picked, Picker};
+use crate::picker::{Picked, Picker};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Screen {
@@ -453,6 +453,11 @@ impl App {
             return;
         };
         self.last.insert(chat.node.id.clone(), id);
+        if let Screen::Chat(from) = self.screen
+            && from != id
+        {
+            self.core.act(Intent::Leave { chat: from, to: id });
+        }
         self.go_to(Screen::Chat(id));
         self.core.act(Intent::Seen(id));
     }
@@ -583,7 +588,7 @@ pub(crate) mod tests {
     }
 
     /// Sends `text` from the chat on screen and returns where it went.
-    fn send(app: &mut App, text: &str) -> (ChatId, PromptRequest) {
+    pub(crate) fn send(app: &mut App, text: &str) -> (ChatId, PromptRequest) {
         type_text(app, text);
         match press(app, key(KeyCode::Enter)).pop() {
             Some(Effect::Send(id, request)) => (id, request),
@@ -591,7 +596,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn finish(app: &mut App, id: ChatId, session_id: &str) {
+    pub(crate) fn finish(app: &mut App, id: ChatId, session_id: &str) {
         let finished = TaskFinished {
             exit_code: Some(0),
             session_id: session_id.into(),
@@ -686,8 +691,13 @@ pub(crate) mod tests {
         app.on_key(key(KeyCode::Up));
         app.on_key(key(KeyCode::Enter));
         assert_eq!(shown(&app), first, "the node's last chat comes back");
+        // Each says something, or leaving it for the other drops it.
+        send(&mut app, "one");
+        finish(&mut app, first, "ses_a");
         app.on_key(ctrl('n'));
         let second = shown(&app);
+        send(&mut app, "two");
+        finish(&mut app, second, "ses_b");
         for expected in [first, second, first] {
             app.on_key(alt(KeyCode::Right));
             assert_eq!(shown(&app), expected);
@@ -794,6 +804,9 @@ pub(crate) mod tests {
     fn a_picker_keeps_its_filter_as_its_choices_come_in() {
         let mut app = app();
         app.on_key(key(KeyCode::Enter));
+        // A chat with nothing said in it would be the new one.
+        let (id, _) = send(&mut app, "hi");
+        finish(&mut app, id, "ses_x");
         app.on_key(ctrl('o'));
         type_text(&mut app, "about");
         assert_eq!(app.pickers.get(&Scope::App).unwrap().list.shown_len(), 0);

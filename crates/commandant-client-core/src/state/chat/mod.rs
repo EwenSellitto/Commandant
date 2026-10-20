@@ -23,7 +23,7 @@ mod tests;
 pub(in crate::state) use self::commands::AppCommand;
 pub use self::commands::{ALIASES, COMMANDS};
 pub use self::format::{count, dollars, elapsed};
-use self::menus::Menu;
+pub use self::menus::Menu;
 pub use self::run::{Ended, Printed, Run, RunId};
 use self::sign_in::SigningIn;
 
@@ -219,6 +219,42 @@ impl Chat {
         self.model_choice(id).map_or(id, |m| &m.name)
     }
 
+    /// The model the next prompt goes to, by name: `default model` until
+    /// one is chosen or has replied.
+    pub fn model_label(&self) -> String {
+        match (self.settings.model.as_str(), self.model()) {
+            ("", "") => "default model".to_string(),
+            (_, id) => self.model_name(id).to_string(),
+        }
+    }
+
+    /// `high effort`, or `default effort`.
+    pub fn effort_label(&self) -> String {
+        format!("{} effort", or(&self.settings.effort, "default"))
+    }
+
+    /// What the session has used: its context, against the model's window
+    /// when known, and its cost; nothing before its first turn.
+    pub fn usage(&self) -> Vec<String> {
+        let mut usage = Vec::new();
+        if self.context > 0 {
+            let window = self.model_choice(self.model()).map_or(0, |m| m.context);
+            usage.push(match window {
+                0 => format!("{} tokens", count(self.context)),
+                window => format!(
+                    "{}/{} {}%",
+                    count(self.context),
+                    count(window),
+                    self.context * 100 / window
+                ),
+            });
+        }
+        if self.spent > 0.0 {
+            usage.push(dollars(self.spent));
+        }
+        usage
+    }
+
     /// The thinking efforts of the current model; `None` if it's unknown.
     fn efforts(&self) -> Option<&[String]> {
         self.model_choice(self.model())
@@ -272,6 +308,21 @@ impl Chat {
             chat: self.id,
             task_id,
         }
+    }
+
+    /// Whether nothing has been said or run in it yet and nothing is under
+    /// way: a chat to start afresh in, or to drop once left.
+    pub fn is_blank(&self) -> bool {
+        let said = self
+            .thread
+            .iter()
+            .any(|e| matches!(e.role, Role::User | Role::Command));
+        self.settings.session_id.is_empty()
+            && !said
+            && self.ask.is_none()
+            && !self.at_work()
+            && self.signing_in.is_none()
+            && self.preparing.is_none()
     }
 
     /// Whether the agent or a command is at work.

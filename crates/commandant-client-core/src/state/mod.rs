@@ -198,6 +198,13 @@ impl State {
                 Effect::FetchSessions(node).into()
             }
             Intent::Close(id) => self.close(id),
+            Intent::Leave { chat, to } => {
+                let blank = |id| self.chat(id).is_some_and(Chat::is_blank);
+                if blank(chat) && !blank(to) {
+                    self.chats.retain(|c| c.id != chat);
+                }
+                Outcome::default()
+            }
             Intent::Submit(id, text) => {
                 let Some(chat) = self.chat_mut(id) else {
                     return Outcome::default();
@@ -224,6 +231,7 @@ impl State {
                 };
                 said.and(then)
             }
+            Intent::Menu(id, menu) => self.in_chat(id, |c| c.open_menu(menu, "")),
             Intent::Choose(Scope::App, choice) => self.choose(choice),
             Intent::Choose(Scope::Chat(id), choice) => self.in_chat(id, |c| c.choose(choice)),
             Intent::Enter(Scope::App, text) => match self.ask.take() {
@@ -373,7 +381,13 @@ impl State {
     }
 
     /// Starts a chat to show; it asks for the options the node hasn't given.
+    /// A new session on a node with a blank chat is that chat.
     fn new_chat(&mut self, node: NodeInfo, settings: Settings) -> Outcome {
+        if settings.session_id.is_empty()
+            && let Some(blank) = self.chats_on(&node.id).find(|c| c.is_blank())
+        {
+            return Outcome::go(Go::Chat(blank.id));
+        }
         let id = self.next_id;
         self.next_id += 1;
         let options = self.options.get(&node.id).cloned();

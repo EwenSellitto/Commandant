@@ -93,19 +93,21 @@ code, so every front end shares it. Code used by several crates goes in
 | `main.rs`, `cli.rs` | Logging, the tokio runtime, and the command line (clap); a bare `commandant` prints help in a terminal and opens the GUI elsewhere |
 | `admin.rs`, `run.rs` | `login`, `token`, `node`, `task`; `run`, `prompt` and `task watch`: plain gRPC calls. `logout` forgets the saved server, and says if flags or the environment still name one; `link` prints the link, with no call |
 | `start.rs` | What `tui` and `gui` give the core: new chats' defaults, and the chat `--node` and `--session` open first |
+| `picker.rs` | A list narrowed down by typing, and what answers a choose-ask with one: the TUI drives it with keys, the GUI with its filter field |
 | `tui/mod.rs` | The TUI's event loop: draws, reads keys, hands the core's updates back to it; the first-run screen before it when no server is saved, and again after `/logout` |
 | `tui/app.rs` | The screen shown (nodes, a chat, the tasks or a task's output) and where Esc goes back to, the highlighted node and task, the last chat per node, the app's own line (`r` and `a` on the nodes), what to copy to the clipboard (OSC 52, `c` on a show-ask); routes keys to intents |
 | `tui/login.rs` | The first-run screen: a link pasted when no server is saved, or after `/logout`; saved once it connects. Esc gives up connecting |
 | `tui/chat.rs` | A chat's prompt (editing, history recall, completion highlight) and scroll |
 | `tui/ui/`, `tui/text.rs` | Drawing (`tasks.rs`: the task list, and an output filling the screen; `login.rs`: the first-run screen), and markdown styling |
-| `tui/asks.rs`, `tui/picker.rs` | What keys say to an ask: the floating list, narrowed down by typing, for a choose-ask, a panel for a confirm- or show-ask; a chat's enter-ask is typed in its prompt, the app's in a box of its own. The app's and each chat's picker are shown from one map |
+| `tui/asks.rs` | What keys say to an ask: the floating list, narrowed down by typing, for a choose-ask, a panel for a confirm- or show-ask; a chat's enter-ask is typed in its prompt, the app's in a box of its own. The app's and each chat's picker are shown from one map |
 | `tui/help.rs` | The help (F1, `?` on the nodes, `/help`): every command, `!` to run one on the node, the agent's commands and skills, and the terminal's keys in one such list, searched by name, key, alias or what it does; choosing one runs it, starts it in the prompt, or presses the key |
 | `gui/mod.rs` | The GUI (the `gui` feature, off by default): GPUI on the main thread, one window, dark; the login card, then the connected view |
 | `gui/login.rs` | The login card: a link pasted on a first run (saved once it connects), or the saved server tried at start-up, with Retry and "Use a different link" when it can't be reached |
-| `gui/connected.rs` | Once connected: the core, redrawn as a GPUI task hands it its updates; which chat is shown and the last one per node; what the core asks to confirm, over the window |
-| `gui/sidebar.rs` | The sidebar: every node (status dot, name, `[+]` for a new chat) and its open chats beneath, each with a spinner while working, a dot or cross when it ended unseen, and a hover × |
-| `gui/chat.rs` | A chat in the main pane: its header, its thread and the prompt (Enter sends, Shift+Enter a newline, Stop and Esc cancel) |
-| `gui/thread.rs` | The thread's rows as each role is drawn: markdown replies with copy buttons, thinking folded once the turn ends, tool calls grouped, commands' blocks |
+| `gui/connected.rs` | Once connected: the core, redrawn as a GPUI task hands it its updates; which chat is shown and the last one per node; where the keys go as questions come and go; the app's question, over the whole window; a node whose agent started opens if nothing else was |
+| `gui/asks.rs` | Every ask: choose-asks a filter-as-you-type list (↑↓, Enter, Esc) on the shared picker, enter-asks one field (masked when secret) that leaves the thread usable, confirm-asks Yes and No (Enter, Esc), show-asks Copy. A chat's question covers only its pane and stays with it |
+| `gui/sidebar.rs` | The sidebar: every node (status dot, name, a spinner while it starts its agent, `[+]` for a new chat) and its open chats beneath it, each with a spinner while working, a dot or cross for how it ended unseen, a mark while it needs input, and a hover × |
+| `gui/chat.rs` | A chat in the main pane: header, thread and prompt (Enter sends, Shift+Enter breaks the line, Stop and Esc cancel), the `/` completions above it (↑↓, Tab, a click), and the agent · model · effort chips under it with the session's usage |
+| `gui/thread.rs` | The thread's rows as each role is drawn: markdown replies with copy buttons, thinking folded once the turn ends, tool calls grouped, commands' blocks; raw HTML and images in replies shown as their text, never drawn or fetched |
 | `gui/rows.rs` | The thread as rows, and what the scroller is told as it grows; rows added or written to while scrolled up are the pill's "N new" |
 | `gui/placement.rs` | Where the window was when it last closed or stopped moving, so it reopens there |
 
