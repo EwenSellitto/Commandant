@@ -9,15 +9,15 @@ use commandant_client_core::chat::Menu;
 use commandant_client_core::{Chat, ChatId, Intent, Scope};
 use commandant_common::or;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, DefiniteLength, Div, Entity,
-    InteractiveElement as _, IntoElement, ParentElement as _, ScrollHandle,
-    StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription, Window, div, px,
+    App, AppContext as _, Context, Div, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, ScrollHandle, StatefulInteractiveElement as _, StyleRefinement,
+    Styled as _, Subscription, Window, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{
     Escape, IndentInline, InputEvent, MoveDown, MoveUp, OutdentInline, Textarea, TextareaState,
 };
-use gpui_component::message_scroller::{MessageScroller, MessageScrollerState};
+use gpui_component::message_scroller::MessageScrollerState;
 use gpui_component::spinner::Spinner;
 use gpui_component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
 
@@ -25,7 +25,7 @@ use super::asks::{list_row, panel};
 use super::connected::Connected;
 use super::rows::{Row, Tally};
 use super::sidebar::status_dot;
-use super::thread::agent_color;
+use super::thread::{Thread, agent_color};
 
 /// The most lines the prompt grows to before it scrolls.
 const PROMPT_LINES: usize = 8;
@@ -38,6 +38,8 @@ const COMPLETIONS_HEIGHT: f32 = 240.0;
 pub(super) struct Pane {
     /// The prompt being written.
     pub(super) composer: Entity<TextareaState>,
+    /// The thread, drawn as a view of its own.
+    thread: Entity<Thread>,
     /// Where the thread is scrolled, and how tall its rows are.
     pub(super) scroller: Entity<MessageScrollerState>,
     /// The thread's rows, as last synced.
@@ -76,8 +78,10 @@ impl Pane {
                 _ => {}
             }
         });
+        let connected = cx.entity().downgrade();
         Self {
             composer,
+            thread: cx.new(|_| Thread { connected, id }),
             scroller: cx.new(|cx| MessageScrollerState::new(0, cx)),
             rows: Vec::new(),
             tally: Tally::default(),
@@ -166,7 +170,11 @@ impl Connected {
             return div();
         };
         let header = render_header(chat, cx);
-        let thread = render_thread(chat, pane, cx);
+        // Cached: what is typed below it doesn't lay it out again.
+        let thread = pane
+            .thread
+            .clone()
+            .cached(StyleRefinement::default().size_full());
         let composer = render_composer(chat, pane, window, cx);
         div()
             .relative()
@@ -222,41 +230,6 @@ fn render_chips(chat: &Chat, cx: &mut Context<Connected>) -> Div {
                 .text_color(cx.theme().muted_foreground)
                 .child(chat.usage().join(" · ")),
         )
-}
-
-/// The thread, following its end unless scrolled up; or, while it is
-/// empty, where prompts go.
-fn render_thread(chat: &Chat, pane: &mut Pane, cx: &mut Context<Connected>) -> AnyElement {
-    if chat.thread.is_empty() {
-        return div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_color(cx.theme().muted_foreground)
-            .child(format!(
-                "Ask {} on {} anything.",
-                agent_name(chat),
-                chat.node.name
-            ))
-            .into_any_element();
-    }
-    if !pane.scroller.read(cx).is_scrolled_up() {
-        pane.tally.read();
-    }
-    let label = match pane.tally.unread() {
-        0 => "Latest".to_string(),
-        new => format!("{new} new"),
-    };
-    let mut gap = StyleRefinement::default();
-    gap.padding.bottom = Some(DefiniteLength::from(px(12.0)));
-    let id = chat.id;
-    let renderer =
-        cx.processor(move |this, index: usize, window, cx| this.render_row(id, index, window, cx));
-    MessageScroller::new(("thread", id), pane.scroller.clone(), renderer)
-        .with_row_style(gap)
-        .with_jump_button_renderer(move |button| button.label(label))
-        .into_any_element()
 }
 
 /// The prompt, and the Stop button while the chat is at work.
@@ -359,7 +332,7 @@ fn render_completions(chat: &Chat, pane: &Pane, cx: &mut Context<Connected>) -> 
 }
 
 /// The agent prompts go to, by name.
-fn agent_name(chat: &Chat) -> &str {
+pub(super) fn agent_name(chat: &Chat) -> &str {
     match chat.agent() {
         "" => "the agent",
         agent => agent,

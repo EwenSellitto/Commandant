@@ -227,6 +227,7 @@ impl Connected {
                         scroller.remeasure_items(from..count, cx);
                     }
                 }
+                Change::Unchanged => {}
             });
         }
     }

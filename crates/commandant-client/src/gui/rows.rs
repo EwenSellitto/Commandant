@@ -80,6 +80,9 @@ pub enum Change {
     /// Rows added at the end, then every row measured again if the turn
     /// ended, as its thinking folds up.
     Grew { added: usize, settled: bool },
+    /// Nothing to measure again: measuring moves the thread, which shows
+    /// its scrollbar for a while and draws it again at every frame.
+    Unchanged,
 }
 
 impl Tally {
@@ -109,6 +112,9 @@ impl Tally {
             self.unread.extend(written.into_iter().chain(before..count));
         } else {
             self.unread.clear();
+        }
+        if added == 0 && written.is_none() && !settled {
+            return Change::Unchanged;
         }
         Change::Grew { added, settled }
     }
@@ -191,7 +197,10 @@ mod tests {
         assert_eq!(tally.change(&chat, &first(&chat, 3), true), grew(1, false));
         assert_eq!(tally.unread(), 2);
         // Back at the bottom, nothing is new.
-        assert_eq!(tally.change(&chat, &first(&chat, 3), false), grew(0, false));
+        assert_eq!(
+            tally.change(&chat, &first(&chat, 3), false),
+            Change::Unchanged
+        );
         assert_eq!(tally.unread(), 0);
         // Nor is the prompt the reader was looking at.
         chat.thread[0].text.push_str("typed");
@@ -200,6 +209,28 @@ mod tests {
 
         chat.activity = Activity::Idle;
         assert_eq!(tally.change(&chat, &first(&chat, 4), false), grew(1, true));
+    }
+
+    #[test]
+    fn a_thread_left_as_it_was_asks_nothing_of_the_scroller() {
+        use Role::*;
+        let mut tally = Tally::default();
+        let mut chat = chat(&[User, Agent], true);
+        tally.change(&chat, &rows(&chat.thread), false);
+        // Something else changed: the node, say.
+        assert_eq!(
+            tally.change(&chat, &rows(&chat.thread), false),
+            Change::Unchanged
+        );
+        // The last row written to is measured again.
+        chat.thread[1].text.push_str("more");
+        assert_eq!(
+            tally.change(&chat, &rows(&chat.thread), false),
+            Change::Grew {
+                added: 0,
+                settled: false
+            }
+        );
     }
 
     #[test]
