@@ -1,6 +1,7 @@
-//! A chat in the main pane: its header, its thread, the box prompts are
-//! written in with the `/command`s completing what is typed, and the chips
-//! that choose where the next prompt goes.
+//! A chat in the main pane: its header, its thread, what the node is
+//! getting ready, the box prompts are written in with the `/command`s
+//! completing what is typed, and the chips that choose where the next
+//! prompt goes.
 
 use std::collections::HashSet;
 
@@ -14,9 +15,10 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{
-    Escape, IndentInline, InputEvent, MoveDown, MoveUp, Textarea, TextareaState,
+    Escape, IndentInline, InputEvent, MoveDown, MoveUp, OutdentInline, Textarea, TextareaState,
 };
 use gpui_component::message_scroller::{MessageScroller, MessageScrollerState};
+use gpui_component::spinner::Spinner;
 use gpui_component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
 
 use super::asks::{list_row, panel};
@@ -176,6 +178,7 @@ impl Connected {
                     .size_full()
                     .child(header)
                     .child(div().flex_1().min_h_0().child(thread))
+                    .children(render_progress(chat, cx))
                     .child(composer)
                     .child(render_chips(chat, cx)),
             )
@@ -301,12 +304,18 @@ fn render_composer(
                 cx.stop_propagation();
             }
         }))
-        // Tab completes the highlighted command.
+        // Tab completes the highlighted command, or else switches agent;
+        // Shift+Tab switches back.
         .capture_action(cx.listener(move |this, _: &IndentInline, window, cx| {
+            cx.stop_propagation();
             let at = this.panes.get(&id).map_or(0, |pane| pane.suggested);
-            if this.complete(id, at, window, cx) {
-                cx.stop_propagation();
+            if !this.complete(id, at, window, cx) {
+                this.act(Intent::CycleAgent(id, 1), window, cx);
             }
+        }))
+        .capture_action(cx.listener(move |this, _: &OutdentInline, window, cx| {
+            cx.stop_propagation();
+            this.act(Intent::CycleAgent(id, -1), window, cx);
         }))
         .child(
             div()
@@ -357,10 +366,37 @@ fn agent_name(chat: &Chat) -> &str {
     }
 }
 
+/// What the node is getting ready for the chat, with a spinner: a copy of
+/// a project, the list of them, or a resumed session's earlier turns.
+fn render_progress(chat: &Chat, cx: &App) -> Option<Div> {
+    let node = &chat.node.name;
+    let doing = match &chat.preparing {
+        Some(repository) => format!("getting {repository} ready on {node}…"),
+        None if chat.listing_projects => format!("listing {node}'s projects…"),
+        None if chat.loading_history => "loading the session's earlier messages…".into(),
+        None => return None,
+    };
+    let theme = cx.theme();
+    Some(
+        h_flex()
+            .gap_2()
+            .px_4()
+            .py_1()
+            .border_t_1()
+            .border_color(theme.border)
+            .bg(theme.muted)
+            .text_sm()
+            .text_color(theme.muted_foreground)
+            .child(Spinner::new().xsmall().color(theme.info))
+            .child(doing),
+    )
+}
+
 /// `● my-box  build  opencode · linux/x86_64 · v0.1`, then the session
-/// and the directory.
+/// and the directory, which a click offers the node's projects in.
 fn render_header(chat: &Chat, cx: &Context<Connected>) -> Div {
     let theme = cx.theme();
+    let id = chat.id;
     let node = &chat.node;
     let agent = (!chat.agent().is_empty()).then(|| {
         div()
@@ -406,10 +442,23 @@ fn render_header(chat: &Chat, cx: &Context<Connected>) -> Div {
                 ),
         )
         .child(
-            div()
+            h_flex()
+                .gap_1()
+                .min_w_0()
                 .text_xs()
                 .text_color(theme.muted_foreground)
-                .truncate()
-                .child(format!("{session} · {cwd}")),
+                .child(div().flex_none().child(format!("{session} ·")))
+                .child(
+                    div()
+                        .id("cwd")
+                        .min_w_0()
+                        .truncate()
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(theme.foreground))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.act(Intent::Projects(id), window, cx)
+                        }))
+                        .child(cwd.to_string()),
+                ),
         )
 }

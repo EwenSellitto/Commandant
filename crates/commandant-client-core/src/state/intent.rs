@@ -35,6 +35,9 @@ pub enum Intent {
     /// Offer what the chat's menu chooses from, as its `/command` does,
     /// leaving what is typed alone.
     Menu(ChatId, Menu),
+    /// Browse the chat's node's projects, as `/project` does, leaving what
+    /// is typed alone.
+    Projects(ChatId),
     /// Answer the scope's [`Ask::Choose`](super::Ask::Choose).
     Choose(Scope, Choose),
     /// Answer the scope's [`Ask::Enter`](super::Ask::Enter) with a line.

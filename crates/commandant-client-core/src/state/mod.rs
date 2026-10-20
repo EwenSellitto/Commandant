@@ -232,6 +232,7 @@ impl State {
                 said.and(then)
             }
             Intent::Menu(id, menu) => self.in_chat(id, |c| c.open_menu(menu, "")),
+            Intent::Projects(id) => self.in_chat(id, |c| c.project("")),
             Intent::Choose(Scope::App, choice) => self.choose(choice),
             Intent::Choose(Scope::Chat(id), choice) => self.in_chat(id, |c| c.choose(choice)),
             Intent::Enter(Scope::App, text) => match self.ask.take() {

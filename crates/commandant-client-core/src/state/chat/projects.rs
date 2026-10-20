@@ -9,7 +9,7 @@ impl Chat {
     /// `/project`: browse the node's projects, or with a repository (or a
     /// project's name), clone a new copy of it to work in. A session stays in
     /// its directory, so only one that hasn't started can move.
-    pub(super) fn project(&mut self, repository: &str) -> Option<Effect> {
+    pub(in crate::state) fn project(&mut self, repository: &str) -> Option<Effect> {
         if !self.settings.session_id.is_empty() || self.activity.working() {
             self.info(
                 "this session already works somewhere: start a new one (Ctrl-N) for a project",
