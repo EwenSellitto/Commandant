@@ -64,6 +64,10 @@ pub struct ClientArgs {
 pub enum Command {
     /// Save the orchestrator address and admin token to the config file.
     Login(LoginArgs),
+    /// Print the server's connection link, to connect another client.
+    Link,
+    /// Forget the saved server.
+    Logout,
     /// Manage join tokens.
     #[command(subcommand)]
     Token(TokenCommand),
@@ -282,6 +286,12 @@ mod tests {
             panic!("not gui");
         };
         assert!(gui.foreground);
+    }
+
+    #[test]
+    fn the_link_is_shown_and_the_server_forgotten_from_the_shell() {
+        assert!(matches!(parse(&["link"]), Some(Command::Link)));
+        assert!(matches!(parse(&["logout"]), Some(Command::Logout)));
     }
 
     #[test]

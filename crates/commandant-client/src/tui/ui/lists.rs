@@ -85,16 +85,9 @@ fn draw_list<R: Row>(
     filtered: &Filtered<R>,
     enter: &'static str,
 ) {
-    let screen = frame.area();
-    let width = screen.width.saturating_sub(4).min(80);
     // Title, filter, gap, the list, gap, hints; plus a padding row each end.
     let rows = filtered.shown_len().max(1) as u16;
-    let height = (rows + 7).min(screen.height.saturating_sub(2));
-    let area = screen.centered(Constraint::Length(width), Constraint::Length(height));
-    frame.render_widget(Clear, area);
-    let panel = Block::new().bg(PANEL).padding(Padding::new(2, 2, 1, 1));
-    let inner = panel.inner(area);
-    frame.render_widget(panel, area);
+    let inner = panel(frame, rows + 7);
     let [title_area, filter, _, list, _, hints] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
@@ -165,9 +158,7 @@ pub(super) fn draw_dialog(
         Some(Ask::Show { title, text }) => (title, text, &[("c", "copy"), ("esc", "close")]),
         _ => return,
     };
-    let screen = frame.area();
-    let width = screen.width.saturating_sub(4).min(80);
-    let room = width.saturating_sub(4) as usize;
+    let room = panel_width(frame.area()).saturating_sub(4) as usize;
     let gutter = Span::raw("");
     let lines: Vec<Line> = said
         .lines()
@@ -176,12 +167,7 @@ pub(super) fn draw_dialog(
     let rows = lines.len() as u16;
     // Title and gap, the text, gap, hints; plus a padding row each end.
     let titled = if title.is_empty() { 0 } else { 2 };
-    let height = (titled + rows + 4).min(screen.height.saturating_sub(2));
-    let area = screen.centered(Constraint::Length(width), Constraint::Length(height));
-    frame.render_widget(Clear, area);
-    let panel = Block::new().bg(PANEL).padding(Padding::new(2, 2, 1, 1));
-    let inner = panel.inner(area);
-    frame.render_widget(panel, area);
+    let inner = panel(frame, titled + rows + 4);
     let [heading, _, body, _, keys] = Layout::vertical([
         Constraint::Length(titled.min(1)),
         Constraint::Length(titled.saturating_sub(1)),
@@ -204,15 +190,8 @@ pub(super) fn draw_entry(
     enter: &'static str,
     input: &Input,
 ) {
-    let screen = frame.area();
-    let width = screen.width.saturating_sub(4).min(80);
     // Label and gap, the line, gap, hints; plus a padding row each end.
-    let height = 7.min(screen.height.saturating_sub(2));
-    let area = screen.centered(Constraint::Length(width), Constraint::Length(height));
-    frame.render_widget(Clear, area);
-    let panel = Block::new().bg(PANEL).padding(Padding::new(2, 2, 1, 1));
-    let inner = panel.inner(area);
-    frame.render_widget(panel, area);
+    let inner = panel(frame, 7);
     let [heading, _, line, _, keys] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
@@ -225,12 +204,38 @@ pub(super) fn draw_entry(
     let first = label.next().map(|c| c.to_uppercase().collect::<String>());
     let label = format!("{}{}", first.unwrap_or_default(), label.as_str());
     frame.render_widget(Span::raw(label).bold().fg(accent), heading);
+    draw_line(frame, accent, input, line);
+    frame.render_widget(self::hints(&[("enter", enter), ("esc", "cancel")]), keys);
+}
+
+/// How wide a panel is on `screen`.
+fn panel_width(screen: Rect) -> u16 {
+    screen.width.saturating_sub(4).min(80)
+}
+
+/// A solid panel `height` rows tall, padding included, centred over
+/// everything else; where what it holds goes.
+pub(super) fn panel(frame: &mut Frame, height: u16) -> Rect {
+    let screen = frame.area();
+    let height = height.min(screen.height.saturating_sub(2));
+    let area = screen.centered(
+        Constraint::Length(panel_width(screen)),
+        Constraint::Length(height),
+    );
+    frame.render_widget(Clear, area);
+    let panel = Block::new().bg(PANEL).padding(Padding::new(2, 2, 1, 1));
+    let inner = panel.inner(area);
+    frame.render_widget(panel, area);
+    inner
+}
+
+/// A line being typed, behind `›`, with the cursor in it.
+pub(super) fn draw_line(frame: &mut Frame, accent: Color, input: &Input, area: Rect) {
     // Scroll sideways so the cursor stays visible.
-    let room = (line.width as usize).saturating_sub(3);
+    let room = (area.width as usize).saturating_sub(3);
     let offset = input.cursor.saturating_sub(room);
     let visible: String = input.text.chars().skip(offset).take(room).collect();
-    frame.render_widget(Line::from(vec!["› ".fg(accent), Span::raw(visible)]), line);
-    let x = line.x + 2 + (input.cursor - offset) as u16;
-    frame.set_cursor_position((x, line.y));
-    frame.render_widget(self::hints(&[("enter", enter), ("esc", "cancel")]), keys);
+    frame.render_widget(Line::from(vec!["› ".fg(accent), Span::raw(visible)]), area);
+    let x = area.x + 2 + (input.cursor - offset) as u16;
+    frame.set_cursor_position((x, area.y));
 }

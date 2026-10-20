@@ -96,7 +96,7 @@ pub fn load(state_dir: &Path) -> Result<Option<Credentials>> {
 /// Drops credentials the orchestrator no longer knows, so the next
 /// connection joins afresh.
 pub fn forget(state_dir: &Path) -> Result<()> {
-    remove(&path(state_dir))
+    remove(&path(state_dir)).map(drop)
 }
 
 pub fn save(state_dir: &Path, creds: &Credentials) -> Result<()> {

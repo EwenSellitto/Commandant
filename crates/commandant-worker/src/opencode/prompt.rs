@@ -7,8 +7,8 @@ use commandant_proto::{AgentPrompt, AgentUsage, OutputStream, TaskFinished, Work
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
 
-use super::Opencode;
 use super::api::{Api, CommandRun, Event, Prompt};
+use super::{Opencode, untagged};
 use crate::harness::{HarnessKind, Output, in_session};
 
 /// Runs `task` until the agent goes idle or `cancel` fires (or its sender is
@@ -357,9 +357,11 @@ impl<'a> Transcript<'a> {
                 if part.kind == "reasoning" {
                     self.reasoning.insert(part.id.clone());
                 }
-                // Catches up on text that came without deltas.
+                // Catches up on text that came without deltas, but not on
+                // what a plugin tagged it with once streamed.
                 let sent = self.sent.get(&part.id).copied().unwrap_or_default();
-                if let Some(unsent) = part.text.get(sent..).filter(|t| !t.is_empty()) {
+                let text = untagged(&part.text);
+                if let Some(unsent) = text.get(sent..).filter(|t| !t.is_empty()) {
                     self.say(part.id, unsent.to_string()).await;
                 }
             }
@@ -563,6 +565,40 @@ mod tests {
         assert_eq!(thinking, "hmm\n");
         assert_eq!(stdout, "pong\nbye\n");
         assert_eq!(stderr, "[opencode] bash ls\n");
+    }
+
+    #[tokio::test]
+    async fn the_ids_a_plugin_tags_replies_with_are_not_said() {
+        let (out, mut rx) = mpsc::channel(64);
+        let mut transcript = Transcript::new("t", "s", &out);
+        let tagged = "pong\n\n<dcp-message-id>m0004</dcp-message-id>";
+        let events = [
+            message("reply", "assistant"),
+            delta("p1", "po"),
+            delta("p1", "ng"),
+            // Tagged once streamed, the reply comes back whole.
+            part("reply", "p1", json!({ "type": "text", "text": tagged })),
+            // Tagged as it came, without deltas.
+            part(
+                "reply",
+                "p2",
+                json!({ "type": "text", "text": "bye <dcp-message-id>m0005</dcp-message-id>" }),
+            ),
+        ];
+        for event in events {
+            transcript.follow(event).await;
+        }
+        transcript.output.end_line().await;
+        drop(transcript);
+        drop(out);
+        let mut said = String::new();
+        while let Some(WorkerMsg {
+            msg: Some(Msg::Output(output)),
+        }) = rx.recv().await
+        {
+            said += &String::from_utf8(output.data).unwrap();
+        }
+        assert_eq!(said, "pong\nbye\n");
     }
 
     #[tokio::test]

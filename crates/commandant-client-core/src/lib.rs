@@ -70,7 +70,7 @@ impl Core {
     ) -> Result<(Self, Updates)> {
         let (server, nodes, updates) = Server::connect(client, handle).await?;
         let core = Self {
-            state: State::new(nodes, defaults),
+            state: State::new(nodes, defaults).with_link(client.link()),
             server: Some(server),
             kept: Vec::new(),
         };

@@ -700,7 +700,7 @@ fn the_agents_commands_are_known_once_loaded() {
     let app = with_options();
     let commands: Vec<_> = app.agent_commands().collect();
     assert_eq!(commands, [("review", "Review the changes")]);
-    assert!(app.is_command("review") && app.is_command("login"));
+    assert!(app.is_command("review") && app.is_command("exit"));
 }
 
 /// Runs `line` with `!`, and returns the run and its request.

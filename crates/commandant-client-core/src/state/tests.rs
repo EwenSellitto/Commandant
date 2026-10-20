@@ -406,6 +406,47 @@ fn quitting_leaves_the_tasks_on_every_node_to_cancel() {
 }
 
 #[test]
+fn logging_out_leaves_the_tasks_to_cancel() {
+    let mut state = state();
+    let id = chat_on(&mut state, "n1");
+    send(&mut state, id, "one");
+    state.update(Update::Chat(id, started("t1")));
+    let outcome = submit(&mut state, id, "/logout");
+    assert_eq!(outcome.go, Some(Go::LogOut));
+    assert!(outcome.effects.is_empty(), "no providers are listed");
+    assert_eq!(state.running_tasks(), ["t1"]);
+}
+
+#[test]
+fn the_link_is_shown_to_copy() {
+    let mut state = state();
+    state.link = "commandant://abc".into();
+    let id = chat_on(&mut state, "n1");
+    let outcome = submit(&mut state, id, "/link");
+    assert!(outcome.effects.is_empty(), "the server isn't asked");
+    assert_eq!(outcome.prompt, Some((id, Edit::Clear)));
+    assert_eq!(
+        state.ask(Scope::App),
+        Some(&Ask::Show {
+            title: "Link".into(),
+            text: "commandant://abc".into(),
+        })
+    );
+}
+
+#[test]
+fn logging_in_is_not_signing_in() {
+    let mut state = state();
+    let id = chat_on(&mut state, "n1");
+    let outcome = submit(&mut state, id, "/login");
+    assert!(outcome.effects.is_empty(), "no providers are listed");
+    assert_eq!(outcome.go, None);
+    assert!(state.ask(Scope::Chat(id)).is_none());
+    let said = &chat(&state, id).thread.last().expect("a line is said").text;
+    assert!(said.contains("/providers"), "{said}");
+}
+
+#[test]
 fn a_running_command_keeps_its_chat_busy_and_open() {
     let mut state = state();
     let id = chat_on(&mut state, "n1");

@@ -104,9 +104,10 @@ impl Connected {
                 let next = self.core.act(Intent::Open { node, chat: None });
                 self.apply(next, window, cx);
             }
-            // Quitting, the help, and the nodes, tasks and output views
-            // come with the views that go there.
-            Some(Go::Quit | Go::Help | Go::Ready(_) | Go::Tasks | Go::Output(_)) | None => {}
+            // Quitting, logging out, the help, and the nodes, tasks and
+            // output views come with the views that go there.
+            Some(Go::Quit | Go::LogOut | Go::Help | Go::Ready(_) | Go::Tasks | Go::Output(_))
+            | None => {}
         }
     }
 

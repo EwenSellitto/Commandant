@@ -9,7 +9,7 @@ use commandant_common::time::ago;
 use commandant_proto::*;
 use unicode_width::UnicodeWidthStr;
 
-use crate::cli::LoginArgs;
+use crate::cli::{ClientArgs, LoginArgs};
 
 pub async fn login(args: LoginArgs) -> Result<()> {
     let client = match args.admin_token {
@@ -28,6 +28,21 @@ pub async fn login(args: LoginArgs) -> Result<()> {
         .context("checking the token")?;
     let path = config::remember(&client)?;
     println!("Logged in; saved to {}", path.display());
+    Ok(())
+}
+
+pub fn logout(args: &ClientArgs) -> Result<()> {
+    match config::forget()? {
+        Some(path) => println!("Logged out; removed {}", path.display()),
+        None => println!("No server was saved"),
+    }
+    if let Some(still) = args.find()? {
+        eprintln!(
+            "note: --token, COMMANDANT_TOKEN or COMMANDANT_TOKEN_FILE still name {}; \
+             the next command talks to it",
+            still.addr
+        );
+    }
     Ok(())
 }
 

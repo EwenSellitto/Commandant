@@ -10,6 +10,7 @@ use ratatui::style::Modifier;
 
 use super::*;
 use crate::tui::app::tests::{app, ask_for_a_key, finish, press, send};
+use crate::tui::login::LogIn;
 
 /// Where `text` isn't.
 fn absent(buf: &Buffer, text: &str) -> bool {
@@ -21,8 +22,13 @@ fn absent(buf: &Buffer, text: &str) -> bool {
 }
 
 fn render(app: &mut App) -> Buffer {
+    render_with(|frame| draw(frame, app))
+}
+
+/// What `draw` puts on a small screen.
+fn render_with(draw: impl FnOnce(&mut Frame)) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
-    terminal.draw(|frame| draw(frame, app)).unwrap();
+    terminal.draw(draw).unwrap();
     terminal.backend().buffer().clone()
 }
 
@@ -467,4 +473,24 @@ fn the_line_to_run_is_typed_in_a_box_over_the_nodes() {
     let buf = render(&mut app);
     let (_, label) = find(&buf, "A shell command to run on box-n1");
     assert_eq!(find(&buf, "› uptime").1, label + 2);
+}
+
+#[test]
+fn the_first_run_screen_asks_for_a_link_and_says_what_was_wrong() {
+    let mut screen = LogIn::default();
+    let buf = render_with(|frame| draw_log_in(frame, &screen));
+    find(&buf, "Connect to your server");
+    find(&buf, "enter connect");
+    assert!(absent(&buf, "connecting"));
+
+    screen.link.set("nope");
+    screen.error = Some("not a link".into());
+    let buf = render_with(|frame| draw_log_in(frame, &screen));
+    find(&buf, "› nope");
+    assert_eq!(buf[find(&buf, "not a link")].fg, Color::Red);
+
+    screen.connecting = true;
+    let buf = render_with(|frame| draw_log_in(frame, &screen));
+    find(&buf, "connecting");
+    assert!(absent(&buf, "not a link"), "an old error is gone");
 }

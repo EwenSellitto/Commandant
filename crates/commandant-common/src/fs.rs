@@ -28,17 +28,17 @@ pub fn write_private(path: &Path, contents: &str) -> Result<()> {
 }
 
 /// Deletes a file, or a directory and all it holds; nothing there is fine.
-pub fn remove(path: &Path) -> Result<()> {
+/// Whether there was something.
+pub fn remove(path: &Path) -> Result<bool> {
     let removed = if path.is_dir() {
         std::fs::remove_dir_all(path)
     } else {
         std::fs::remove_file(path)
     };
     match removed {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            Err(e).with_context(|| format!("deleting {}", path.display()))
-        }
-        _ => Ok(()),
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("deleting {}", path.display())),
     }
 }
 
@@ -87,6 +87,8 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+        assert!(remove(&path).unwrap(), "it was there");
+        assert!(!remove(&path).unwrap(), "nothing is left to remove");
         std::fs::remove_dir_all(tmp).unwrap();
     }
 }

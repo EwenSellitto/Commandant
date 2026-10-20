@@ -1,9 +1,16 @@
 //! What the clients' tests build their nodes and task events from.
 
+use commandant_common::link::{Link, Pin};
 use commandant_proto::task_event::Event as TaskEvent;
 use commandant_proto::*;
 
 use super::chat::{Message, RunId};
+
+/// A server's admin link, pinned to its certificate.
+pub fn link() -> Link {
+    let admin = format!("cmda_{}", "ab".repeat(16));
+    Link::new(&admin, "192.168.1.15:7400").with_pin(Some(Pin::of(b"a certificate")))
+}
 
 pub fn node(id: &str, online: bool) -> NodeInfo {
     NodeInfo {

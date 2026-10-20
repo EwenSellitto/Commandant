@@ -7,6 +7,7 @@ mod options;
 mod prompt;
 mod sessions;
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -162,6 +163,33 @@ fn warm_up(api: Api) {
     });
 }
 
+/// What a plugin tags the agent's messages with, for the model to read and
+/// not people: the Dynamic Context Pruning plugin ends each one with
+/// `<dcp-message-id>m0004</dcp-message-id>`.
+const PLUGIN_TAG: (&str, &str) = ("<dcp-message-id>", "</dcp-message-id>");
+
+/// `text` without the [`PLUGIN_TAG`]s; one that ends it takes the space
+/// before it along. Text with none, nearly all of it, isn't copied.
+fn untagged(text: &str) -> Cow<'_, str> {
+    let (open, close) = PLUGIN_TAG;
+    if !text.contains(open) {
+        return Cow::Borrowed(text);
+    }
+    let mut kept = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(open)
+        && let Some(end) = rest[start..].find(close)
+    {
+        kept.push_str(&rest[..start]);
+        rest = &rest[start + end + close.len()..];
+    }
+    kept.push_str(rest);
+    if rest.len() < text.len() && rest.trim().is_empty() {
+        kept.truncate(kept.trim_end().len());
+    }
+    Cow::Owned(kept)
+}
+
 /// Runs `opencode serve` on a free loopback port, behind a random password.
 async fn start_server(binary: &Path) -> Result<Server> {
     let password = commandant_common::random_hex(32);
@@ -227,6 +255,22 @@ async fn forward_lines(pipe: impl AsyncRead + Unpin, lines: mpsc::Sender<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_plugins_tags_are_taken_out() {
+        let tag = "<dcp-message-id>m0004</dcp-message-id>";
+        assert_eq!(
+            untagged(&format!("a {tag} b")),
+            "a  b",
+            "the text around stays"
+        );
+        assert_eq!(untagged("pong\n"), "pong\n", "untagged text is left alone");
+        assert_eq!(
+            untagged("<b>bold</b> <dcp-message-id>m"),
+            "<b>bold</b> <dcp-message-id>m",
+            "a tag left open is the agent's own text"
+        );
+    }
 
     #[test]
     fn a_session_takes_one_prompt_at_a_time() {

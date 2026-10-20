@@ -19,12 +19,14 @@ use super::help::{BANG, KEYS};
 use super::text::{self, MUTED};
 
 mod lists;
+mod login;
 mod nodes;
 mod tasks;
 #[cfg(test)]
 mod tests;
 
 use self::lists::{draw_dialog, draw_entry, draw_help, draw_picker, draw_suggestions};
+pub use self::login::draw_log_in;
 use self::nodes::draw_nodes;
 use self::tasks::{draw_output, draw_tasks};
 
