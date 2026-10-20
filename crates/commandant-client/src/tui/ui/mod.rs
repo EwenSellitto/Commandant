@@ -451,24 +451,7 @@ fn draw_status(frame: &mut Frame, chat: &Chat, scroll: u16, area: Rect) {
             Span::raw(format!("{} ", spinner())).yellow(),
             Span::raw(doing.to_string()).yellow(),
         ]),
-        Activity::Idle if let Some(repository) = &chat.preparing => {
-            loading(format!("getting {repository} ready on {}…", chat.node.name))
-        }
-        Activity::Idle if chat.listing_projects => {
-            loading(format!("listing {}'s projects…", chat.node.name))
-        }
-        Activity::Idle if chat.listing_providers.is_some() => {
-            loading(format!("listing {}'s model providers…", chat.node.name))
-        }
-        Activity::Idle if chat.loading_history => {
-            loading("loading the session's earlier messages…".into())
-        }
-        Activity::Idle if chat.options.is_none() && chat.fetching_options => {
-            loading(format!("asking {} what its agent offers…", chat.node.name))
-        }
-        Activity::Idle if chat.loading() => {
-            loading("connecting MCP servers; commands follow…".into())
-        }
+        Activity::Idle if let Some(what) = chat.getting_ready() => loading(what),
         Activity::Idle => mcp_summary(chat),
     };
     frame.render_widget(left, area);

@@ -168,6 +168,13 @@ impl State {
             .collect()
     }
 
+    /// The chat `step` away from `id` among its node's, wrapping around.
+    pub fn chat_beside(&self, id: ChatId, step: isize) -> Option<ChatId> {
+        let node = &self.chat(id)?.node.id;
+        let ids: Vec<ChatId> = self.chats_on(node).map(|c| c.id).collect();
+        cycle(&ids, id, step)
+    }
+
     /// Opens a new chat on `node` on the agent's session `session_id`, or a
     /// new one if empty.
     fn open_session(&mut self, node: &str, session_id: String) -> Outcome {
@@ -196,6 +203,17 @@ impl State {
                 let node = chat.node.id.clone();
                 self.ask_sessions(id, &node, true);
                 Effect::FetchSessions(node).into()
+            }
+            Intent::NodeSessions { node, chat } => {
+                let mut outcome = self.open(&node, chat);
+                if let Some(Go::Chat(id)) = outcome.go {
+                    self.ask_sessions(id, &node, true);
+                    let fetch = Effect::FetchSessions(node);
+                    if !outcome.effects.contains(&fetch) {
+                        outcome.effects.push(fetch);
+                    }
+                }
+                outcome
             }
             Intent::Close(id) => self.close(id),
             Intent::Leave { chat, to } => {
@@ -232,6 +250,7 @@ impl State {
                 said.and(then)
             }
             Intent::Menu(id, menu) => self.in_chat(id, |c| c.open_menu(menu, "")),
+            Intent::Projects(id) => self.in_chat(id, |c| c.project("")),
             Intent::Choose(Scope::App, choice) => self.choose(choice),
             Intent::Choose(Scope::Chat(id), choice) => self.in_chat(id, |c| c.choose(choice)),
             Intent::Enter(Scope::App, text) => match self.ask.take() {
@@ -459,9 +478,10 @@ impl State {
     }
 
     /// The node's open chats, then the sessions it saved that aren't open,
-    /// for the chat `from`. `loading` while the node is asked for them again.
+    /// then a new one, for the chat `from`. `loading` while the node is
+    /// asked for them again.
     fn ask_sessions(&mut self, from: ChatId, node_id: &str, loading: bool) {
-        let mut choices = vec![Choice::new(Choose::NewSession, "+ New session", "ctrl-n")];
+        let mut choices = Vec::new();
         for chat in self.chats_on(node_id) {
             let state = match &chat.activity {
                 Activity::Working { .. } => "open · working",
@@ -493,6 +513,7 @@ impl State {
                 detail.join(" · "),
             ));
         }
+        choices.push(Choice::new(Choose::NewSession, "+ New session", "ctrl-n"));
         let mut sessions = Choices::new(SESSIONS, choices, Some(Choose::Chat(from)));
         sessions.loading = loading;
         // Still open: the same question, with what the node has said since.

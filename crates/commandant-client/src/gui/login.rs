@@ -11,7 +11,7 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme as _, Disableable as _, h_flex, v_flex};
 
-use super::{Connected, Screen, Shell};
+use super::{Connected, Resized, Screen, Shell};
 
 /// The card's width, in logical pixels.
 const WIDTH: f32 = 480.0;
@@ -163,7 +163,16 @@ impl Shell {
             eprintln!("warning: {e:#}");
             None
         });
-        let connected = cx.new(|cx| Connected::new(core, updates, open, window, cx));
+        let sidebar = self.sidebar;
+        let connected = cx.new(|cx| Connected::new(core, updates, open, sidebar, window, cx));
+        self._resizing = Some(cx.subscribe_in(
+            &connected,
+            window,
+            |shell, _, Resized(width), window, cx| {
+                shell.sidebar = *width;
+                shell.save_soon(window, cx);
+            },
+        ));
         self.screen = Screen::Connected(connected);
     }
 

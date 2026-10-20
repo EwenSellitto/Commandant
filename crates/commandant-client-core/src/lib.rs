@@ -136,6 +136,11 @@ impl Core {
         self.state.chats_on(node_id)
     }
 
+    /// The chat `step` away from `id` among its node's, wrapping around.
+    pub fn chat_beside(&self, id: ChatId, step: isize) -> Option<ChatId> {
+        self.state.chat_beside(id, step)
+    }
+
     /// What is asked in `scope`, if anything.
     pub fn ask(&self, scope: Scope) -> Option<&Ask> {
         self.state.ask(scope)

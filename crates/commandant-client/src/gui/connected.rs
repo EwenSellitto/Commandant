@@ -4,11 +4,15 @@
 use std::collections::HashMap;
 
 use commandant_client_core::{ChatId, Core, Edit, Go, Intent, Next, Scope, Updates};
-use gpui::{Context, IntoElement, ParentElement as _, Render, Styled as _, Task, Window, div};
+use gpui::{
+    Context, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _,
+    Render, Styled as _, Task, Window, div, prelude::FluentBuilder as _,
+};
 use gpui_component::h_flex;
 
 use super::asks::Question;
 use super::chat::Pane;
+use super::chords::KEYS;
 use super::rows::{Change, rows};
 
 /// A core, and what the window keeps of its chats.
@@ -23,6 +27,12 @@ pub(super) struct Connected {
     pub(super) panes: HashMap<ChatId, Pane>,
     /// What the window keeps of each open question, by scope.
     pub(super) questions: HashMap<Scope, Question>,
+    /// How wide the sidebar is.
+    pub(super) sidebar: f32,
+    /// Whether the sidebar is shown, or folded away with Ctrl-B.
+    pub(super) sidebar_open: bool,
+    /// Takes the chords while no chat is shown to take them.
+    focus: FocusHandle,
     /// Hands the core what its calls report, for as long as it is shown.
     _updates: Task<()>,
 }
@@ -33,6 +43,7 @@ impl Connected {
         core: Core,
         mut updates: Updates,
         open: Option<Intent>,
+        sidebar: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -65,10 +76,14 @@ impl Connected {
             last: HashMap::new(),
             panes: HashMap::new(),
             questions: HashMap::new(),
+            sidebar,
+            sidebar_open: true,
+            focus: cx.focus_handle(),
             _updates: pump,
         };
-        if let Some(open) = open {
-            connected.act(open, window, cx);
+        match open {
+            Some(open) => connected.act(open, window, cx),
+            None => connected.refocus(window, cx),
         }
         connected
     }
@@ -82,7 +97,7 @@ impl Connected {
     }
 
     /// Does the window's part of what the core says comes next.
-    fn apply(&mut self, next: Next, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn apply(&mut self, next: Next, window: &mut Window, cx: &mut Context<Self>) {
         let Next { go, prompt, sent } = next;
         if let Some((id, edit)) = prompt {
             let composer = self.pane(id, window, cx).composer.clone();
@@ -96,9 +111,18 @@ impl Connected {
             let scroller = self.pane(id, window, cx).scroller.clone();
             scroller.update(cx, |scroller, cx| scroller.scroll_to_end(cx));
         }
+        self.go(go, window, cx);
+    }
+
+    /// Goes where the core says to, if anywhere.
+    pub(super) fn go(&mut self, go: Option<Go>, window: &mut Window, cx: &mut Context<Self>) {
         match go {
             Some(Go::Chat(id)) => self.show(id, window, cx),
-            Some(Go::Nodes) => self.shown = None,
+            // The prompt that had the keys is gone with its chat.
+            Some(Go::Nodes) => {
+                self.shown = None;
+                self.refocus(window, cx);
+            }
             // Its agent started while nothing else was opened: open it.
             Some(Go::Ready(node)) if self.shown.is_none() => {
                 let next = self.core.act(Intent::Open { node, chat: None });
@@ -129,8 +153,8 @@ impl Connected {
     }
 
     /// Puts the keys where they go: the question over the window, else the
-    /// one over the chat shown, else its prompt.
-    fn refocus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// one over the chat shown, else its prompt, else the chords.
+    pub(super) fn refocus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let question = [Some(Scope::App), self.shown.map(Scope::Chat)]
             .into_iter()
             .flatten()
@@ -138,9 +162,12 @@ impl Connected {
         if let Some(question) = question {
             return question.focus(window, cx);
         }
-        if let Some(pane) = self.shown.and_then(|id| self.panes.get(&id)) {
-            let composer = pane.composer.clone();
-            composer.update(cx, |composer, cx| composer.focus(window, cx));
+        match self.shown.and_then(|id| self.panes.get(&id)) {
+            Some(pane) => {
+                let composer = pane.composer.clone();
+                composer.update(cx, |composer, cx| composer.focus(window, cx));
+            }
+            None => window.focus(&self.focus, cx),
         }
     }
 
@@ -200,6 +227,7 @@ impl Connected {
                         scroller.remeasure_items(from..count, cx);
                     }
                 }
+                Change::Unchanged => {}
             });
         }
     }
@@ -211,15 +239,42 @@ impl Render for Connected {
             Some(id) => self.render_chat(id, window, cx).into_any_element(),
             None => div().into_any_element(),
         };
+        let sidebar = self
+            .sidebar_open
+            .then(|| self.render_sidebar(cx).into_any_element());
+        let asked = self
+            .shown
+            .is_some_and(|id| self.core.ask(Scope::Chat(id)).is_some());
         div()
             .relative()
             .size_full()
             .child(
                 h_flex()
                     .size_full()
-                    .child(self.render_sidebar(cx))
+                    .key_context(KEYS)
+                    .track_focus(&self.focus)
+                    // A question over the chat shown takes its keys.
+                    .when(!asked, |chords| {
+                        chords
+                            .on_action(cx.listener(Self::on_new_chat))
+                            .on_action(cx.listener(Self::on_sessions))
+                            .on_action(cx.listener(Self::on_close_chat))
+                            .on_action(cx.listener(Self::on_show_nodes))
+                            .on_action(cx.listener(Self::on_show_tasks))
+                            .on_action(cx.listener(Self::on_previous_chat))
+                            .on_action(cx.listener(Self::on_next_chat))
+                            .on_action(cx.listener(Self::on_next_effort))
+                    })
+                    .on_action(cx.listener(Self::on_toggle_sidebar))
+                    .on_drag_move(cx.listener(Self::on_drag_sidebar))
+                    .children(sidebar)
                     .child(div().flex_1().h_full().min_w_0().child(main)),
             )
             .children(self.render_ask(Scope::App, cx))
     }
 }
+
+/// The sidebar was dragged to this width.
+pub(super) struct Resized(pub(super) f32);
+
+impl EventEmitter<Resized> for Connected {}

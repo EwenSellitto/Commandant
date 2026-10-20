@@ -4,9 +4,7 @@
 
 use std::collections::HashMap;
 
-use commandant_client_core::{
-    Ask, Chat, ChatId, Core, Go, Intent, Next, OutputId, Scope, Update, cycle,
-};
+use commandant_client_core::{Ask, Chat, ChatId, Core, Go, Intent, Next, OutputId, Scope, Update};
 use commandant_proto::TaskInfo;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -380,8 +378,7 @@ impl App {
         let Some(chat) = self.chat() else {
             return;
         };
-        let ids: Vec<ChatId> = self.core.chats_on(&chat.node.id).map(|c| c.id).collect();
-        if let Some(next) = cycle(&ids, chat.id, step) {
+        if let Some(next) = self.core.chat_beside(chat.id, step) {
             self.show(next);
         }
     }
@@ -828,7 +825,7 @@ pub(crate) mod tests {
 
         // "+ New session" is a new chat.
         app.on_key(ctrl('u'));
-        app.on_key(key(KeyCode::Up));
+        type_text(&mut app, "new session");
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.core.chats().len(), 2);
         assert!(!app.pickers.contains_key(&Scope::App));
