@@ -188,17 +188,23 @@ impl Connected {
             }
             pane.scroller.update(cx, |scroller, cx| match change {
                 Change::Reset(count) => scroller.reset(count, cx),
-                Change::Grew { added, settled } => {
+                Change::Grew {
+                    added,
+                    written,
+                    settled,
+                } => {
                     if added > 0 {
                         scroller.append(added, cx);
                     }
                     if settled {
-                        scroller.remeasure(cx);
-                    } else {
-                        // The rows still streaming in.
-                        let from = count.saturating_sub(added + 1);
-                        scroller.remeasure_items(from..count, cx);
+                        return scroller.remeasure(cx);
                     }
+                    // The rows still streaming in.
+                    for at in written {
+                        scroller.remeasure_items(at..at + 1, cx);
+                    }
+                    let from = count.saturating_sub(added);
+                    scroller.remeasure_items(from..count, cx);
                 }
             });
         }

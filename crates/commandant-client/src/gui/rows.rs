@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 
 use commandant_client_core::Chat;
-use commandant_client_core::chat::{Entry, Role};
+use commandant_client_core::chat::{Ended, Entry, Role};
 
 /// One row of the thread: an entry, or tool calls in a row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,21 +49,28 @@ pub fn rows(thread: &[Entry]) -> Vec<Row> {
 /// How much a row holds, so that what streams into it shows.
 fn size(chat: &Chat, row: &Row) -> usize {
     let entries = chat.thread.get(row.entries()).unwrap_or_default();
-    let printed = |e: &Entry| -> usize {
-        let runs = e.run.iter().flat_map(|r| &r.output);
-        runs.map(|p| p.text.len()).sum()
+    let ran = |e: &Entry| -> usize {
+        let Some(run) = &e.run else {
+            return 0;
+        };
+        let printed: usize = run.output.iter().map(|p| p.text.len()).sum();
+        // How it ended takes the place of "running…".
+        let ended = match &run.ended {
+            None => 0,
+            Some(Ended::Failed(why)) => why.len() + 1,
+            Some(_) => 1,
+        };
+        printed + ended
     };
-    entries.iter().map(|e| e.text.len() + printed(e)).sum()
+    entries.iter().map(|e| e.text.len() + ran(e)).sum()
 }
 
 /// What the scroller knows of the thread, and what came while the reader
 /// was scrolled up.
 #[derive(Debug, Default)]
 pub struct Tally {
-    /// The rows the scroller has.
-    rows: usize,
-    /// How much the last of them held.
-    last: usize,
+    /// How much each row the scroller has held.
+    sizes: Vec<usize>,
     /// Whether the earlier turns were still loading.
     loading: bool,
     /// Whether the agent was at work.
@@ -77,9 +84,13 @@ pub struct Tally {
 pub enum Change {
     /// Start again with this many rows: the earlier turns came.
     Reset(usize),
-    /// Rows added at the end, then every row measured again if the turn
-    /// ended, as its thinking folds up.
-    Grew { added: usize, settled: bool },
+    /// Rows added at the end, and earlier rows written to, then every row
+    /// measured again if the turn ended, as its thinking folds up.
+    Grew {
+        added: usize,
+        written: Vec<usize>,
+        settled: bool,
+    },
 }
 
 impl Tally {
@@ -89,28 +100,33 @@ impl Tally {
         let working = chat.activity.working();
         let history_came = self.loading && !chat.loading_history;
         let settled = self.working && !working;
-        let added = count.saturating_sub(self.rows);
-        let shrank = count < self.rows;
-        // The row that was last may have been written to since.
-        let written = self
-            .rows
-            .checked_sub(1)
-            .filter(|&at| rows.get(at).is_some_and(|row| size(chat, row) != self.last));
-        let before = self.rows;
+        let before = self.sizes.len();
+        let added = count.saturating_sub(before);
+        let shrank = count < before;
+        let sizes: Vec<usize> = rows.iter().map(|row| size(chat, row)).collect();
+        // The last row streams; a command's block prints wherever it is.
+        let written: Vec<usize> = (self.sizes.iter().zip(&sizes).enumerate())
+            .filter(|(_, (was, is))| was != is)
+            .map(|(at, _)| at)
+            .collect();
         self.loading = chat.loading_history;
         self.working = working;
-        self.rows = count;
-        self.last = rows.last().map_or(0, |row| size(chat, row));
+        self.sizes = sizes;
         if history_came || shrank {
             self.unread.clear();
             return Change::Reset(count);
         }
         if scrolled_up {
-            self.unread.extend(written.into_iter().chain(before..count));
+            self.unread
+                .extend(written.iter().copied().chain(before..count));
         } else {
             self.unread.clear();
         }
-        Change::Grew { added, settled }
+        Change::Grew {
+            added,
+            written,
+            settled,
+        }
     }
 
     /// How many rows are new to a reader scrolled up.
@@ -126,7 +142,7 @@ impl Tally {
 
 #[cfg(test)]
 mod tests {
-    use commandant_client_core::chat::Activity;
+    use commandant_client_core::chat::{Activity, Ended, Printed, Run};
 
     use super::*;
 
@@ -181,25 +197,60 @@ mod tests {
         use Role::*;
         let mut tally = Tally::default();
         let mut chat = chat(&[User, Agent, Error, Info], true);
-        let grew = |added, settled| Change::Grew { added, settled };
-        assert_eq!(tally.change(&chat, &first(&chat, 1), false), grew(1, false));
-        assert_eq!(tally.change(&chat, &first(&chat, 2), true), grew(1, false));
+        let grew = |added, written: &[usize], settled| Change::Grew {
+            added,
+            written: written.to_vec(),
+            settled,
+        };
+        let change = tally.change(&chat, &first(&chat, 1), false);
+        assert_eq!(change, grew(1, &[], false));
+        let change = tally.change(&chat, &first(&chat, 2), true);
+        assert_eq!(change, grew(1, &[], false));
         // The reply streams on: still one new row.
         chat.thread[1].text.push_str("more");
-        assert_eq!(tally.change(&chat, &first(&chat, 2), true), grew(0, false));
+        let change = tally.change(&chat, &first(&chat, 2), true);
+        assert_eq!(change, grew(0, &[1], false));
         assert_eq!(tally.unread(), 1);
-        assert_eq!(tally.change(&chat, &first(&chat, 3), true), grew(1, false));
+        let change = tally.change(&chat, &first(&chat, 3), true);
+        assert_eq!(change, grew(1, &[], false));
         assert_eq!(tally.unread(), 2);
         // Back at the bottom, nothing is new.
-        assert_eq!(tally.change(&chat, &first(&chat, 3), false), grew(0, false));
-        assert_eq!(tally.unread(), 0);
-        // Nor is the prompt the reader was looking at.
-        chat.thread[0].text.push_str("typed");
-        tally.change(&chat, &first(&chat, 3), true);
+        let change = tally.change(&chat, &first(&chat, 3), false);
+        assert_eq!(change, grew(0, &[], false));
         assert_eq!(tally.unread(), 0);
 
         chat.activity = Activity::Idle;
-        assert_eq!(tally.change(&chat, &first(&chat, 4), false), grew(1, true));
+        let change = tally.change(&chat, &first(&chat, 4), false);
+        assert_eq!(change, grew(1, &[], true));
+    }
+
+    #[test]
+    fn a_command_printing_above_later_rows_is_measured_again_and_new() {
+        use Role::*;
+        let mut tally = Tally::default();
+        let mut chat = chat(&[User, Command, Agent], true);
+        chat.thread[1].run = Some(Run::new(0, usize::MAX));
+        let all = rows(&chat.thread);
+        tally.change(&chat, &all, false);
+        let printed = Printed {
+            stderr: false,
+            text: "total 0\n".into(),
+        };
+        chat.thread[1].run.as_mut().unwrap().output.push(printed);
+        assert_eq!(
+            tally.change(&chat, &all, true),
+            Change::Grew {
+                added: 0,
+                written: vec![1],
+                settled: false
+            }
+        );
+        assert_eq!(tally.unread(), 1);
+        // Its end shows in place of "running…".
+        let ended = Some(Ended::Failed("it couldn't start".into()));
+        chat.thread[1].run.as_mut().unwrap().ended = ended;
+        let change = tally.change(&chat, &all, false);
+        assert!(matches!(change, Change::Grew { written, .. } if written == [1]));
     }
 
     #[test]

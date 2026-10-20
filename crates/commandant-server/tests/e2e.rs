@@ -1505,6 +1505,20 @@ mod agents {
         follow(&mut core, &mut updates, "the command never stopped", over).await;
         assert_eq!(last_run(&core).unwrap().0, Some(Ended::Cancelled));
         assert!(!core.busy());
+
+        // So does its block's Stop.
+        core.act(Intent::Submit(chat, "!sleep 60".into()));
+        follow(
+            &mut core,
+            &mut updates,
+            "the command never started",
+            started,
+        )
+        .await;
+        let run = core.chat(chat).unwrap().runs().last().unwrap().id;
+        core.act(Intent::StopRun(chat, run));
+        follow(&mut core, &mut updates, "the command never stopped", over).await;
+        assert_eq!(last_run(&core).unwrap().0, Some(Ended::Cancelled));
     }
 
     /// The id of the listed task whose command line is `line`, once listed

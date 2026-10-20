@@ -62,7 +62,7 @@ impl Ended {
 
 impl Run {
     /// A command just asked for, keeping the last `keep` bytes it prints.
-    pub(in crate::state) fn new(id: RunId, keep: usize) -> Self {
+    pub fn new(id: RunId, keep: usize) -> Self {
         Self {
             id,
             output: Vec::new(),
@@ -233,6 +233,13 @@ impl Chat {
         runs.peek()?;
         let stops = runs.filter_map(|r| r.stop());
         Some(stops.map(|task_id| Effect::Cancel(chat, task_id)).collect())
+    }
+
+    /// Stops the command `id`, if it still runs.
+    pub(in crate::state) fn stop_run(&mut self, id: RunId) -> Option<Effect> {
+        let chat = self.id;
+        let run = self.runs_mut().find(|r| r.id == id)?;
+        run.stop().map(|task_id| Effect::Cancel(chat, task_id))
     }
 
     /// Takes in what a command's task reports, which may call for an effect.

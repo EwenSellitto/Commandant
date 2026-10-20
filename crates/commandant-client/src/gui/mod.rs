@@ -6,6 +6,7 @@
 
 mod asks;
 mod chat;
+mod command;
 mod connected;
 mod login;
 mod placement;
