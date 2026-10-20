@@ -9,7 +9,7 @@ use ratatui::buffer::Buffer;
 use ratatui::style::Modifier;
 
 use super::*;
-use crate::tui::app::tests::{app, ask_for_a_key, press};
+use crate::tui::app::tests::{app, ask_for_a_key, finish, press, send};
 
 /// Where `text` isn't.
 fn absent(buf: &Buffer, text: &str) -> bool {
@@ -111,13 +111,15 @@ fn nodes_list_their_open_chats() {
     assert!(absent(&buf, "1 open"));
 
     app.on_key(KeyEvent::from(KeyCode::Enter));
+    let (first, _) = send(&mut app, "one");
+    finish(&mut app, first, "ses_a");
     app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
     let buf = render(&mut app);
     // Both chats have a tab; the shown one is the second.
-    let (_, row) = find(&buf, " 1 new session");
+    let (_, row) = find(&buf, " 1 one");
     assert_eq!(find(&buf, " 2 new session").1, row);
     assert_eq!(buf[find(&buf, " 2 new session")].bg, SELECTED);
-    assert_ne!(buf[find(&buf, " 1 new session")].bg, SELECTED);
+    assert_ne!(buf[find(&buf, " 1 one")].bg, SELECTED);
 
     app.on_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
     let buf = render(&mut app);
@@ -128,35 +130,37 @@ fn nodes_list_their_open_chats() {
 fn many_tabs_scroll_round_the_shown_one() {
     let mut app = app();
     app.on_key(KeyEvent::from(KeyCode::Enter));
-    for _ in 0..7 {
-        app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+    // Eight chats, each titled by its first prompt; the fourth's is long.
+    for at in 1..=8 {
+        if at > 1 {
+            app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        }
+        let title = match at {
+            4 => "a".repeat(80),
+            at => format!("t{at}"),
+        };
+        let (id, _) = send(&mut app, &title);
+        finish(&mut app, id, &format!("ses_{at}"));
     }
-    // The last of eight is shown; earlier ones are out of sight to the left.
+    // The last is shown; earlier ones are out of sight to the left.
     let buf = render(&mut app);
-    let (_, row) = find(&buf, " 8 new session");
-    assert_eq!(buf[find(&buf, " 8 new session")].bg, SELECTED);
+    let (_, row) = find(&buf, " 8 t8");
+    assert_eq!(buf[find(&buf, " 8 t8")].bg, SELECTED);
     assert_eq!(find(&buf, "‹").1, row);
-    assert!(absent(&buf, " 1 new session"));
+    assert!(absent(&buf, " 1 t1"));
     assert!(absent(&buf, "›"));
     assert!(absent(&buf, "ctrl-o"), "no room left for the hint");
 
-    // In the middle, both sides are cut.
+    // In the middle, both sides are cut, and a long title is cut short
+    // rather than pushing the others out.
     for _ in 0..4 {
         app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
     }
     let buf = render(&mut app);
-    assert_eq!(buf[find(&buf, " 4 new session")].bg, SELECTED);
+    let (x, _) = find(&buf, " 4 aaaa");
+    assert_eq!(buf[(x, row)].bg, SELECTED);
     assert_eq!(find(&buf, "‹").1, row);
     assert_eq!(find(&buf, "›").1, row);
-
-    // A long title (its first prompt) is cut short rather than pushing the
-    // others out.
-    for _ in 0..80 {
-        app.on_key(KeyEvent::from(KeyCode::Char('a')));
-    }
-    app.on_key(KeyEvent::from(KeyCode::Enter));
-    let buf = render(&mut app);
-    let (x, _) = find(&buf, " 4 aaaa");
     let row_text: String = (0..buf.area.width)
         .map(|c| buf[(c, row)].symbol())
         .collect();

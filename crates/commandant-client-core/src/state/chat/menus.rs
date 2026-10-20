@@ -11,7 +11,7 @@ use commandant_common::or;
 
 /// What a chat offers to choose from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Menu {
+pub enum Menu {
     Agent,
     Model,
     Effort,
@@ -34,7 +34,7 @@ impl Menu {
 }
 
 impl Chat {
-    pub(super) fn open_menu(&mut self, menu: Menu, filter: &str) -> Option<Effect> {
+    pub(in crate::state) fn open_menu(&mut self, menu: Menu, filter: &str) -> Option<Effect> {
         let Some(options) = self.options.clone() else {
             // It opens when they come.
             self.pending = Some((menu, filter.to_string()));
