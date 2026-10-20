@@ -24,6 +24,8 @@ pub struct Run {
     pub output: Vec<Printed>,
     /// Whether the start of its output was dropped.
     pub dropped: bool,
+    /// How many bytes it has printed in all, kept or not.
+    pub printed: usize,
     /// How much of its output is kept, at most: the end of it.
     keep: usize,
     /// How it ended; `None` while it runs.
@@ -67,6 +69,7 @@ impl Run {
             id,
             output: Vec::new(),
             dropped: false,
+            printed: 0,
             keep,
             ended: None,
             task_id: None,
@@ -123,6 +126,7 @@ impl Run {
 
     /// Adds what a stream printed, to the last piece if it came from the same one.
     fn print(&mut self, stderr: bool, data: &[u8]) {
+        self.printed += data.len();
         let partial = match stderr {
             true => &mut self.partial_stderr,
             false => &mut self.partial_stdout,

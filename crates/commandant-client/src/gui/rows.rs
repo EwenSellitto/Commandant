@@ -46,31 +46,32 @@ pub fn rows(thread: &[Entry]) -> Vec<Row> {
     rows
 }
 
-/// How much a row holds, so that what streams into it shows.
-fn size(chat: &Chat, row: &Row) -> usize {
+/// What a row holds, so that what changes in it shows: how much text has
+/// come into it, and how far each of its commands has got, whose Stop and
+/// end take a line.
+#[derive(Debug, PartialEq)]
+struct Held {
+    bytes: usize,
+    runs: Vec<(bool, Option<Ended>)>,
+}
+
+fn held(chat: &Chat, row: &Row) -> Held {
     let entries = chat.thread.get(row.entries()).unwrap_or_default();
-    let ran = |e: &Entry| -> usize {
-        let Some(run) = &e.run else {
-            return 0;
-        };
-        let printed: usize = run.output.iter().map(|p| p.text.len()).sum();
-        // How it ended takes the place of "running…".
-        let ended = match &run.ended {
-            None => 0,
-            Some(Ended::Failed(why)) => why.len() + 1,
-            Some(_) => 1,
-        };
-        printed + ended
-    };
-    entries.iter().map(|e| e.text.len() + ran(e)).sum()
+    // Printed in all: what a block keeps may stay the same size as it prints.
+    let printed = |e: &Entry| e.run.as_ref().map_or(0, |r| r.printed);
+    let runs = entries.iter().filter_map(|e| e.run.as_ref());
+    Held {
+        bytes: entries.iter().map(|e| e.text.len() + printed(e)).sum(),
+        runs: runs.map(|r| (r.stopping(), r.ended.clone())).collect(),
+    }
 }
 
 /// What the scroller knows of the thread, and what came while the reader
 /// was scrolled up.
 #[derive(Debug, Default)]
 pub struct Tally {
-    /// How much each row the scroller has held.
-    sizes: Vec<usize>,
+    /// What each row the scroller has held.
+    held: Vec<Held>,
     /// Whether the earlier turns were still loading.
     loading: bool,
     /// Whether the agent was at work.
@@ -100,18 +101,18 @@ impl Tally {
         let working = chat.activity.working();
         let history_came = self.loading && !chat.loading_history;
         let settled = self.working && !working;
-        let before = self.sizes.len();
+        let before = self.held.len();
         let added = count.saturating_sub(before);
         let shrank = count < before;
-        let sizes: Vec<usize> = rows.iter().map(|row| size(chat, row)).collect();
+        let held: Vec<Held> = rows.iter().map(|row| held(chat, row)).collect();
         // The last row streams; a command's block prints wherever it is.
-        let written: Vec<usize> = (self.sizes.iter().zip(&sizes).enumerate())
+        let written: Vec<usize> = (self.held.iter().zip(&held).enumerate())
             .filter(|(_, (was, is))| was != is)
             .map(|(at, _)| at)
             .collect();
         self.loading = chat.loading_history;
         self.working = working;
-        self.sizes = sizes;
+        self.held = held;
         if history_came || shrank {
             self.unread.clear();
             return Change::Reset(count);
@@ -232,11 +233,12 @@ mod tests {
         chat.thread[1].run = Some(Run::new(0, usize::MAX));
         let all = rows(&chat.thread);
         tally.change(&chat, &all, false);
-        let printed = Printed {
+        let run = chat.thread[1].run.as_mut().unwrap();
+        run.output.push(Printed {
             stderr: false,
             text: "total 0\n".into(),
-        };
-        chat.thread[1].run.as_mut().unwrap().output.push(printed);
+        });
+        run.printed += 8;
         assert_eq!(
             tally.change(&chat, &all, true),
             Change::Grew {
@@ -246,6 +248,12 @@ mod tests {
             }
         );
         assert_eq!(tally.unread(), 1);
+        // Past what is kept, a new line takes the place of the first.
+        let run = chat.thread[1].run.as_mut().unwrap();
+        run.output[0].text = "total 1\n".into();
+        run.printed += 8;
+        let change = tally.change(&chat, &all, false);
+        assert!(matches!(change, Change::Grew { written, .. } if written == [1]));
         // Its end shows in place of "running…".
         let ended = Some(Ended::Failed("it couldn't start".into()));
         chat.thread[1].run.as_mut().unwrap().ended = ended;

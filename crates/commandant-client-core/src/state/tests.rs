@@ -491,8 +491,8 @@ fn a_blocks_stop_stops_that_command_alone() {
     let stop = |state: &mut State, run| state.intent(Intent::StopRun(id, run)).effects;
     assert!(matches!(&stop(&mut state, two)[..], [Effect::Cancel(_, t)] if t == "t2"));
     assert!(stop(&mut state, two).is_empty(), "it is stopping");
-    let runs: Vec<_> = chat(&state, id).runs().map(|r| r.stopping()).collect();
-    assert_eq!(runs, [false, true], "the other runs on");
+    let stopping: Vec<_> = chat(&state, id).runs().map(|r| r.stopping()).collect();
+    assert_eq!(stopping, [false, true], "the other runs on");
     assert!(chat(&state, id).activity.working(), "and so does the turn");
 
     // One not started yet is stopped once it is.
