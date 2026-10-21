@@ -3,7 +3,8 @@
 
 use commandant_client_core::Ask;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Constraint::{Length, Min};
+use ratatui::layout::{Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
@@ -89,12 +90,12 @@ fn draw_list<R: Row>(
     let rows = filtered.shown_len().max(1) as u16;
     let inner = panel(frame, rows + 7);
     let [title_area, filter, _, list, _, hints] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
+        Length(1),
+        Length(1),
+        Length(1),
+        Min(1),
+        Length(1),
+        Length(1),
     ])
     .areas(inner);
 
@@ -169,11 +170,11 @@ pub(super) fn draw_dialog(
     let titled = if title.is_empty() { 0 } else { 2 };
     let inner = panel(frame, titled + rows + 4);
     let [heading, _, body, _, keys] = Layout::vertical([
-        Constraint::Length(titled.min(1)),
-        Constraint::Length(titled.saturating_sub(1)),
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
+        Length(titled.min(1)),
+        Length(titled.saturating_sub(1)),
+        Min(1),
+        Length(1),
+        Length(1),
     ])
     .areas(inner);
     frame.render_widget(Span::raw(title).bold().fg(accent), heading);
@@ -190,16 +191,9 @@ pub(super) fn draw_entry(
     enter: &'static str,
     input: &Input,
 ) {
-    // Label and gap, the line, gap, hints; plus a padding row each end.
+    // Label, the line, hints, a row apart; plus a padding row each end.
     let inner = panel(frame, 7);
-    let [heading, _, line, _, keys] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(inner);
+    let [heading, line, keys] = Layout::vertical([Length(1); 3]).spacing(1).areas(inner);
     let mut label = label.chars();
     let first = label.next().map(|c| c.to_uppercase().collect::<String>());
     let label = format!("{}{}", first.unwrap_or_default(), label.as_str());
@@ -218,10 +212,7 @@ fn panel_width(screen: Rect) -> u16 {
 pub(super) fn panel(frame: &mut Frame, height: u16) -> Rect {
     let screen = frame.area();
     let height = height.min(screen.height.saturating_sub(2));
-    let area = screen.centered(
-        Constraint::Length(panel_width(screen)),
-        Constraint::Length(height),
-    );
+    let area = screen.centered(Length(panel_width(screen)), Length(height));
     frame.render_widget(Clear, area);
     let panel = Block::new().bg(PANEL).padding(Padding::new(2, 2, 1, 1));
     let inner = panel.inner(area);

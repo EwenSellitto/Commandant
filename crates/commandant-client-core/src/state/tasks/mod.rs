@@ -150,8 +150,8 @@ impl State {
     /// Opens a task: a command's output, or a prompt's session in a chat,
     /// followed if it runs.
     pub(super) fn open_task(&mut self, task_id: &str) -> Outcome {
-        let listed = self.tasks.iter().flat_map(|t| &t.tasks);
-        let Some(task) = listed.into_iter().find(|t| t.id == task_id).cloned() else {
+        let mut listed = self.tasks.iter().flat_map(|t| &t.tasks);
+        let Some(task) = listed.find(|t| t.id == task_id).cloned() else {
             return Outcome::default();
         };
         if task.kind == "prompt" {
