@@ -142,15 +142,19 @@ impl Input {
     /// What a key does to the text: typing, deleting, moving the cursor.
     pub fn edit(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let len = self.text.chars().count();
         match key.code {
             KeyCode::Char('u') if ctrl => self.clear(),
-            KeyCode::Char(c) => self.insert(c),
-            KeyCode::Backspace => self.backspace(),
+            KeyCode::Char(c) => self.insert_str(c.encode_utf8(&mut [0; 4])),
+            KeyCode::Backspace if self.cursor > 0 => {
+                self.cursor -= 1;
+                self.delete();
+            }
             KeyCode::Delete => self.delete(),
-            KeyCode::Left => self.left(),
-            KeyCode::Right => self.right(),
-            KeyCode::Home => self.home(),
-            KeyCode::End => self.end(),
+            KeyCode::Left => self.cursor = self.cursor.saturating_sub(1),
+            KeyCode::Right => self.cursor = (self.cursor + 1).min(len),
+            KeyCode::Home => self.cursor = 0,
+            KeyCode::End => self.cursor = len,
             _ => {}
         }
     }
@@ -167,23 +171,10 @@ impl Input {
             .map_or(self.text.len(), |(i, _)| i)
     }
 
-    fn insert(&mut self, c: char) {
-        let at = self.byte_index();
-        self.text.insert(at, c);
-        self.cursor += 1;
-    }
-
     fn insert_str(&mut self, s: &str) {
         let at = self.byte_index();
         self.text.insert_str(at, s);
         self.cursor += s.chars().count();
-    }
-
-    fn backspace(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
-            self.delete();
-        }
     }
 
     fn delete(&mut self) {
@@ -193,30 +184,13 @@ impl Input {
         }
     }
 
-    fn left(&mut self) {
-        self.cursor = self.cursor.saturating_sub(1);
-    }
-
-    fn right(&mut self) {
-        self.cursor = (self.cursor + 1).min(self.text.chars().count());
-    }
-
-    fn home(&mut self) {
-        self.cursor = 0;
-    }
-
-    fn end(&mut self) {
-        self.cursor = self.text.chars().count();
-    }
-
     pub fn clear(&mut self) {
-        self.text.clear();
-        self.cursor = 0;
+        self.set("");
     }
 
     /// Replaces the text, the cursor at its end.
     pub fn set(&mut self, text: &str) {
         self.text = text.to_string();
-        self.end();
+        self.cursor = self.text.chars().count();
     }
 }

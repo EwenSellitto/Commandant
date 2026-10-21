@@ -587,19 +587,13 @@ impl State {
     }
 
     /// Records a node's options and hands them to its chats.
-    fn set_options(
-        &mut self,
-        node: &str,
-        options: Result<AgentOptions, String>,
-    ) -> Option<Arc<AgentOptions>> {
-        let options = options.map(Arc::new);
+    fn set_options(&mut self, node: &str, options: Result<Arc<AgentOptions>, String>) {
         if let Ok(options) = &options {
             self.options.insert(node.to_string(), options.clone());
         }
         for chat in self.chats.iter_mut().filter(|c| c.node.id == node) {
             chat.on_message(Message::Options(options.clone()));
         }
-        options.ok()
     }
 
     /// Takes in what a background call reports, which may call for more.
@@ -637,10 +631,12 @@ impl State {
             }
             Update::Options(node, options) => {
                 self.retries.remove(&node);
-                let options = self.set_options(&node, options.map_err(|f| f.message));
+                let options = options.map(Arc::new).map_err(|f| f.message);
+                let loading = options.as_ref().is_ok_and(|o| o.loading);
+                self.set_options(&node, options);
                 // The rest is in; the commands follow once they've loaded,
                 // and the request stays open until then.
-                if options.is_some_and(|o| o.loading) {
+                if loading {
                     return Effect::FetchOptions {
                         node,
                         after: OPTIONS_RETRY,
@@ -656,12 +652,12 @@ impl State {
                 name,
                 options,
             } => {
-                let switched = options.clone().map(Arc::new);
+                let options = options.map(Arc::new);
                 if options.is_ok() {
-                    self.set_options(&node, options);
+                    self.set_options(&node, options.clone());
                 }
                 if let Some(chat) = self.chat_mut(chat) {
-                    chat.mcp_switched(&name, &switched);
+                    chat.mcp_switched(&name, &options);
                 }
                 Outcome::default()
             }

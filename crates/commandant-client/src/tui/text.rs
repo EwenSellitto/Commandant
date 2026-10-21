@@ -66,9 +66,9 @@ fn block(line: &str, trimmed: &str) -> Line<'static> {
 fn is_rule(line: &str) -> bool {
     let line = line.trim();
     line.len() >= 3
-        && ["-", "*", "_"]
+        && ['-', '*', '_']
             .iter()
-            .any(|c| line.chars().all(|x| x.to_string() == *c))
+            .any(|&c| line.chars().all(|x| x == c))
 }
 
 /// Splits a line into plain, `code` and **bold** spans. Unclosed markers

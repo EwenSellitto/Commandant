@@ -10,13 +10,13 @@ pub enum Match<T> {
 /// Returns the item named `needle`, else as [`find`] does by id: things
 /// users name, like nodes, can also be given by id or id prefix.
 pub fn find_named<T>(
-    items: Vec<T>,
+    mut items: Vec<T>,
     needle: &str,
     name: impl Fn(&T) -> &str,
     id: impl Fn(&T) -> &str,
 ) -> Match<T> {
     match items.iter().position(|item| name(item) == needle) {
-        Some(at) => Match::One(items.into_iter().nth(at).expect("just found")),
+        Some(at) => Match::One(items.swap_remove(at)),
         None => find(items, needle, id),
     }
 }
