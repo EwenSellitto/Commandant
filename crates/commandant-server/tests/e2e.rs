@@ -1396,6 +1396,32 @@ mod agents {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_core_knows_while_its_server_is_out_of_reach() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("server");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = serve_on(&data_dir, listener).await;
+        let connection = Client {
+            addr: server.addr.clone(),
+            token: server.token.clone(),
+        };
+        let handle = tokio::runtime::Handle::current();
+        let (mut core, mut updates) = Core::start(&connection, Settings::default(), handle)
+            .await
+            .unwrap();
+        assert!(core.server_reachable());
+
+        let port = server.port;
+        server.stop().await;
+        let lost = |core: &Core| !core.server_reachable();
+        follow(&mut core, &mut updates, "the server was never missed", lost).await;
+
+        let _server = serve_on(&data_dir, rebind(port).await).await;
+        let back = |core: &Core| core.server_reachable();
+        follow(&mut core, &mut updates, "the server never came back", back).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_core_sends_a_prompt_and_shows_the_reply() {
         let cluster = cluster().await;
         let (mut core, mut updates, chat) = core_with_a_chat(&cluster.connection).await;

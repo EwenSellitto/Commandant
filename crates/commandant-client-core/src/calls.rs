@@ -11,6 +11,7 @@ use commandant_proto::*;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
+use tokio::time::MissedTickBehavior;
 
 use crate::config::Client;
 use crate::state::chat::Message;
@@ -68,13 +69,16 @@ impl Server {
         Ok((server, nodes, rx))
     }
 
-    /// Stops polling, and cancels `task_ids`, waiting for the server to say so.
-    pub(crate) async fn shutdown(&self, task_ids: Vec<String>) {
+    /// Stops polling, and starts cancelling `task_ids`: awaited, done once
+    /// the server has said so.
+    pub(crate) fn shutdown(&self, task_ids: Vec<String>) -> impl Future<Output = ()> + use<> {
         self.poll.abort();
-        let _ = self
+        let cancels = self
             .handle
-            .spawn(cancel_all(self.control.clone(), task_ids))
-            .await;
+            .spawn(cancel_all(self.control.clone(), task_ids));
+        async move {
+            let _ = cancels.await;
+        }
     }
 
     /// Keeps what follows an output view's task, to stop it when the view
@@ -353,16 +357,32 @@ async fn stream_task(
 /// Keeps the nodes' details (online, harnesses) current.
 async fn poll_nodes(mut control: ControlClient, tx: Tx) {
     let mut every = tokio::time::interval(NODE_REFRESH);
+    // An answer slow to come puts off the next ask, rather than bunching up
+    // those it missed.
+    every.set_missed_tick_behavior(MissedTickBehavior::Delay);
     every.tick().await;
     loop {
         every.tick().await;
-        let Ok(nodes) = control.list_nodes(ListNodesRequest {}).await else {
-            continue;
+        // A host that has gone quiet never refuses: give up on it in time.
+        let listed = tokio::time::timeout(NODE_REFRESH, control.list_nodes(ListNodesRequest {}));
+        let update = match listed.await {
+            Ok(Ok(nodes)) => Update::Nodes(nodes.into_inner().nodes),
+            Ok(Err(status)) if !out_of_reach(&status) => continue,
+            Ok(Err(_)) | Err(_) => Update::Unreachable,
         };
-        if tx.send(Update::Nodes(nodes.into_inner().nodes)).is_err() {
+        if tx.send(update).is_err() {
             return;
         }
     }
+}
+
+/// Whether a call failed on the way to the server, rather than being
+/// turned down by it: a token it no longer takes says nothing of its reach.
+fn out_of_reach(status: &tonic::Status) -> bool {
+    matches!(
+        status.code(),
+        tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Cancelled
+    )
 }
 
 /// Cancels every task in `task_ids`, and waits for the server to say so.
@@ -375,4 +395,16 @@ async fn cancel_all(control: ControlClient, task_ids: Vec<String>) {
         })
         .collect();
     cancels.join_all().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_failing_to_get_there_is_out_of_reach() {
+        assert!(out_of_reach(&tonic::Status::unavailable("tcp connect error")));
+        assert!(!out_of_reach(&tonic::Status::unauthenticated("bad token")));
+        assert!(!out_of_reach(&tonic::Status::internal("database locked")));
+    }
 }

@@ -34,8 +34,8 @@ pub(super) fn status_dot(online: bool, cx: &App) -> Div {
 }
 
 impl Connected {
-    /// Every node and its chats, then the Nodes and Tasks entries and the
-    /// core's notice.
+    /// Every node and its chats, then the Nodes and Tasks entries, and the
+    /// link and logging out.
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let nodes = self.core.nodes();
@@ -45,13 +45,6 @@ impl Connected {
                 .text_sm()
                 .text_color(theme.muted_foreground)
                 .child("No nodes yet. Add a worker with `commandant-server worker <link>`.")
-        });
-        let notice = (!self.core.notice().is_empty()).then(|| {
-            div()
-                .px_2()
-                .text_sm()
-                .text_color(theme.warning)
-                .child(self.core.notice().to_string())
         });
         let mut tree = Vec::new();
         for (at, node) in nodes.iter().enumerate() {
@@ -92,7 +85,7 @@ impl Connected {
             )
             .child(self.nodes_row(cx))
             .child(self.tasks_row(cx))
-            .children(notice)
+            .child(self.footer(cx))
             .child(edge)
     }
 
@@ -125,6 +118,21 @@ impl Connected {
             && (self.core.tasks().is_some() || (self.output.is_some() && !self.nodes_shown));
         entry("tasks-entry", IconName::SquareTerminal, "Tasks", shown, cx)
             .on_click(cx.listener(|this, _, window, cx| this.show_tasks(window, cx)))
+    }
+
+    /// Shows the link to copy, or logs out once confirmed.
+    fn footer(&self, cx: &Context<Self>) -> Div {
+        let button = |id: &'static str, label: &'static str, intent: Intent| {
+            Button::new(id).ghost().xsmall().label(label).on_click(
+                cx.listener(move |this, _, window, cx| this.act(intent.clone(), window, cx)),
+            )
+        };
+        h_flex()
+            .pt_1()
+            .border_t_1()
+            .border_color(cx.theme().sidebar_border)
+            .child(button("link", "Link…", Intent::ShowLink))
+            .child(button("log-out", "Log out", Intent::LogOut))
     }
 
     /// A node's status dot and name, dimmed while it is offline and turning

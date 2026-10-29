@@ -736,6 +736,8 @@ pub(crate) mod tests {
         app.on_key(key(KeyCode::Enter));
         type_text(&mut app, "/logout");
         app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.leaving, None, "not before it is confirmed");
+        app.on_key(key(KeyCode::Enter));
         assert_eq!(app.leaving, Some(Leave::LogOut));
     }
 

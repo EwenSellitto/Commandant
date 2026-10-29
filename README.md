@@ -170,7 +170,7 @@ to see the commands, or `/help` for all commands and keys. The main ones:
 | **r** on the nodes | Run a shell command on the highlighted node, in its worker's directory |
 | **a** on the nodes | Add a node: how long its token lasts (1h if empty), then the `commandant-server worker <link>` command to run on it; **c** copies it. The token works once and expires on its own |
 | **d** · **s** on the nodes | Remove the highlighted node, once confirmed · start an agent on a node that hosts none |
-| `/link` · `/logout` | The server's link, to connect another client (**c** copies it) · cancel what runs, forget the server and ask for another's link |
+| `/link` · `/logout` | The server's link, to connect another client (**c** copies it) · once confirmed, cancel what runs, forget the server and ask for another's link |
 
 ## Command reference
 

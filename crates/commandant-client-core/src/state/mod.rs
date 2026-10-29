@@ -59,7 +59,7 @@ pub(crate) struct State {
     /// start. A chat asks its own.
     ask: Option<Ask>,
     /// A remark about the nodes.
-    pub notice: String,
+    pub notice: Notice,
     /// Nodes starting a harness, which can take minutes.
     pub starting: HashSet<String>,
     /// Chats closed while at work: a task of theirs that starts after is
@@ -75,6 +75,8 @@ pub(crate) struct State {
     defaults: Settings,
     /// The server's admin link, rebuilt from where the client found it.
     link: String,
+    /// The last node listing failed; the next to succeed clears it.
+    unreachable: bool,
     next_id: ChatId,
     next_list: ListId,
     next_output: OutputId,
@@ -132,6 +134,11 @@ impl State {
                 }
             }
         }
+    }
+
+    /// Whether the server answered the last node listing.
+    pub fn server_reachable(&self) -> bool {
+        !self.unreachable
     }
 
     /// Whether anything shown moves on its own: a spinner for a working
@@ -232,14 +239,8 @@ impl State {
                 let then = match command {
                     None => Outcome::default(),
                     Some(AppCommand::Quit) => Outcome::go(Go::Quit),
-                    Some(AppCommand::LogOut) => Outcome::go(Go::LogOut),
-                    Some(AppCommand::Link) => {
-                        self.ask = Some(Ask::Show {
-                            title: "Link".into(),
-                            text: self.link.clone(),
-                        });
-                        Outcome::default()
-                    }
+                    Some(AppCommand::LogOut) => self.intent(Intent::LogOut),
+                    Some(AppCommand::Link) => self.intent(Intent::ShowLink),
                     Some(AppCommand::New) => self.another_chat(id),
                     Some(AppCommand::Sessions) => self.intent(Intent::Sessions(id)),
                     Some(AppCommand::Nodes) => Outcome::go(Go::Nodes),
@@ -301,6 +302,21 @@ impl State {
             Intent::AddNode => self.add_node(),
             Intent::RemoveNode(node) => self.ask_to_remove(&node),
             Intent::StartAgent(node) => self.start_agent(&node),
+            Intent::ShowLink => {
+                self.ask = Some(Ask::Show {
+                    title: "Link".into(),
+                    text: self.link.clone(),
+                });
+                Outcome::default()
+            }
+            Intent::LogOut => {
+                self.ask = Some(Ask::Confirm {
+                    text: "Log out? Running tasks are cancelled, and the server is forgotten."
+                        .into(),
+                    yes: Choose::LogOut,
+                });
+                Outcome::default()
+            }
         }
     }
 
@@ -345,7 +361,7 @@ impl State {
             return outcome;
         }
         if !node.online {
-            self.notice = format!("{} is offline", node.name);
+            self.notice.tell(format!("{} is offline", node.name));
             return Outcome::default();
         }
         let settings = self.defaults.clone();
@@ -355,14 +371,15 @@ impl State {
     /// Offers the harnesses a node without one can start.
     fn choose_harness(&mut self, node: NodeInfo) {
         if self.starting.contains(&node.id) {
-            self.notice = format!("{} is still starting its agent…", node.name);
+            self.notice
+                .tell(format!("{} is still starting its agent…", node.name));
             return;
         }
         if node.can_host.is_empty() {
-            self.notice = format!(
+            self.notice.fail(format!(
                 "{}'s worker can't start an agent when asked; update it, or restart it with --harness",
                 node.name
-            );
+            ));
             return;
         }
         let choices = node
@@ -384,8 +401,9 @@ impl State {
 
     fn start_harness(&mut self, node: String, harness: String) -> Outcome {
         let name = self.node_name(&node);
-        self.notice =
-            format!("starting {harness} on {name}; installing it first can take a few minutes…");
+        self.notice.tell(format!(
+            "starting {harness} on {name}; installing it first can take a few minutes…"
+        ));
         self.starting.insert(node.clone());
         Effect::StartHarness { node, harness }.into()
     }
@@ -550,6 +568,7 @@ impl State {
             Choose::Harness { node, harness } => self.start_harness(node, harness),
             Choose::TasksOf(node) => self.list_tasks(node),
             Choose::RemoveNode(node) => self.remove_node(node),
+            Choose::LogOut => Outcome::go(Go::LogOut),
             _ => Outcome::default(),
         }
     }
@@ -662,7 +681,12 @@ impl State {
                 }
                 Outcome::default()
             }
+            Update::Unreachable => {
+                self.unreachable = true;
+                Outcome::default()
+            }
             Update::Nodes(mut nodes) => {
+                self.unreachable = false;
                 // Once the server no longer lists one, it is gone for good.
                 self.removed.retain(|id| nodes.iter().any(|n| &n.id == id));
                 nodes.retain(|n| !self.removed.contains(&n.id));
@@ -683,7 +707,8 @@ impl State {
                 let node = match started {
                     Ok(node) => node,
                     Err(e) => {
-                        self.notice = format!("couldn't start an agent on {name}: {e}");
+                        self.notice
+                            .fail(format!("couldn't start an agent on {name}: {e}"));
                         return Outcome::default();
                     }
                 };
@@ -697,7 +722,7 @@ impl State {
                 if self.chats_on(&id).next().is_some() {
                     outcome = self.fetch_once(Effect::fetch_options(&id).into());
                 }
-                self.notice = format!("{name} now hosts {hosts}");
+                self.notice.tell(format!("{name} now hosts {hosts}"));
                 outcome.go = Some(Go::Ready(id));
                 outcome
             }
@@ -706,7 +731,8 @@ impl State {
             Update::NodeRemoved(node, removed) => self.on_removed(&node, removed),
             Update::Output(id, event) => self.on_output(id, event),
             Update::CancelFailed { task_id, error } => {
-                self.notice = format!("couldn't cancel task {task_id}: {error}");
+                self.notice
+                    .fail(format!("couldn't cancel task {task_id}: {error}"));
                 Outcome::default()
             }
             Update::Sessions(node, sessions) => {
@@ -730,6 +756,41 @@ impl State {
                 Outcome::default()
             }
         }
+    }
+}
+
+/// A remark about the nodes or the tasks.
+#[derive(Debug, Default)]
+pub struct Notice {
+    /// Empty once cleared.
+    pub text: String,
+    /// The last said, kept once cleared: a front end telling each one may
+    /// come to it only after.
+    pub last: String,
+    /// The last said is about something failing, rather than how things are.
+    pub error: bool,
+    /// How many have been said, so one said again is news too.
+    pub said: u64,
+}
+
+impl Notice {
+    fn tell(&mut self, text: String) {
+        self.say(text, false);
+    }
+
+    fn fail(&mut self, text: String) {
+        self.say(text, true);
+    }
+
+    fn say(&mut self, text: String, error: bool) {
+        self.last.clone_from(&text);
+        self.text = text;
+        self.error = error;
+        self.said += 1;
+    }
+
+    fn clear(&mut self) {
+        self.text.clear();
     }
 }
 

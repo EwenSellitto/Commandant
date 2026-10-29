@@ -81,6 +81,10 @@ pub enum Intent {
     RemoveNode(String),
     /// Start an agent on a node that hosts none, chosen among those it can.
     StartAgent(String),
+    /// Show the server's link, to copy, as `/link` does.
+    ShowLink,
+    /// Leave, forgetting the server, once confirmed.
+    LogOut,
 }
 
 /// Where a question, or an intent about one, belongs.
@@ -286,7 +290,10 @@ pub enum Update {
         name: String,
         options: Result<AgentOptions, String>,
     },
+    /// The nodes, as the server last listed them.
     Nodes(Vec<NodeInfo>),
+    /// The server couldn't list the nodes: it is out of reach, for now.
+    Unreachable,
     Sessions(String, Result<Vec<AgentSession>, String>),
     /// The node, once it hosts the harness it was asked to start.
     HarnessStarted(String, Result<NodeInfo, String>),
