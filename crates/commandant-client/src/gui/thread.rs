@@ -115,7 +115,7 @@ impl Connected {
                 scroller.remeasure_items(index..index + 1, cx)
             });
         }
-        cx.notify();
+        pane.thread.update(cx, |_, cx| cx.notify());
     }
 
     /// An entry drawn on its own; `open` unfolds a settled thinking.

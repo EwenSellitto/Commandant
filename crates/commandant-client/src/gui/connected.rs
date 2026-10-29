@@ -264,6 +264,10 @@ impl Connected {
             if let Change::Reset(_) = change {
                 pane.open.clear();
             }
+            // Cached, the thread draws what streams in only once told.
+            if change != Change::Unchanged {
+                pane.thread.update(cx, |_, cx| cx.notify());
+            }
             pane.scroller.update(cx, |scroller, cx| match change {
                 Change::Reset(count) => scroller.reset(count, cx),
                 Change::Grew {
