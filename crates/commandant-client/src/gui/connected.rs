@@ -452,6 +452,57 @@ mod tests {
         cx.run_until_parked();
         assert!(told.get() > 0);
     }
+
+    #[gpui::test]
+    fn a_command_run_from_the_nodes_goes_back_to_them(cx: &mut TestAppContext) {
+        let (connected, cx, _send) = connected(vec![node("n1", true)], cx);
+        connected.update_in(cx, |c, window, cx| {
+            c.show_nodes(None, window, cx);
+            assert_eq!(c.marked.as_deref(), Some("n1"), "the chat's node");
+            let line = "ls".into();
+            c.act(
+                Intent::Run {
+                    node: "n1".into(),
+                    line,
+                },
+                window,
+                cx,
+            );
+            assert!(c.output.is_some());
+            c.close_output(window, cx);
+            assert!(c.output.is_none() && c.nodes_shown, "not back to the nodes");
+        });
+    }
+
+    #[gpui::test]
+    fn an_agent_starting_opens_its_node_only_if_marked(cx: &mut TestAppContext) {
+        use commandant_client_core::state::fixtures::bare;
+        let (connected, cx, send) = connected(vec![node("n1", true), bare("b2"), bare("b3")], cx);
+        connected.update_in(cx, |c, window, cx| {
+            c.show_nodes(Some("b3".into()), window, cx)
+        });
+        let hosting = |id: &str| {
+            let node = NodeInfo {
+                harnesses: vec!["opencode".into()],
+                ..bare(id)
+            };
+            Update::HarnessStarted(id.into(), Ok(node))
+        };
+        send.send(hosting("b2")).unwrap();
+        cx.run_until_parked();
+        assert!(
+            connected.read_with(cx, |c, _| c.nodes_shown),
+            "b2 isn't marked"
+        );
+        send.send(hosting("b3")).unwrap();
+        cx.run_until_parked();
+        let shown = connected.read_with(cx, |c, _| {
+            c.shown
+                .and_then(|id| c.core.chat(id))
+                .map(|c| c.node.id.clone())
+        });
+        assert_eq!(shown.as_deref(), Some("b3"));
+    }
 }
 
 /// The sidebar was dragged to this width.
