@@ -205,11 +205,15 @@ impl Connected {
         let Some(output) = self.core.output(id) else {
             return div();
         };
-        let back = Button::new("back-to-tasks")
+        let back = match self.nodes_shown && self.core.tasks().is_none() {
+            true => "Back to the nodes",
+            false => "Back to the tasks",
+        };
+        let back = Button::new("back")
             .ghost()
             .small()
             .icon(IconName::ArrowLeft)
-            .tooltip("Back to the tasks")
+            .tooltip(back)
             .on_click(cx.listener(|this, _, window, cx| this.close_output(window, cx)));
         let cwd = commandant_common::or(&output.cwd, "worker's directory");
         let took = output.finished.unwrap_or_else(time::now) - output.started;

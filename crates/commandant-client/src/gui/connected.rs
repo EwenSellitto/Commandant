@@ -200,8 +200,9 @@ impl Connected {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let chat = self.shown.and_then(|id| self.core.chat(id));
-        if let Some(node) = node.or_else(|| chat.map(|c| c.node.id.clone())) {
+        // Known even once the chat is closed: its closing can bring us here.
+        let chat_node = self.last.iter().find(|(_, id)| Some(**id) == self.shown);
+        if let Some(node) = node.or_else(|| chat_node.map(|(node, _)| node.clone())) {
             self.marked = Some(node);
         }
         self.close_views();
