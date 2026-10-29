@@ -39,7 +39,7 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const NO_HARNESS: &str = "this node runs no agent harness";
 
 /// How to run a worker, as its flags and environment say.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct WorkerConfig {
     /// Orchestrator URL, e.g. `https://10.0.0.1:7400#sha256=…`; when unset, the one the
     /// saved credentials remember.
@@ -441,10 +441,12 @@ async fn reply<T: Reply>(
 ) {
     let mut answer = answer.unwrap_or_else(|e| {
         let mut failed = T::default();
-        *failed.fields().1 = format!("{e:#}");
+        let (_, error) = failed.fields();
+        *error = format!("{e:#}");
         failed
     });
-    *answer.fields().0 = request_id;
+    let (id, _) = answer.fields();
+    *id = request_id;
     let _ = outbound.send(answer.into()).await;
 }
 

@@ -13,7 +13,7 @@ use super::tasks::{ListId, OutputId};
 use super::{ChatId, Choose};
 
 /// What the person asks for.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
     /// Show one of a node's chats: `chat`, the one the front end last
     /// showed, if it is still open, else its newest, else a new one.
@@ -116,7 +116,7 @@ pub enum Intent {
 }
 
 /// Where a question, or an intent about one, belongs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Scope {
     /// The app as a whole, whatever is in view.
     App,
@@ -125,7 +125,7 @@ pub enum Scope {
 }
 
 /// Where the front end may go next.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Go {
     /// The chat.
     Chat(ChatId),
@@ -146,7 +146,7 @@ pub enum Go {
 }
 
 /// What a chat's prompt becomes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Edit {
     /// The line was taken.
     Clear,
@@ -208,7 +208,7 @@ impl From<Vec<Effect>> for Outcome {
 }
 
 /// A call to make; its answer comes back as an [`Update`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     /// Prompt the chat's agent; what it says comes back as the chat's messages.
     Send(ChatId, PromptRequest),
@@ -401,7 +401,7 @@ pub enum Update {
 }
 
 /// Why a node couldn't say what its agent offers.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct Failure {
     /// What went wrong, to show.
     pub message: String,

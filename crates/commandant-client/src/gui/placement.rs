@@ -21,7 +21,7 @@ pub const SIDEBAR_MAX: f32 = 480.0;
 
 /// The window's bounds and its sidebar's width when it last closed, in
 /// logical pixels.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Placement {
     pub x: f32,
     pub y: f32,

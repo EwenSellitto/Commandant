@@ -5,10 +5,8 @@ use std::time::Duration;
 use commandant_proto::task_event::Event as TaskEvent;
 use commandant_proto::{OutputStream, TaskFinished};
 
-use super::{
-    Activity, Chat, Entry, Message, Role, Unseen,
-    format::{count, dollars, elapsed},
-};
+use super::format::{count, dollars, elapsed};
+use super::{Activity, Chat, Entry, Message, Role, Unseen};
 use crate::state::Effect;
 
 impl Chat {

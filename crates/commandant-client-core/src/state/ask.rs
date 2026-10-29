@@ -10,7 +10,7 @@ use super::ChatId;
 
 /// A question for the person, open in a scope until it is answered or
 /// dismissed; a scope has at most one.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Ask {
     /// One of several things.
     Choose(Choices),
@@ -60,7 +60,7 @@ impl Ask {
 }
 
 /// What a line entered for an [`Ask::Enter`] is.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Wanted {
     /// The API key to sign in to a provider with.
     ApiKey {
@@ -84,7 +84,7 @@ pub enum Wanted {
 }
 
 /// What choosing one of the [`Choices`] means.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Choose {
     /// The agent a chat's prompts go to; empty for the default.
     Agent(String),
@@ -135,7 +135,7 @@ pub enum Choose {
 }
 
 /// One line of an [`Ask::Choose`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Choice {
     /// What choosing it means.
     pub value: Choose,
@@ -157,7 +157,7 @@ impl Choice {
 }
 
 /// What an [`Ask::Choose`] offers.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Choices {
     /// Tells it from the questions before it.
     pub id: u64,

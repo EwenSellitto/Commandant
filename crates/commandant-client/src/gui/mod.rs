@@ -111,7 +111,8 @@ pub fn run(args: GuiArgs, client: &ClientArgs, handle: Handle) -> Result<()> {
 /// Where the window opens: where it last was, or centred when that is
 /// nowhere on today's displays.
 fn window_bounds(saved: Option<Placement>, cx: &App) -> WindowBounds {
-    let centred = || WindowBounds::centered(size(px(FIRST_SIZE.0), px(FIRST_SIZE.1)), cx);
+    let (width, height) = FIRST_SIZE;
+    let centred = || WindowBounds::centered(size(px(width), px(height)), cx);
     let Some(saved) = saved else {
         return centred();
     };

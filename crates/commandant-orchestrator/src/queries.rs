@@ -40,12 +40,13 @@ impl Queries {
         let Some(request_id) = answer.request_id() else {
             return;
         };
-        let mut pending = self.pending.lock().unwrap();
-        if pending.get(request_id).is_none_or(|asked| asked.to != from) {
-            return;
-        }
-        let asked = pending.remove(request_id).expect("just found");
-        drop(pending);
+        let asked = {
+            let mut pending = self.pending.lock().unwrap();
+            if pending.get(request_id).is_none_or(|asked| asked.to != from) {
+                return;
+            }
+            pending.remove(request_id).expect("just found")
+        };
         let _ = asked.asker.send(answer);
     }
 

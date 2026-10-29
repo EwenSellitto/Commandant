@@ -14,7 +14,7 @@ use crate::registry::ConnId;
 const EVENT_BUFFER: usize = 4096;
 
 /// The worker connection a task was dispatched on. Only it may report on the task.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Owner {
     pub node_id: String,
     pub conn_id: ConnId,

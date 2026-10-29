@@ -9,7 +9,7 @@ use commandant_common::fs::{read_optional, remove, write_private};
 use serde::{Deserialize, Serialize};
 
 /// Who the node is to the orchestrator, once it has joined.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Credentials {
     /// The node's id, as the orchestrator gave it.
     pub node_id: String,

@@ -297,7 +297,7 @@ fn entry(
 }
 
 /// The sidebar's edge, while it is dragged.
-#[derive(Clone, Copy)]
+#[derive(Copy, Clone)]
 pub(super) struct DraggedEdge;
 
 /// Nothing follows the pointer: the sidebar's edge is what moves.

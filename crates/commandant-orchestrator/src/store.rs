@@ -16,7 +16,7 @@ pub const NODE_DISCONNECTED: &str = "node disconnected";
 /// Only this many of the newest tasks keep their output.
 pub const KEPT_OUTPUTS: u32 = 1000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TaskStatus {
     Running,
     Succeeded,
@@ -48,7 +48,7 @@ impl TaskStatus {
 }
 
 /// One command run, or one prompt turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TaskKind {
     Command,
     Prompt,
@@ -64,7 +64,7 @@ impl TaskKind {
 }
 
 /// What a task is, as recorded when it is dispatched.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct NewTask {
     pub kind: TaskKind,
     /// What `task ls` shows.
@@ -81,7 +81,7 @@ pub struct Store {
     pool: SqlitePool,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Clone, Debug, sqlx::FromRow)]
 pub struct NodeRecord {
     pub id: String,
     pub name: String,
@@ -101,7 +101,7 @@ pub struct NodeFacts<'a> {
     pub version: &'a str,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Clone, Debug, sqlx::FromRow)]
 pub struct TaskRecord {
     pub id: String,
     pub node_id: String,

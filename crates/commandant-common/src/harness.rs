@@ -5,7 +5,7 @@ use std::fmt;
 use std::str::FromStr;
 
 /// A coding agent a worker can host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum HarnessKind {
     /// opencode, driven over its HTTP API.
     Opencode,

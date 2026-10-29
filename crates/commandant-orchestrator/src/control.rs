@@ -17,7 +17,8 @@ use commandant_proto::{
     SwitchMcpServerRequest, TaskEvent, TaskInfo, TaskOutput, TaskStarted, WatchTaskRequest,
     auth_action, task_event,
 };
-use tokio::sync::broadcast::{self, error::RecvError};
+use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};

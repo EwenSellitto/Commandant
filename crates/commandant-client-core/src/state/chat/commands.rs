@@ -8,7 +8,7 @@ use super::{Chat, Menu};
 use crate::state::{Edit, Effect, Outcome};
 
 /// What a submitted line asks of the app rather than the chat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(in crate::state) enum AppCommand {
     Quit,
     /// Leave, forgetting the server.

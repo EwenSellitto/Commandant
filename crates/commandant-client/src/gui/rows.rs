@@ -8,7 +8,7 @@ use commandant_client_core::Chat;
 use commandant_client_core::chat::{Ended, Entry, Role};
 
 /// One row of the thread: an entry, or tool calls in a row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Row {
     /// The entry at this index, drawn on its own.
     Entry(usize),
@@ -81,7 +81,7 @@ pub struct Tally {
 }
 
 /// What the scroller is to do once the thread has changed.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum Change {
     /// Start again with this many rows: the earlier turns came.
     Reset(usize),

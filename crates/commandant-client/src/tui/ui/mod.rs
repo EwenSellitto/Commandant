@@ -429,7 +429,8 @@ fn welcome(chat: &Chat) -> Vec<Line<'static>> {
     let commands = chat::COMMANDS[1..8]
         .iter()
         .map(|&(n, d)| (format!("/{n}"), d));
-    let bang = std::iter::once((BANG.0.to_string(), BANG.1));
+    let (bang, does) = BANG;
+    let bang = std::iter::once((bang.to_string(), does));
     for (key, does) in keys.take(4).chain(commands).chain(bang) {
         lines.push(Line::from(vec![
             Span::raw(format!("{INDENT}{key:<13}")).bold(),

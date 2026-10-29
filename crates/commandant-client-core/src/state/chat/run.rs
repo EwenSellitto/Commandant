@@ -42,7 +42,7 @@ pub struct Run {
 }
 
 /// A piece of a command's output, from one stream.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Printed {
     /// Written to its error output.
     pub stderr: bool,
@@ -52,7 +52,7 @@ pub struct Printed {
 }
 
 /// How a command ended.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Ended {
     /// It ran to the end, with this exit code.
     Exited(i32),

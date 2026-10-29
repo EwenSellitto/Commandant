@@ -100,7 +100,7 @@ const OUTPUT_KEYS: [(&str, &str, Option<Key>); 4] = [
 const LABEL_WIDTH: usize = 14;
 
 /// What choosing a row of the help does.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Does {
     /// Sends a line, as if typed: a `/command`.
     Run(String),
@@ -111,7 +111,7 @@ pub enum Does {
     Nothing,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     label: String,
     about: String,

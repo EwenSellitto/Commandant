@@ -1,7 +1,7 @@
 //! Finding things by exact key or unambiguous prefix, as users type ids.
 
 /// What a lookup by key or prefix found.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum Match<T> {
     /// Exactly one item, or the one whose key is the whole needle.
     One(T),
@@ -68,7 +68,7 @@ mod tests {
     #[test]
     fn a_name_beats_an_id() {
         let nodes = [("box", "b0c1"), ("b0", "e9f2"), ("lab", "b0d3")];
-        let named = |needle| find_named(nodes.to_vec(), needle, |n| n.0, |n| n.1);
+        let named = |needle| find_named(nodes.to_vec(), needle, |(name, _)| *name, |(_, id)| *id);
         assert_eq!(named("b0"), Match::One(("b0", "e9f2")));
         assert_eq!(named("lab"), Match::One(("lab", "b0d3")));
         assert_eq!(named("b0c"), Match::One(("box", "b0c1")));

@@ -4,10 +4,11 @@
 use std::collections::HashMap;
 
 use commandant_client_core::{ChatId, Core, Edit, Go, Intent, Next, OutputId, Scope, Updates};
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     Anchor, AsyncWindowContext, Context, EventEmitter, FocusHandle, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, ScrollHandle, Styled as _, Task, WeakEntity, Window,
-    div, prelude::FluentBuilder as _,
+    div,
 };
 use gpui_component::notification::{Notification, NotificationType};
 use gpui_component::{ActiveTheme as _, WindowExt as _, h_flex, v_flex};

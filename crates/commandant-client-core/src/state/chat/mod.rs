@@ -77,7 +77,7 @@ pub enum Message {
 }
 
 /// Who wrote an entry of the thread, which tells how it is shown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Role {
     /// The person, prompting.
     User,
@@ -140,7 +140,7 @@ impl Activity {
 }
 
 /// How a turn ended that nobody has looked at yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Unseen {
     /// It finished.
     Done,

@@ -9,7 +9,7 @@ use commandant_proto::{ControlClient, connect_control};
 use serde::{Deserialize, Serialize};
 
 /// What the config file saves: the server a client talks to by default.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct FileConfig {
     /// The server's address, `host:port`.
     pub addr: Option<String>,

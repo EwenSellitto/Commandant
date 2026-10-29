@@ -13,7 +13,7 @@ use super::chat::{ChatView, Input};
 use super::help::{Does, Help};
 use crate::picker::{Picked, Picker};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub enum Screen {
     #[default]
     Nodes,
@@ -23,7 +23,7 @@ pub enum Screen {
 }
 
 /// How the person leaves the app.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Leave {
     Quit,
     /// Forgetting the server, for another's link.
@@ -578,7 +578,13 @@ pub(crate) mod tests {
     }
 
     fn input(app: &mut App) -> String {
-        app.shown().unwrap().1.input.text.clone()
+        view(app).input.text.clone()
+    }
+
+    /// The view of the chat shown.
+    fn view(app: &mut App) -> &mut ChatView {
+        let (_, view) = app.shown().unwrap();
+        view
     }
 
     /// Sends `text` from the chat on screen and returns where it went.
@@ -902,10 +908,10 @@ pub(crate) mod tests {
         type_text(&mut app, "/s");
         assert_eq!(suggestions(&mut app), ["skills", "sessions"]);
         app.on_key(key(KeyCode::Down));
-        assert_eq!(app.shown().unwrap().1.suggested, 1);
+        assert_eq!(view(&mut app).suggested, 1);
         app.on_key(key(KeyCode::Up));
         app.on_key(key(KeyCode::Up));
-        assert_eq!(app.shown().unwrap().1.suggested, 1, "wraps round");
+        assert_eq!(view(&mut app).suggested, 1, "wraps round");
         let effects = press(&mut app, key(KeyCode::Enter));
         assert!(matches!(&effects[..], [Effect::FetchSessions(_)]));
         assert!(app.pickers.contains_key(&Scope::App), "the sessions");
@@ -958,8 +964,8 @@ pub(crate) mod tests {
     fn only_a_prompt_sent_scrolls_back_to_the_bottom() {
         let mut app = app();
         app.on_key(key(KeyCode::Enter));
-        let scroll = |app: &mut App| app.shown().unwrap().1.scroll;
-        app.shown().unwrap().1.scroll = 5;
+        let scroll = |app: &mut App| view(app).scroll;
+        view(&mut app).scroll = 5;
         type_text(&mut app, "/help");
         app.on_key(key(KeyCode::Enter));
         app.on_key(key(KeyCode::Esc));
@@ -1344,7 +1350,7 @@ pub(crate) mod tests {
         ] {
             app.on_key(key(code));
         }
-        let input = &app.shown().unwrap().1.input;
+        let input = &view(&mut app).input;
         assert_eq!((input.text.as_str(), input.cursor), ("hll", 3));
     }
 }

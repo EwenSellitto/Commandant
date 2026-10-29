@@ -45,7 +45,7 @@ const TOKEN_PREFIXES: [&str; 3] = ["cmda", "cmdj", "cmdn"];
 
 /// A connection link: where a server is, the token it takes and, if pinned,
 /// the certificate it must show.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Link {
     /// The admin or join token it hands over.
     pub token: String,
@@ -60,7 +60,7 @@ pub struct Link {
 /// The SHA-256 of an orchestrator's TLS certificate. Whoever has its link
 /// connects only to a server showing that certificate, so nobody in between
 /// can pose as it, or read what is said.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Pin(pub [u8; 32]);
 
 impl Pin {
@@ -89,7 +89,7 @@ impl std::str::FromStr for Pin {
 }
 
 /// One of an orchestrator's addresses, taken apart.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Target {
     /// `host:port`.
     pub host: String,

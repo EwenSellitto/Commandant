@@ -11,7 +11,7 @@ use super::Chat;
 use crate::state::{Ask, Choice, Choices, Choose, Edit, Effect, Outcome, Wanted};
 
 /// What a chat offers to choose from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Menu {
     /// The agents, to send prompts to.
     Agent,

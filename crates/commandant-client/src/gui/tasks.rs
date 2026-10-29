@@ -7,10 +7,10 @@ use commandant_client_core::chat::elapsed;
 use commandant_client_core::{Intent, OutputId, what_ran};
 use commandant_common::time::{self, ago};
 use commandant_proto::TaskInfo;
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, Context, Div, FontWeight, Hsla, InteractiveElement as _, ParentElement as _, SharedString,
-    Stateful, StatefulInteractiveElement as _, Styled as _, WeakEntity, div,
-    prelude::FluentBuilder as _, px,
+    Stateful, StatefulInteractiveElement as _, Styled as _, WeakEntity, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::clipboard::Clipboard;
