@@ -34,7 +34,7 @@ pub(super) fn status_dot(online: bool, cx: &App) -> Div {
 }
 
 impl Connected {
-    /// Every node and its chats, then the core's notice.
+    /// Every node and its chats, then the Tasks entry and the core's notice.
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let nodes = self.core.nodes();
@@ -89,6 +89,7 @@ impl Connected {
                     .children(tree)
                     .children(empty),
             )
+            .child(self.tasks_row(cx))
             .children(notice)
             .child(edge)
     }
@@ -105,6 +106,30 @@ impl Connected {
             self.sidebar = width;
             cx.emit(Resized(width));
             cx.notify();
+        }
+    }
+
+    /// Opens the tasks; marked while they, or an output, are shown.
+    fn tasks_row(&self, cx: &Context<Self>) -> Stateful<Div> {
+        let theme = cx.theme();
+        let row = h_flex()
+            .id("tasks-entry")
+            .gap_2()
+            .px_2()
+            .h(px(28.0))
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.sidebar_accent))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.show_tasks(window, cx);
+            }))
+            .child(Icon::new(IconName::SquareTerminal).small())
+            .child("Tasks");
+        if self.output.is_some() || (self.shown.is_none() && self.core.tasks().is_some()) {
+            row.bg(theme.sidebar_accent)
+                .text_color(theme.sidebar_accent_foreground)
+        } else {
+            row
         }
     }
 

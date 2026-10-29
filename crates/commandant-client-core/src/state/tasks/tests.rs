@@ -209,6 +209,21 @@ fn a_task_whose_output_was_dropped_says_so() {
     assert!(state.output(id).unwrap().pruned);
 }
 
+#[test]
+fn a_task_listed_as_pruned_says_so_before_it_is_watched() {
+    let mut state = state();
+    let pruned = TaskInfo {
+        output_pruned: true,
+        ..task("t1", "command", "succeeded")
+    };
+    list(&mut state, vec![pruned]);
+    let id = output_shown(&state.intent(Intent::OpenTask("t1".into())));
+    assert!(state.output(id).unwrap().pruned);
+    // A task no longer listed opens nothing.
+    let gone = state.intent(Intent::OpenTask("t9".into()));
+    assert_eq!((gone.go, gone.effects.len()), (None, 0));
+}
+
 fn started(id: OutputId, task_id: &str) -> Update {
     let started = task_event::Event::Started(TaskStarted {
         task_id: task_id.into(),
@@ -283,6 +298,44 @@ fn a_task_is_cancelled_from_the_list_or_its_output() {
     };
     state.update(refused);
     assert_eq!(state.notice, "couldn't cancel task t1: it had ended");
+}
+
+#[test]
+fn a_watched_task_is_stopped_before_it_reports_starting() {
+    let mut state = state();
+    list(&mut state, vec![task("t1", "command", "running")]);
+    let id = output_shown(&state.intent(Intent::OpenTask("t1".into())));
+    // Its Stop knows the task at once, and cancels it once only.
+    assert_eq!(
+        state.output(id).unwrap().run.task().map(String::as_str),
+        Some("t1")
+    );
+    let stop = state.intent(Intent::CancelTask("t1".into()));
+    assert!(matches!(&stop.effects[..], [Effect::CancelTask(t)] if t == "t1"));
+    assert!(state.output(id).unwrap().run.stopping());
+    assert!(state.update(started(id, "t1")).effects.is_empty());
+    assert!(
+        state
+            .intent(Intent::CancelTask("t1".into()))
+            .effects
+            .is_empty()
+    );
+}
+
+#[test]
+fn back_from_an_output_the_list_keeps_its_node_and_refreshing() {
+    let mut state = state();
+    let (_, _, all) = fetch(&state.intent(Intent::ListTasks { node: None }));
+    listed(&mut state, all, vec![task("t1", "command", "succeeded")]);
+    let (_, _, on_n1) = fetch(&state.intent(Intent::ListTasks {
+        node: Some("n1".into()),
+    }));
+    listed(&mut state, on_n1, vec![task("t1", "command", "succeeded")]);
+    let id = output_shown(&state.intent(Intent::OpenTask("t1".into())));
+    state.intent(Intent::CloseOutput(id));
+    assert_eq!(state.tasks().unwrap().node.as_deref(), Some("n1"));
+    let again = listed(&mut state, on_n1, Vec::new());
+    assert_eq!(fetch(&again), (Some("n1".into()), REFRESH, on_n1));
 }
 
 fn prompt_task(id: &str, status: &str, session: &str) -> TaskInfo {

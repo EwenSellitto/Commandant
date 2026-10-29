@@ -30,8 +30,9 @@ pub struct Run {
     keep: usize,
     /// How it ended; `None` while it runs.
     pub ended: Option<Ended>,
-    /// Known once the server has started it.
-    task_id: Option<String>,
+    /// Known once the server has started it, or from the start when
+    /// watched.
+    pub(in crate::state) task_id: Option<String>,
     /// Asked to stop; one not started yet is stopped once it is.
     cancelling: bool,
     /// Bytes of a UTF-8 character split across output chunks, per stream.
@@ -110,8 +111,9 @@ impl Run {
     ) -> Option<String> {
         let ended = match event {
             Ok(TaskEvent::Started(started)) => {
-                self.task_id = Some(started.task_id.clone());
-                return self.cancelling.then_some(started.task_id);
+                let known = self.task_id.replace(started.task_id.clone());
+                // Asked to stop before it was known: cancelled now.
+                return (self.cancelling && known.is_none()).then_some(started.task_id);
             }
             Ok(TaskEvent::Output(output)) => {
                 self.print(output.stream() == OutputStream::Stderr, &output.data);
