@@ -88,20 +88,23 @@ impl Server {
     /// Starts the call an effect asks for.
     pub(crate) fn call(&self, effect: Effect) {
         let (mut control, handle, tx) = (self.control.clone(), &self.handle, self.tx.clone());
+        // A chat's turn: its events, or why it broke, go to the chat.
+        let to_chat = |chat, tx: Tx| {
+            move |event: Result<_, _>| {
+                let message = event.map_or_else(Message::Failed, Message::Task);
+                tx.send(Update::Chat(chat, message)).is_ok()
+            }
+        };
+        let to_output =
+            |output, tx: Tx| move |event| tx.send(Update::Output(output, event)).is_ok();
         match effect {
             Effect::Send(chat, request) => {
                 let call = async move { control.prompt(request).await };
-                handle.spawn(stream_task(call, move |event| {
-                    let message = event.map_or_else(Message::Failed, Message::Task);
-                    tx.send(Update::Chat(chat, message)).is_ok()
-                }));
+                handle.spawn(stream_task(call, to_chat(chat, tx)));
             }
             Effect::WatchTurn { chat, task_id } => {
                 let call = async move { control.watch_task(WatchTaskRequest { task_id }).await };
-                handle.spawn(stream_task(call, move |event| {
-                    let message = event.map_or_else(Message::Failed, Message::Task);
-                    tx.send(Update::Chat(chat, message)).is_ok()
-                }));
+                handle.spawn(stream_task(call, to_chat(chat, tx)));
             }
             Effect::RunCommand { chat, run, request } => {
                 let call = async move { control.run_command(request).await };
@@ -112,16 +115,12 @@ impl Server {
             }
             Effect::Watch { output, task_id } => {
                 let call = async move { control.watch_task(WatchTaskRequest { task_id }).await };
-                let watch = handle.spawn(stream_task(call, move |event| {
-                    tx.send(Update::Output(output, event)).is_ok()
-                }));
+                let watch = handle.spawn(stream_task(call, to_output(output, tx)));
                 self.watched(output, watch.abort_handle());
             }
             Effect::RunOn { output, request } => {
                 let call = async move { control.run_command(request).await };
-                let run = handle.spawn(stream_task(call, move |event| {
-                    tx.send(Update::Output(output, event)).is_ok()
-                }));
+                let run = handle.spawn(stream_task(call, to_output(output, tx)));
                 self.watched(output, run.abort_handle());
             }
             Effect::StopWatching(output) => {
@@ -131,14 +130,13 @@ impl Server {
                 }
             }
             Effect::CancelTask(task_id) => {
-                handle.spawn(async move {
-                    let request = CancelTaskRequest {
-                        task_id: task_id.clone(),
-                    };
-                    if let Err(status) = control.cancel_task(request).await {
-                        let error = status.message().to_string();
-                        let _ = tx.send(Update::CancelFailed { task_id, error });
-                    }
+                let request = CancelTaskRequest {
+                    task_id: task_id.clone(),
+                };
+                let call = async move { control.cancel_task(request).await };
+                spawn_ask(handle, tx, call, |cancelled| {
+                    let error = cancelled.err()?;
+                    Some(Update::CancelFailed { task_id, error })
                 });
             }
             Effect::FetchOptions { node, after } => {
@@ -238,30 +236,27 @@ impl Server {
                 });
             }
             Effect::Cancel(chat, task_id) => {
-                handle.spawn(async move {
-                    let request = CancelTaskRequest {
-                        task_id: task_id.clone(),
-                    };
-                    if let Err(status) = control.cancel_task(request).await {
-                        let error = status.message().to_string();
-                        let failed = Message::CancelFailed { task_id, error };
-                        let _ = tx.send(Update::Chat(chat, failed));
-                    }
+                let request = CancelTaskRequest {
+                    task_id: task_id.clone(),
+                };
+                let call = async move { control.cancel_task(request).await };
+                spawn_ask(handle, tx, call, move |cancelled| {
+                    let error = cancelled.err()?;
+                    Some(Update::Chat(chat, Message::CancelFailed { task_id, error }))
                 });
             }
             Effect::FetchTasks { node, after, list } => {
-                handle.spawn(async move {
+                let request = ListTasksRequest {
+                    limit: LIMIT,
+                    node: node.unwrap_or_default(),
+                };
+                let call = async move {
                     tokio::time::sleep(after).await;
-                    let request = ListTasksRequest {
-                        limit: LIMIT,
-                        node: node.unwrap_or_default(),
-                    };
-                    let tasks = control
-                        .list_tasks(request)
-                        .await
-                        .map(|listed| listed.into_inner().tasks)
-                        .map_err(|status| status.message().to_string());
-                    let _ = tx.send(Update::Tasks { list, tasks });
+                    control.list_tasks(request).await
+                };
+                spawn_ask(handle, tx, call, move |listed| Update::Tasks {
+                    list,
+                    tasks: listed.map(|l| l.tasks),
                 });
             }
             Effect::CreateToken { ttl } => {
@@ -304,19 +299,21 @@ impl Drop for Server {
 }
 
 /// Makes a unary call in the background, and sends what `update` makes of
-/// its answer, or of what went wrong.
-fn spawn_ask<T: Send + 'static>(
+/// its answer, or of what went wrong, if anything.
+fn spawn_ask<T: Send + 'static, U: Into<Option<Update>>>(
     handle: &Handle,
     tx: Tx,
     call: impl Future<Output = Result<tonic::Response<T>, tonic::Status>> + Send + 'static,
-    update: impl FnOnce(Result<T, String>) -> Update + Send + 'static,
+    update: impl FnOnce(Result<T, String>) -> U + Send + 'static,
 ) {
     handle.spawn(async move {
         let answer = call
             .await
             .map(tonic::Response::into_inner)
             .map_err(|status| status.message().to_string());
-        let _ = tx.send(update(answer));
+        if let Some(update) = update(answer).into() {
+            let _ = tx.send(update);
+        }
     });
 }
 

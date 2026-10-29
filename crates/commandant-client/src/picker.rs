@@ -106,19 +106,11 @@ impl<R: Row> Filtered<R> {
         self.selected = self.selected.saturating_add_signed(rows).min(last);
     }
 
-    /// Narrows the rows down by `filter`, back on the best match.
+    /// Narrows the rows down to those whose label or detail has every word
+    /// of `filter`, back on the best match.
     pub fn set_filter(&mut self, filter: &str) {
         self.filter = filter.to_string();
-        self.refilter();
-    }
-
-    /// Keeps the rows whose label or detail has every word of the filter.
-    fn refilter(&mut self) {
-        let words: Vec<String> = self
-            .filter
-            .split_whitespace()
-            .map(str::to_lowercase)
-            .collect();
+        let words: Vec<String> = filter.split_whitespace().map(str::to_lowercase).collect();
         let rows = &self.rows;
         self.shown = (0..rows.len())
             .filter(|&i| {

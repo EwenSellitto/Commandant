@@ -6,15 +6,14 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::picker::{Filtered, Row};
 
-/// A key, as written in the [`KEYS`].
-type Key = (KeyCode, KeyModifiers);
+type Key = KeyEvent;
 
 const fn key(code: KeyCode) -> Option<Key> {
-    Some((code, KeyModifiers::NONE))
+    Some(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
 const fn ctrl(c: char) -> Option<Key> {
-    Some((KeyCode::Char(c), KeyModifiers::CONTROL))
+    Some(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
 }
 
 /// A chat's keys that do what no command does, with what they do, and the
@@ -208,9 +207,7 @@ impl Help {
 
 fn keys(keys: &[(&str, &str, Option<Key>)]) -> impl Iterator<Item = (String, String, Does)> {
     keys.iter().map(|&(label, about, key)| {
-        let does = key.map_or(Does::Nothing, |(code, mods)| {
-            Does::Press(KeyEvent::new(code, mods))
-        });
+        let does = key.map_or(Does::Nothing, Does::Press);
         (label.to_string(), about.to_string(), does)
     })
 }
