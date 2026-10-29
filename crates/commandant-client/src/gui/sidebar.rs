@@ -34,7 +34,8 @@ pub(super) fn status_dot(online: bool, cx: &App) -> Div {
 }
 
 impl Connected {
-    /// Every node and its chats, then the Tasks entry and the core's notice.
+    /// Every node and its chats, then the Nodes and Tasks entries and the
+    /// core's notice.
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let nodes = self.core.nodes();
@@ -89,6 +90,7 @@ impl Connected {
                     .children(tree)
                     .children(empty),
             )
+            .child(self.nodes_row(cx))
             .child(self.tasks_row(cx))
             .children(notice)
             .child(edge)
@@ -109,28 +111,20 @@ impl Connected {
         }
     }
 
+    /// Opens the nodes; marked while they, or an output run from them, are
+    /// shown.
+    fn nodes_row(&self, cx: &Context<Self>) -> Stateful<Div> {
+        let shown = self.nodes_shown && self.core.tasks().is_none();
+        entry("nodes-entry", IconName::Network, "Nodes", shown, cx)
+            .on_click(cx.listener(|this, _, window, cx| this.show_nodes(None, window, cx)))
+    }
+
     /// Opens the tasks; marked while they, or an output, are shown.
     fn tasks_row(&self, cx: &Context<Self>) -> Stateful<Div> {
-        let theme = cx.theme();
-        let row = h_flex()
-            .id("tasks-entry")
-            .gap_2()
-            .px_2()
-            .h(px(28.0))
-            .rounded_md()
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.sidebar_accent))
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.show_tasks(window, cx);
-            }))
-            .child(Icon::new(IconName::SquareTerminal).small())
-            .child("Tasks");
-        if self.output.is_some() || (self.shown.is_none() && self.core.tasks().is_some()) {
-            row.bg(theme.sidebar_accent)
-                .text_color(theme.sidebar_accent_foreground)
-        } else {
-            row
-        }
+        let shown = self.shown.is_none()
+            && (self.core.tasks().is_some() || (self.output.is_some() && !self.nodes_shown));
+        entry("tasks-entry", IconName::SquareTerminal, "Tasks", shown, cx)
+            .on_click(cx.listener(|this, _, window, cx| this.show_tasks(window, cx)))
     }
 
     /// A node's status dot and name, dimmed while it is offline and turning
@@ -138,8 +132,12 @@ impl Connected {
     /// one or its sessions.
     fn node_row(&self, at: usize, node: &NodeInfo, cx: &Context<Self>) -> Stateful<Div> {
         let theme = cx.theme();
-        let id = node.id.clone();
+        let (id, online) = (node.id.clone(), node.online);
         let open = cx.listener(move |this, _, window, cx| {
+            // Nothing to open on it: its row in the nodes says why.
+            if !online && this.core.chats_on(&id).next().is_none() {
+                return this.show_nodes(Some(id.clone()), window, cx);
+            }
             let chat = this.last.get(&id).copied();
             let node = id.clone();
             this.act(Intent::Open { node, chat }, window, cx);
@@ -260,6 +258,33 @@ impl Connected {
         } else {
             row
         }
+    }
+}
+
+/// A view's entry under the nodes, marked while `shown`.
+fn entry(
+    id: &'static str,
+    icon: IconName,
+    label: &'static str,
+    shown: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    let theme = cx.theme();
+    let row = h_flex()
+        .id(id)
+        .gap_2()
+        .px_2()
+        .h(px(28.0))
+        .rounded_md()
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.sidebar_accent))
+        .child(Icon::new(icon).small())
+        .child(label);
+    if shown {
+        row.bg(theme.sidebar_accent)
+            .text_color(theme.sidebar_accent_foreground)
+    } else {
+        row
     }
 }
 

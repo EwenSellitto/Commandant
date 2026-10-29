@@ -26,6 +26,12 @@ pub(super) struct Connected {
     pub(super) output: Option<OutputId>,
     /// Where the output shown is scrolled to.
     pub(super) output_scroll: ScrollHandle,
+    /// Whether the nodes are shown, under any output; not while a chat or
+    /// the tasks are.
+    pub(super) nodes_shown: bool,
+    /// The node the nodes view highlights: the one it opened on, or last
+    /// acted on.
+    pub(super) marked: Option<String>,
     /// The chat last shown on each node, to go back to.
     pub(super) last: HashMap<String, ChatId>,
     /// What the window keeps of each open chat.
@@ -80,6 +86,8 @@ impl Connected {
             shown: None,
             output: None,
             output_scroll: ScrollHandle::new(),
+            nodes_shown: false,
+            marked: None,
             last: HashMap::new(),
             panes: HashMap::new(),
             questions: HashMap::new(),
@@ -132,18 +140,14 @@ impl Connected {
     pub(super) fn go(&mut self, go: Option<Go>, window: &mut Window, cx: &mut Context<Self>) {
         match go {
             Some(Go::Chat(id)) => self.show(id, window, cx),
-            // The prompt that had the keys is gone with its chat.
-            Some(Go::Nodes) => {
-                self.close_views();
-                self.shown = None;
-                self.refocus(window, cx);
-            }
+            Some(Go::Nodes) => self.show_nodes(None, window, cx),
             // The list, back from any output.
             Some(Go::Tasks) => {
                 if let Some(id) = self.output.take() {
                     self.core.act(Intent::CloseOutput(id));
                 }
                 self.shown = None;
+                self.nodes_shown = false;
                 self.refocus(window, cx);
             }
             Some(Go::Output(id)) => {
@@ -154,15 +158,19 @@ impl Connected {
                 self.shown = None;
                 self.refocus(window, cx);
             }
-            // Its agent started while nothing else was opened: open it.
+            // Its agent started while nothing else was opened, or while
+            // its row is marked: open it.
             Some(Go::Ready(node))
-                if self.shown.is_none() && self.output.is_none() && self.core.tasks().is_none() =>
+                if self.shown.is_none()
+                    && self.output.is_none()
+                    && self.core.tasks().is_none()
+                    && (!self.nodes_shown || self.marked.as_ref() == Some(&node)) =>
             {
                 let next = self.core.act(Intent::Open { node, chat: None });
                 self.apply(next, window, cx);
             }
-            // Quitting, logging out, the help and the nodes view come with
-            // the views that go there.
+            // Quitting, logging out and the help come with the views that
+            // go there.
             Some(Go::Quit | Go::LogOut | Go::Help | Go::Ready(_)) | None => {}
         }
     }
@@ -185,16 +193,37 @@ impl Connected {
         self.refocus(window, cx);
     }
 
-    /// Goes back from the output shown to the tasks.
+    /// Shows the nodes, marking `node`, else the shown chat's.
+    pub(super) fn show_nodes(
+        &mut self,
+        node: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Known even once the chat is closed: its closing can bring us here.
+        let chat_node = self.last.iter().find(|(_, id)| Some(**id) == self.shown);
+        if let Some(node) = node.or_else(|| chat_node.map(|(node, _)| node.clone())) {
+            self.marked = Some(node);
+        }
+        self.close_views();
+        self.shown = None;
+        self.nodes_shown = true;
+        // The prompt that had the keys is gone with its chat.
+        self.refocus(window, cx);
+        cx.notify();
+    }
+
+    /// Goes back from the output shown to the tasks, or the nodes.
     pub(super) fn close_output(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.output.take() {
             self.act(Intent::CloseOutput(id), window, cx);
         }
     }
 
-    /// Leaves the output and the tasks: the output is no longer watched,
-    /// nor the tasks refreshed.
+    /// Leaves the output, the tasks and the nodes: the output is no longer
+    /// watched, nor the tasks refreshed.
     fn close_views(&mut self) {
+        self.nodes_shown = false;
         if let Some(id) = self.output.take() {
             self.core.act(Intent::CloseOutput(id));
         }
@@ -301,6 +330,7 @@ impl Render for Connected {
             (Some(id), _) => self.render_output(id, cx).into_any_element(),
             (None, Some(id)) => self.render_chat(id, window, cx).into_any_element(),
             (None, None) if self.core.tasks().is_some() => self.render_tasks(cx).into_any_element(),
+            (None, None) if self.nodes_shown => self.render_nodes(cx).into_any_element(),
             (None, None) => div().into_any_element(),
         };
         let sidebar = self
@@ -421,6 +451,57 @@ mod tests {
         send.send(Update::Nodes(nodes)).unwrap();
         cx.run_until_parked();
         assert!(told.get() > 0);
+    }
+
+    #[gpui::test]
+    fn a_command_run_from_the_nodes_goes_back_to_them(cx: &mut TestAppContext) {
+        let (connected, cx, _send) = connected(vec![node("n1", true)], cx);
+        connected.update_in(cx, |c, window, cx| {
+            c.show_nodes(None, window, cx);
+            assert_eq!(c.marked.as_deref(), Some("n1"), "the chat's node");
+            let line = "ls".into();
+            c.act(
+                Intent::Run {
+                    node: "n1".into(),
+                    line,
+                },
+                window,
+                cx,
+            );
+            assert!(c.output.is_some());
+            c.close_output(window, cx);
+            assert!(c.output.is_none() && c.nodes_shown, "not back to the nodes");
+        });
+    }
+
+    #[gpui::test]
+    fn an_agent_starting_opens_its_node_only_if_marked(cx: &mut TestAppContext) {
+        use commandant_client_core::state::fixtures::bare;
+        let (connected, cx, send) = connected(vec![node("n1", true), bare("b2"), bare("b3")], cx);
+        connected.update_in(cx, |c, window, cx| {
+            c.show_nodes(Some("b3".into()), window, cx)
+        });
+        let hosting = |id: &str| {
+            let node = NodeInfo {
+                harnesses: vec!["opencode".into()],
+                ..bare(id)
+            };
+            Update::HarnessStarted(id.into(), Ok(node))
+        };
+        send.send(hosting("b2")).unwrap();
+        cx.run_until_parked();
+        assert!(
+            connected.read_with(cx, |c, _| c.nodes_shown),
+            "b2 isn't marked"
+        );
+        send.send(hosting("b3")).unwrap();
+        cx.run_until_parked();
+        let shown = connected.read_with(cx, |c, _| {
+            c.shown
+                .and_then(|id| c.core.chat(id))
+                .map(|c| c.node.id.clone())
+        });
+        assert_eq!(shown.as_deref(), Some("b3"));
     }
 }
 

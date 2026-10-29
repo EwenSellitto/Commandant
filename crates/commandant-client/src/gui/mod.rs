@@ -10,6 +10,7 @@ mod chords;
 mod command;
 mod connected;
 mod login;
+mod nodes;
 mod placement;
 mod rows;
 mod sidebar;
