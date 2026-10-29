@@ -264,8 +264,9 @@ impl Connected {
             if let Change::Reset(_) = change {
                 pane.open.clear();
             }
-            // Cached, the thread draws what streams in only once told.
-            if change != Change::Unchanged {
+            // Cached, the thread draws what streams in only once told; an
+            // empty one names the agent, which changes with no row.
+            if change != Change::Unchanged || chat.thread.is_empty() {
                 pane.thread.update(cx, |_, cx| cx.notify());
             }
             pane.scroller.update(cx, |scroller, cx| match change {
@@ -334,6 +335,92 @@ impl Render for Connected {
                     .child(div().flex_1().h_full().min_w_0().child(main)),
             )
             .children(self.render_ask(Scope::App, cx))
+    }
+}
+
+#[cfg(all(test, feature = "gui-tests"))]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use commandant_client_core::state::fixtures::{node, output};
+    use commandant_client_core::{Settings, Update};
+    use commandant_proto::{NodeInfo, OutputStream};
+    use gpui::{Entity, TestAppContext, VisualTestContext};
+
+    use super::*;
+    use crate::gui::thread::Thread;
+
+    /// A window connected to a core knowing `nodes`, a chat open on the
+    /// first, and what sends it updates.
+    fn connected(
+        nodes: Vec<NodeInfo>,
+        cx: &mut TestAppContext,
+    ) -> (
+        Entity<Connected>,
+        &mut VisualTestContext,
+        tokio::sync::mpsc::UnboundedSender<Update>,
+    ) {
+        cx.update(gpui_component::init);
+        let open = Intent::OpenSession {
+            node: nodes[0].id.clone(),
+            session: None,
+        };
+        let core = Core::offline(nodes, Settings::default());
+        let (send, updates) = Updates::channel();
+        let (connected, cx) = cx.add_window_view(|window, cx| {
+            Connected::new(core, updates, Some(open), 240.0, window, cx)
+        });
+        (connected, cx, send)
+    }
+
+    /// The chat shown, and how many times its thread has been told to draw
+    /// again from now on.
+    fn watch(
+        connected: &Entity<Connected>,
+        cx: &mut VisualTestContext,
+    ) -> (ChatId, Rc<Cell<usize>>) {
+        let (id, thread): (ChatId, Entity<Thread>) = connected.read_with(cx, |c, _| {
+            let id = c.shown.expect("a chat is shown");
+            (id, c.panes[&id].thread.clone())
+        });
+        let told = Rc::new(Cell::new(0));
+        let counted = told.clone();
+        cx.update(|_, cx| {
+            cx.observe(&thread, move |_, _| counted.set(counted.get() + 1))
+                .detach()
+        });
+        (id, told)
+    }
+
+    #[gpui::test]
+    fn a_reply_is_drawn_as_it_streams_in(cx: &mut TestAppContext) {
+        let (connected, cx, send) = connected(vec![node("n1", true)], cx);
+        let (id, told) = watch(&connected, cx);
+        connected.update_in(cx, |c, window, cx| {
+            c.act(Intent::Submit(id, "count".into()), window, cx)
+        });
+        let asked = told.get();
+        send.send(Update::Chat(id, output(OutputStream::Stdout, b"one")))
+            .unwrap();
+        cx.run_until_parked();
+        assert!(told.get() > asked, "the thread wasn't told of the reply");
+        let asked = told.get();
+        send.send(Update::Chat(id, output(OutputStream::Stdout, b" two")))
+            .unwrap();
+        cx.run_until_parked();
+        assert!(told.get() > asked, "nor of more of it");
+    }
+
+    #[gpui::test]
+    fn an_empty_thread_is_drawn_again_as_the_chat_changes(cx: &mut TestAppContext) {
+        let nodes = vec![node("n1", true)];
+        let (connected, cx, send) = connected(nodes.clone(), cx);
+        let (_, told) = watch(&connected, cx);
+        // Anything that comes: its agent, say, which the thread names.
+        send.send(Update::Nodes(nodes)).unwrap();
+        cx.run_until_parked();
+        assert!(told.get() > 0);
     }
 }
 

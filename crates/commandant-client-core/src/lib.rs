@@ -173,6 +173,16 @@ impl Core {
     }
 }
 
+/// Updates for front ends' tests, sent by hand.
+#[cfg(any(test, feature = "test-support"))]
+impl Updates {
+    /// Updates, and what sends them, as a background call would.
+    pub fn channel() -> (mpsc::UnboundedSender<Update>, Self) {
+        let (send, updates) = mpsc::unbounded_channel();
+        (send, Self(updates))
+    }
+}
+
 /// A core for front ends' tests.
 #[cfg(any(test, feature = "test-support"))]
 impl Core {

@@ -12,6 +12,9 @@ path = "src/main.rs"
 # The desktop GUI, off by default: GPUI is long to build and needs desktop
 # libraries. Without it the client is the CLI and TUI only.
 gui =["dep:gpui", "dep:gpui-component", "dep:gpui-kit-assets", "dep:gpui-platform", "dep:serde", "dep:toml"]
+# The GUI's tests that open a window, on GPUI's test platform: kept out of
+# `gui` so its builds don't carry GPUI's test support.
+gui-tests = ["gui", "gpui/test-support"]
 
 [dependencies]
 anyhow.workspace = true
