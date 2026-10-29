@@ -68,13 +68,16 @@ impl Server {
         Ok((server, nodes, rx))
     }
 
-    /// Stops polling, and cancels `task_ids`, waiting for the server to say so.
-    pub(crate) async fn shutdown(&self, task_ids: Vec<String>) {
+    /// Stops polling, and starts cancelling `task_ids`: awaited, done once
+    /// the server has said so.
+    pub(crate) fn shutdown(&self, task_ids: Vec<String>) -> impl Future<Output = ()> + 'static {
         self.poll.abort();
-        let _ = self
+        let cancels = self
             .handle
-            .spawn(cancel_all(self.control.clone(), task_ids))
-            .await;
+            .spawn(cancel_all(self.control.clone(), task_ids));
+        async move {
+            let _ = cancels.await;
+        }
     }
 
     /// Keeps what follows an output view's task, to stop it when the view
@@ -356,10 +359,11 @@ async fn poll_nodes(mut control: ControlClient, tx: Tx) {
     every.tick().await;
     loop {
         every.tick().await;
-        let Ok(nodes) = control.list_nodes(ListNodesRequest {}).await else {
-            continue;
+        let update = match control.list_nodes(ListNodesRequest {}).await {
+            Ok(nodes) => Update::Nodes(nodes.into_inner().nodes),
+            Err(_) => Update::Unreachable,
         };
-        if tx.send(Update::Nodes(nodes.into_inner().nodes)).is_err() {
+        if tx.send(update).is_err() {
             return;
         }
     }

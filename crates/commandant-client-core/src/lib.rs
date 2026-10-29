@@ -11,8 +11,8 @@ pub mod state;
 pub use self::state::chat::{self, Chat, Settings};
 pub use self::state::tasks::{Output, OutputId, Tasks, command_line, what_ran};
 pub use self::state::{
-    Ask, ChatId, Choice, Choices, Choose, Edit, Effect, Go, Intent, Scope, Update, Wanted, cycle,
-    lacks_agent,
+    Ask, ChatId, Choice, Choices, Choose, Edit, Effect, Go, Intent, Notice, Scope, Update, Wanted,
+    cycle, lacks_agent,
 };
 
 use anyhow::Result;
@@ -90,10 +90,17 @@ impl Core {
     }
 
     /// Cancels the tasks still running, so no agent works for nobody, and
-    /// stops calling the server.
-    pub async fn shutdown(&mut self) {
-        if let Some(server) = &self.server {
-            server.shutdown(self.state.running_tasks()).await;
+    /// stops calling the server; the cancels start now, and are done once
+    /// it is awaited.
+    pub fn shutdown(&self) -> impl Future<Output = ()> + 'static {
+        let stopping = self
+            .server
+            .as_ref()
+            .map(|server| server.shutdown(self.state.running_tasks()));
+        async move {
+            if let Some(stopping) = stopping {
+                stopping.await;
+            }
         }
     }
 
@@ -162,8 +169,20 @@ impl Core {
         self.state.busy()
     }
 
+    /// Whether the server answered the last node listing: false while the
+    /// periodic one fails, true again once it succeeds.
+    pub fn server_reachable(&self) -> bool {
+        self.state.server_reachable()
+    }
+
     /// A remark about the nodes; empty if there is none.
     pub fn notice(&self) -> &str {
+        &self.state.notice.text
+    }
+
+    /// The last notice, whether it is an error, and how many were said: a
+    /// front end showing each one once.
+    pub fn last_notice(&self) -> &Notice {
         &self.state.notice
     }
 

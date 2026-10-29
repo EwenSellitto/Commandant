@@ -84,7 +84,7 @@ fn a_node_opens_on_its_chat_or_a_new_one() {
     // An offline node with no chat yet can't be opened.
     let offline = open(&mut state, "n3");
     assert!(offline.effects.is_empty() && offline.go.is_none());
-    assert_eq!(state.notice, "box-n3 is offline");
+    assert_eq!(state.notice.text, "box-n3 is offline");
 
     // Going back to a node shows its chat again.
     let again = state.intent(Intent::Open {
@@ -93,7 +93,7 @@ fn a_node_opens_on_its_chat_or_a_new_one() {
     });
     assert_eq!(again.go, Some(Go::Chat(id)));
     assert_eq!(state.chats.len(), 1);
-    assert!(state.notice.is_empty());
+    assert!(state.notice.text.is_empty());
 }
 
 #[test]
@@ -436,6 +436,65 @@ fn the_link_is_shown_to_copy() {
 }
 
 #[test]
+fn the_link_is_shown_with_no_chat_open() {
+    let mut state = state();
+    state.link = "commandant://abc".into();
+    let outcome = state.intent(Intent::ShowLink);
+    assert!(outcome.effects.is_empty(), "the server isn't asked");
+    assert_eq!(
+        state.ask(Scope::App),
+        Some(&Ask::Show {
+            title: "Link".into(),
+            text: "commandant://abc".into(),
+        })
+    );
+}
+
+#[test]
+fn logging_out_is_confirmed_first() {
+    let mut state = state();
+    assert_eq!(state.intent(Intent::LogOut).go, None);
+    assert!(matches!(state.ask(Scope::App), Some(Ask::Confirm { .. })));
+    state.intent(Intent::Dismiss(Scope::App));
+    assert_eq!(state.ask(Scope::App), None);
+    state.intent(Intent::LogOut);
+    assert_eq!(
+        state.intent(Intent::Confirm(Scope::App)).go,
+        Some(Go::LogOut)
+    );
+    assert_eq!(state.ask(Scope::App), None);
+}
+
+#[test]
+fn the_server_is_out_of_reach_until_it_lists_the_nodes_again() {
+    let mut state = state();
+    assert!(state.server_reachable());
+    state.update(Update::Unreachable);
+    assert!(!state.server_reachable());
+    // The same nodes as before still say it answers.
+    let nodes = state.nodes.clone();
+    state.update(Update::Nodes(nodes));
+    assert!(state.server_reachable());
+}
+
+#[test]
+fn a_notice_says_if_it_is_an_error_and_counts_each_time_said() {
+    let mut state = state();
+    open(&mut state, "n3");
+    assert_eq!(state.notice.text, "box-n3 is offline");
+    assert!(!state.notice.error);
+    let said = state.notice.said;
+    open(&mut state, "n3");
+    assert_eq!(state.notice.said, said + 1, "said again is news again");
+    state.update(Update::CancelFailed {
+        task_id: "t1".into(),
+        error: "gone".into(),
+    });
+    assert_eq!(state.notice.text, "couldn't cancel task t1: gone");
+    assert!(state.notice.error);
+}
+
+#[test]
 fn logging_in_is_not_signing_in() {
     let mut state = state();
     let id = chat_on(&mut state, "n1");
@@ -551,9 +610,9 @@ fn an_old_worker_without_an_agent_isnt_opened() {
     assert!(outcome.effects.is_empty() && outcome.go.is_none());
     assert!(state.ask(Scope::App).is_none());
     assert!(
-        state.notice.contains("can't start an agent"),
+        state.notice.text.contains("can't start an agent"),
         "{}",
-        state.notice
+        state.notice.text
     );
 }
 
@@ -647,14 +706,18 @@ fn a_node_without_an_agent_offers_to_start_one() {
         [Effect::StartHarness { node, harness }] if node == "n1" && harness == "opencode"));
     assert!(state.starting.contains("n1"));
     assert!(
-        state.notice.contains("starting opencode"),
+        state.notice.text.contains("starting opencode"),
         "{}",
-        state.notice
+        state.notice.text
     );
     // Asking again while it starts doesn't start another.
     assert!(open(&mut state, "n1").effects.is_empty());
     assert!(state.ask(Scope::App).is_none());
-    assert!(state.notice.contains("still starting"), "{}", state.notice);
+    assert!(
+        state.notice.text.contains("still starting"),
+        "{}",
+        state.notice.text
+    );
 
     // Once it hosts it, the node is worth opening.
     let ready = NodeInfo {
@@ -665,7 +728,7 @@ fn a_node_without_an_agent_offers_to_start_one() {
     assert!(outcome.effects.is_empty());
     assert_eq!(outcome.go, Some(Go::Ready("n1".into())));
     assert!(state.starting.is_empty());
-    assert_eq!(state.notice, "box-n1 now hosts opencode");
+    assert_eq!(state.notice.text, "box-n1 now hosts opencode");
     assert_eq!(state.nodes[0].harnesses, ["opencode"]);
     let opened = open(&mut state, "n1");
     assert!(matches!(
@@ -687,9 +750,10 @@ fn a_harness_that_fails_to_start_is_reported() {
     assert!(
         state
             .notice
+            .text
             .contains("couldn't start an agent on box-n1: no curl"),
         "{}",
-        state.notice
+        state.notice.text
     );
     assert!(state.starting.is_empty(), "it can be tried again");
 }
@@ -989,7 +1053,7 @@ fn a_nodes_sessions_are_offered_over_the_chat_it_opens() {
         chat: None,
     });
     assert!(offline.go.is_none() && choices(&state).is_none());
-    assert_eq!(state.notice, "box-n3 is offline");
+    assert_eq!(state.notice.text, "box-n3 is offline");
 }
 
 #[test]

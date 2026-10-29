@@ -297,7 +297,7 @@ fn a_task_is_cancelled_from_the_list_or_its_output() {
         error: "it had ended".into(),
     };
     state.update(refused);
-    assert_eq!(state.notice, "couldn't cancel task t1: it had ended");
+    assert_eq!(state.notice.text, "couldn't cancel task t1: it had ended");
 }
 
 #[test]
@@ -438,7 +438,11 @@ fn a_running_prompt_is_attached_to() {
     list(&mut state, vec![prompt_task("t2", "running", "")]);
     let first = state.intent(Intent::OpenTask("t2".into()));
     assert!(first.go.is_none() && first.effects.is_empty());
-    assert!(state.notice.contains("once it ends"), "{}", state.notice);
+    assert!(
+        state.notice.text.contains("once it ends"),
+        "{}",
+        state.notice.text
+    );
 }
 
 #[test]

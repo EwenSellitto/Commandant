@@ -109,6 +109,8 @@ pub enum Choose {
     TasksOf(Option<String>),
     /// Remove a node.
     RemoveNode(String),
+    /// Leave, forgetting the server.
+    LogOut,
     /// An agent harness to start on a node that hosts none.
     Harness {
         node: String,

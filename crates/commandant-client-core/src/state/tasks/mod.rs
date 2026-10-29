@@ -177,10 +177,10 @@ impl State {
     fn open_prompt(&mut self, task: TaskInfo) -> Outcome {
         let running = task.status == "running";
         if task.session_id.is_empty() {
-            self.notice = match running {
+            self.notice.tell(match running {
                 true => "this turn started a new session, which can be opened once it ends".into(),
                 false => "this turn left no session to open".into(),
-            };
+            });
             return Outcome::default();
         }
         let prompt = what_ran(&task);
@@ -194,7 +194,8 @@ impl State {
             return Outcome::go(Go::Chat(chat.id)).and(attach.into());
         }
         let Some(node) = self.node(&task.node_id).cloned() else {
-            self.notice = format!("{} is no longer a node", task.node_name);
+            self.notice
+                .fail(format!("{} is no longer a node", task.node_name));
             return Outcome::default();
         };
         let mut saved = self.saved.get(&node.id).into_iter().flatten();

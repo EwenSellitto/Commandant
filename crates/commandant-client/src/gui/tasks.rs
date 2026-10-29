@@ -102,11 +102,9 @@ impl Connected {
                 .text_color(theme.muted_foreground)
                 .child("Nothing has run yet. Run a command with `!` in a chat.")
         });
-        let said = match &tasks.error {
-            Some(e) => format!("couldn't list the tasks: {e}"),
-            None => self.core.notice().to_string(),
-        };
-        let said = (!said.is_empty()).then(|| {
+        // The core's notices are toasts.
+        let said = tasks.error.as_ref().map(|e| {
+            let said = format!("couldn't list the tasks: {e}");
             div()
                 .px_4()
                 .py_1()

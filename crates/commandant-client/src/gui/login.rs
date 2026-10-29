@@ -11,7 +11,7 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme as _, Disableable as _, h_flex, v_flex};
 
-use super::{Connected, Resized, Screen, Shell};
+use super::{Connected, LoggedOut, Resized, Screen, Shell};
 
 /// The card's width, in logical pixels.
 const WIDTH: f32 = 480.0;
@@ -137,7 +137,7 @@ impl Shell {
                         if remember && let Err(e) = config::remember(&client) {
                             eprintln!("warning: cannot save the server's link: {e:#}");
                         }
-                        shell.connected(core, updates, window, cx);
+                        shell.connected(client, core, updates, window, cx);
                     }
                     Err(e) => {
                         if let Some(card) = shell.card() {
@@ -151,9 +151,11 @@ impl Shell {
         })
     }
 
-    /// Shows the core, opening the chat the command line names, if any.
+    /// Shows the core on `client`, opening the chat the command line names,
+    /// if any.
     fn connected(
         &mut self,
+        client: Client,
         core: Core,
         updates: Updates,
         window: &mut Window,
@@ -165,15 +167,50 @@ impl Shell {
         });
         let sidebar = self.sidebar;
         let connected = cx.new(|cx| Connected::new(core, updates, open, sidebar, window, cx));
-        self._resizing = Some(cx.subscribe_in(
+        let resizing = cx.subscribe_in(
             &connected,
             window,
             |shell, _, Resized(width), window, cx| {
                 shell.sidebar = *width;
                 shell.save_soon(window, cx);
             },
-        ));
+        );
+        let logging_out = cx.subscribe_in(
+            &connected,
+            window,
+            move |shell, connected, LoggedOut, window, cx| {
+                shell.log_out(&client, connected, window, cx);
+            },
+        );
+        self._watching = vec![resizing, logging_out];
         self.screen = Screen::Connected(connected);
+    }
+
+    /// Cancels what still runs, forgets the server and asks for a link.
+    fn log_out(
+        &mut self,
+        client: &Client,
+        connected: &Entity<Connected>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Heard once: logging out again while this waits does nothing.
+        self._watching.clear();
+        let stopping = connected.read(cx).core.shutdown();
+        let client = client.clone();
+        cx.spawn_in(window, async move |shell, cx| {
+            stopping.await;
+            // A server flags or the environment named keeps the saved one.
+            let forgot = config::forget_if_saved(&client);
+            let _ = shell.update_in(cx, |shell, window, cx| {
+                let error = forgot
+                    .err()
+                    .map(|e| format!("couldn't forget the server: {e:#}").into());
+                shell.screen = Screen::LogIn(Card::new(None, error, window, cx));
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub(super) fn render_card(&self, card: &Card, cx: &mut Context<Self>) -> impl IntoElement {

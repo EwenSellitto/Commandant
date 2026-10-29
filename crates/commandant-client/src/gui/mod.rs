@@ -33,7 +33,7 @@ use gpui::{
 use gpui_component::{ActiveTheme as _, Root, Theme, ThemeMode};
 use tokio::runtime::Handle;
 
-use self::connected::{Connected, Resized};
+use self::connected::{Connected, LoggedOut, Resized};
 use self::login::Card;
 use self::placement::{MIN_HEIGHT, MIN_WIDTH, Placement, SIDEBAR_WIDTH};
 use crate::cli::{ClientArgs, GuiArgs, UiArgs};
@@ -167,8 +167,9 @@ struct Shell {
     /// never write at once.
     saving: Option<Task<()>>,
     _placing: Subscription,
-    /// Saves the placement once the sidebar is dragged.
-    _resizing: Option<Subscription>,
+    /// Saves the placement once the sidebar is dragged, and logs out when
+    /// the person does.
+    _watching: Vec<Subscription>,
 }
 
 impl Shell {
@@ -204,7 +205,7 @@ impl Shell {
             sidebar,
             saving: None,
             _placing: placing,
-            _resizing: None,
+            _watching: Vec::new(),
         };
         if try_saved {
             shell.retry(window, cx);

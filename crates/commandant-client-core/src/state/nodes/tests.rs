@@ -45,19 +45,19 @@ fn a_node_is_added_with_a_token_that_lasts_as_long_as_asked() {
     for typed in ["soon", "0"] {
         assert!(enter(&mut state, typed).is_empty());
         assert!(state.ask(Scope::App).is_some_and(Ask::wants_line));
-        assert!(!state.notice.is_empty(), "says why {typed:?} won't do");
+        assert!(!state.notice.text.is_empty(), "says why {typed:?} won't do");
     }
     let half = Duration::from_secs(1800);
     assert_eq!(
         enter(&mut state, "30m"),
         [Effect::CreateToken { ttl: half }]
     );
-    assert!(state.notice.is_empty());
+    assert!(state.notice.text.is_empty());
     state.update(Update::TokenCreated {
         ttl: half,
         link: Err("denied".into()),
     });
-    assert_eq!(state.notice, "couldn't make a token: denied");
+    assert_eq!(state.notice.text, "couldn't make a token: denied");
     assert!(state.ask(Scope::App).is_none());
 }
 
@@ -88,7 +88,7 @@ fn an_agent_is_started_on_a_node_that_hosts_none() {
                 .is_empty()
         );
         assert!(state.ask(Scope::App).is_none());
-        assert_eq!(state.notice, said);
+        assert_eq!(state.notice.text, said);
     }
 }
 
@@ -128,13 +128,13 @@ fn a_node_is_removed_once_confirmed_and_its_chats_close() {
     state.update(Update::NodeRemoved("n1".into(), Ok(())));
     assert!(state.node("n1").is_none());
     assert!(state.chat(chat).is_none());
-    assert_eq!(state.notice, "removed box-n1");
+    assert_eq!(state.notice.text, "removed box-n1");
 
     // Refused, it stays, and says why.
     state.intent(Intent::RemoveNode("n2".into()));
     state.intent(Intent::Confirm(Scope::App));
     state.update(Update::NodeRemoved("n2".into(), Err("not found".into())));
-    assert_eq!(state.notice, "couldn't remove box-n2: not found");
+    assert_eq!(state.notice.text, "couldn't remove box-n2: not found");
     assert!(state.node("n2").is_some());
 }
 

@@ -49,7 +49,7 @@ impl State {
     /// Asks for the lifetime again, saying `why` the last one won't do.
     fn add_again(&mut self, why: &str) -> Outcome {
         self.add_node();
-        self.notice = why.to_string();
+        self.notice.fail(why.to_string());
         Outcome::default()
     }
 
@@ -77,7 +77,8 @@ impl State {
     /// Stops what the node's chats are at, as nobody will see it end, and
     /// has the server forget the node.
     pub(super) fn remove_node(&mut self, node: String) -> Outcome {
-        self.notice = format!("removing {}…", self.node_name(&node));
+        self.notice
+            .tell(format!("removing {}…", self.node_name(&node)));
         let mut stops = Vec::new();
         for chat in self.chats.iter_mut().filter(|c| c.node.id == node) {
             stops.extend(chat.stop_all());
@@ -92,7 +93,7 @@ impl State {
     pub(super) fn on_removed(&mut self, node: &str, removed: Result<(), String>) -> Outcome {
         let name = self.node_name(node);
         if let Err(e) = removed {
-            self.notice = format!("couldn't remove {name}: {e}");
+            self.notice.fail(format!("couldn't remove {name}: {e}"));
             return Outcome::default();
         }
         self.removed.insert(node.to_string());
@@ -101,7 +102,7 @@ impl State {
         self.saved.remove(node);
         self.options.remove(node);
         self.starting.remove(node);
-        self.notice = format!("removed {name}");
+        self.notice.tell(format!("removed {name}"));
         Outcome::default()
     }
 
@@ -114,9 +115,13 @@ impl State {
         if lacks_agent(&node) {
             self.choose_harness(node);
         } else if !node.online {
-            self.notice = format!("{} is offline", node.name);
+            self.notice.tell(format!("{} is offline", node.name));
         } else {
-            self.notice = format!("{} already hosts {}", node.name, node.harnesses.join(", "));
+            self.notice.tell(format!(
+                "{} already hosts {}",
+                node.name,
+                node.harnesses.join(", ")
+            ));
         }
         Outcome::default()
     }
@@ -133,7 +138,7 @@ impl State {
                     text: format!("commandant-server worker {link}"),
                 });
             }
-            Err(e) => self.notice = format!("couldn't make a token: {e}"),
+            Err(e) => self.notice.fail(format!("couldn't make a token: {e}")),
         }
         Outcome::default()
     }
