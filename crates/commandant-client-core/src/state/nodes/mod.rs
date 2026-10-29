@@ -64,7 +64,7 @@ impl State {
             1 => text.push_str(" Its open chat closes."),
             open => text.push_str(&format!(" Its {open} open chats close.")),
         }
-        if self.chats_on(node).any(at_work) {
+        if self.chats_on(node).any(Chat::at_work) {
             text.push_str(" What they are still at work on is stopped.");
         }
         self.ask = Some(Ask::Confirm {
@@ -137,9 +137,4 @@ impl State {
         }
         Outcome::default()
     }
-}
-
-/// Whether a chat's agent or one of its commands is at work.
-fn at_work(chat: &Chat) -> bool {
-    chat.activity.working() || chat.at_work()
 }

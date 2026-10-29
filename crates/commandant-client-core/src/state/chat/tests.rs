@@ -972,3 +972,20 @@ fn the_chips_say_what_the_next_prompt_goes_to_and_what_was_used() {
     app.spent = 0.42;
     assert_eq!(app.usage(), ["12.6k tokens", "$0.42"]);
 }
+
+#[test]
+fn what_the_node_gets_ready_is_said() {
+    let mut app = chat();
+    app.options = Some(Default::default());
+    assert_eq!(app.getting_ready(), None);
+    command(&mut app, "/project");
+    assert_eq!(
+        app.getting_ready().as_deref(),
+        Some("listing w1's projects…")
+    );
+    command(&mut app, "/project https://example.com/app.git");
+    assert_eq!(
+        app.getting_ready().as_deref(),
+        Some("getting https://example.com/app.git ready on w1…")
+    );
+}

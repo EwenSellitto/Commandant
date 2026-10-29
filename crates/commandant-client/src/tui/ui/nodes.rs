@@ -2,7 +2,8 @@
 
 use commandant_client_core::lacks_agent;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Constraint::{Length, Min};
+use ratatui::layout::{Layout, Rect};
 use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState};
@@ -12,14 +13,8 @@ use crate::tui::app::App;
 
 /// The node list: what each runs, and how many of its chats are open here.
 pub(super) fn draw_nodes(frame: &mut Frame, app: &App, area: Rect) {
-    let [header, _, list, notice, footer] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(area);
+    let [header, _, list, notice, footer] =
+        Layout::vertical([Length(1), Length(1), Min(1), Length(1), Length(1)]).areas(area);
     let core = &app.core;
     let online = core.nodes().iter().filter(|n| n.online).count();
     frame.render_widget(

@@ -1,4 +1,5 @@
-//! Where the window was on screen, so the next run opens it there.
+//! Where the window was on screen, and how wide its sidebar, so the next
+//! run opens it there.
 
 use std::path::Path;
 
@@ -11,7 +12,15 @@ pub const MIN_WIDTH: f32 = 800.0;
 /// See [`MIN_WIDTH`].
 pub const MIN_HEIGHT: f32 = 500.0;
 
-/// The window's bounds when it last closed, in logical pixels.
+/// The sidebar's width until it is dragged, in logical pixels.
+pub const SIDEBAR_WIDTH: f32 = 240.0;
+/// The narrowest the sidebar is dragged to, in logical pixels.
+pub const SIDEBAR_MIN: f32 = 160.0;
+/// See [`SIDEBAR_MIN`]: room is left for the chat beside it.
+pub const SIDEBAR_MAX: f32 = 480.0;
+
+/// The window's bounds and its sidebar's width when it last closed, in
+/// logical pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Placement {
     pub x: f32,
@@ -21,11 +30,26 @@ pub struct Placement {
     /// The bounds above are then the size it restores to.
     #[serde(default)]
     pub maximized: bool,
+    /// How wide the sidebar was dragged; [`SIDEBAR_WIDTH`] in a file saved
+    /// before it could be.
+    #[serde(default = "sidebar_width")]
+    pub sidebar: f32,
+}
+
+/// [`SIDEBAR_WIDTH`], for serde.
+fn sidebar_width() -> f32 {
+    SIDEBAR_WIDTH
+}
+
+/// `width` within what the sidebar is dragged to.
+pub fn sidebar_within(width: f32) -> f32 {
+    width.clamp(SIDEBAR_MIN, SIDEBAR_MAX)
 }
 
 impl Placement {
-    /// The saved placement, grown to the minimum size; none when nothing
-    /// usable is saved, and the window opens centred instead.
+    /// The saved placement, grown to the minimum size with its sidebar
+    /// within bounds; none when nothing usable is saved, and the window
+    /// opens centred instead.
     pub fn load(path: &Path) -> Option<Self> {
         let read = fs::read_optional(path).and_then(|text| match text {
             Some(text) => Ok(Some(toml::from_str::<Self>(&text)?)),
@@ -41,6 +65,7 @@ impl Placement {
         Some(Self {
             width: saved.width.max(MIN_WIDTH),
             height: saved.height.max(MIN_HEIGHT),
+            sidebar: sidebar_within(saved.sidebar),
             ..saved
         })
     }
@@ -61,6 +86,7 @@ mod tests {
             width: 1200.0,
             height: 800.0,
             maximized: false,
+            sidebar: 300.0,
         }
     }
 
@@ -79,6 +105,32 @@ mod tests {
         assert_eq!(Placement::load(&path), None);
         std::fs::write(&path, "width = \"wide\"").unwrap();
         assert_eq!(Placement::load(&path), None);
+    }
+
+    #[test]
+    fn a_placement_saved_before_the_sidebar_could_be_resized_keeps_the_default_width() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("window.toml");
+        std::fs::write(
+            &path,
+            "x = 40.0\ny = 30.0\nwidth = 1200.0\nheight = 800.0\n",
+        )
+        .unwrap();
+        assert_eq!(Placement::load(&path).unwrap().sidebar, SIDEBAR_WIDTH);
+    }
+
+    #[test]
+    fn a_sidebar_dragged_out_of_bounds_comes_back_within_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("window.toml");
+        for (saved, loaded) in [(20.0, SIDEBAR_MIN), (5000.0, SIDEBAR_MAX)] {
+            let placement = Placement {
+                sidebar: saved,
+                ..placement()
+            };
+            placement.save(&path).unwrap();
+            assert_eq!(Placement::load(&path).unwrap().sidebar, loaded);
+        }
     }
 
     #[test]

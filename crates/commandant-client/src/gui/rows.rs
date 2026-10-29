@@ -92,6 +92,9 @@ pub enum Change {
         written: Vec<usize>,
         settled: bool,
     },
+    /// Nothing to measure again: measuring moves the thread, which shows
+    /// its scrollbar for a while and draws it again at every frame.
+    Unchanged,
 }
 
 impl Tally {
@@ -122,6 +125,9 @@ impl Tally {
                 .extend(written.iter().copied().chain(before..count));
         } else {
             self.unread.clear();
+        }
+        if added == 0 && written.is_empty() && !settled {
+            return Change::Unchanged;
         }
         Change::Grew {
             added,
@@ -217,7 +223,7 @@ mod tests {
         assert_eq!(tally.unread(), 2);
         // Back at the bottom, nothing is new.
         let change = tally.change(&chat, &first(&chat, 3), false);
-        assert_eq!(change, grew(0, &[], false));
+        assert_eq!(change, Change::Unchanged);
         assert_eq!(tally.unread(), 0);
 
         chat.activity = Activity::Idle;
@@ -259,6 +265,29 @@ mod tests {
         chat.thread[1].run.as_mut().unwrap().ended = ended;
         let change = tally.change(&chat, &all, false);
         assert!(matches!(change, Change::Grew { written, .. } if written == [1]));
+    }
+
+    #[test]
+    fn a_thread_left_as_it_was_asks_nothing_of_the_scroller() {
+        use Role::*;
+        let mut tally = Tally::default();
+        let mut chat = chat(&[User, Agent], true);
+        tally.change(&chat, &rows(&chat.thread), false);
+        // Something else changed: the node, say.
+        assert_eq!(
+            tally.change(&chat, &rows(&chat.thread), false),
+            Change::Unchanged
+        );
+        // The last row written to is measured again.
+        chat.thread[1].text.push_str("more");
+        assert_eq!(
+            tally.change(&chat, &rows(&chat.thread), false),
+            Change::Grew {
+                added: 0,
+                written: vec![1],
+                settled: false
+            }
+        );
     }
 
     #[test]

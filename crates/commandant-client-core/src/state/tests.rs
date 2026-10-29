@@ -161,12 +161,13 @@ fn saved_sessions_are_resumed_from_the_picker() {
     let outcome = state.intent(Intent::Sessions(first));
     assert!(matches!(&outcome.effects[..], [Effect::FetchSessions(n)] if n == "n1"));
     let pick = choices(&state).expect("the sessions to pick from");
-    // New session, the open chat, the saved one.
+    // The open chat, the saved one, then a new session.
     assert_eq!(pick.choices.len(), 3);
     assert_eq!(pick.current, Some(Choose::Chat(first)));
+    assert_eq!(pick.choices[2].value, Choose::NewSession);
 
-    let saved = pick.choices[2].value.clone();
-    assert_eq!(pick.choices[2].label, "refactor the store");
+    let saved = pick.choices[1].value.clone();
+    assert_eq!(pick.choices[1].label, "refactor the store");
     let outcome = state.intent(Intent::Choose(Scope::App, saved));
     let resumed = shown(&outcome);
     let Some(Effect::FetchHistory {
@@ -934,4 +935,74 @@ fn a_confirmation_does_what_it_asked_once_said_yes() {
     });
     state.intent(Intent::Dismiss(Scope::App));
     assert!(state.ask(Scope::App).is_none());
+}
+
+#[test]
+fn projects_are_browsed_without_typing_the_command() {
+    let mut state = state();
+    let id = chat_on(&mut state, "n1");
+    let outcome = state.intent(Intent::Projects(id));
+    assert!(matches!(&outcome.effects[..],
+        [Effect::FetchProjects { chat, node }] if *chat == id && node == "n1"));
+    // What is typed is left alone, and nothing joins the prompt's history.
+    assert_eq!(outcome.prompt, None);
+    assert!(chat(&state, id).sent().is_empty());
+    assert!(chat(&state, id).listing_projects);
+
+    // A session that has started stays in its directory.
+    let started = chat_on(&mut state, "n2");
+    talked(&mut state, started);
+    state.update(Update::Chat(started, finished("ses_1")));
+    assert!(state.intent(Intent::Projects(started)).effects.is_empty());
+}
+
+#[test]
+fn a_nodes_sessions_are_offered_over_the_chat_it_opens() {
+    let mut state = state();
+    // With no chat yet, a blank one opens under the sessions, asked for once.
+    let outcome = state.intent(Intent::NodeSessions {
+        node: "n1".into(),
+        chat: None,
+    });
+    let id = shown(&outcome);
+    let asked = |e: &&Effect| matches!(e, Effect::FetchSessions(n) if n == "n1");
+    assert_eq!(outcome.effects.iter().filter(asked).count(), 1);
+    let pick = choices(&state).expect("the sessions to pick from");
+    assert_eq!(pick.current, Some(Choose::Chat(id)));
+
+    // Over the chat last shown on it, when there is one.
+    state.intent(Intent::Dismiss(Scope::App));
+    talked(&mut state, id);
+    let other = another(&mut state, id);
+    let outcome = state.intent(Intent::NodeSessions {
+        node: "n1".into(),
+        chat: Some(id),
+    });
+    assert_eq!(shown(&outcome), id);
+    assert_ne!(id, other);
+    assert!(choices(&state).is_some());
+
+    // An offline node with no chat says why nothing opens.
+    state.intent(Intent::Dismiss(Scope::App));
+    let offline = state.intent(Intent::NodeSessions {
+        node: "n3".into(),
+        chat: None,
+    });
+    assert!(offline.go.is_none() && choices(&state).is_none());
+    assert_eq!(state.notice, "box-n3 is offline");
+}
+
+#[test]
+fn the_chat_beside_is_on_the_same_node_and_wraps_around() {
+    let mut state = state();
+    let first = chat_on(&mut state, "n1");
+    talked(&mut state, first);
+    let second = another(&mut state, first);
+    talked(&mut state, second);
+    let elsewhere = chat_on(&mut state, "n2");
+    assert_eq!(state.chat_beside(first, 1), Some(second));
+    assert_eq!(state.chat_beside(first, -1), Some(second));
+    assert_eq!(state.chat_beside(second, 1), Some(first));
+    // Alone on its node, a chat has none beside it but itself.
+    assert_eq!(state.chat_beside(elsewhere, 1), Some(elsewhere));
 }

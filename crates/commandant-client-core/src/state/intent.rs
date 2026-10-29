@@ -25,6 +25,9 @@ pub enum Intent {
     NewChat(ChatId),
     /// Choose one of the chat's node's chats or saved sessions.
     Sessions(ChatId),
+    /// Choose one of a node's chats or saved sessions, over the chat
+    /// [`Intent::Open`] shows on it.
+    NodeSessions { node: String, chat: Option<ChatId> },
     /// Close a chat, unless its agent or a command is still at work.
     Close(ChatId),
     /// The front end shows the chat `to` instead of `chat`, which closes if
@@ -35,6 +38,9 @@ pub enum Intent {
     /// Offer what the chat's menu chooses from, as its `/command` does,
     /// leaving what is typed alone.
     Menu(ChatId, Menu),
+    /// Browse the chat's node's projects, as `/project` does, leaving what
+    /// is typed alone.
+    Projects(ChatId),
     /// Answer the scope's [`Ask::Choose`](super::Ask::Choose).
     Choose(Scope, Choose),
     /// Answer the scope's [`Ask::Enter`](super::Ask::Enter) with a line.

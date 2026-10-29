@@ -1,7 +1,8 @@
 //! The first-run screen: a panel to paste the server's link on.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::Constraint::{Length, Min};
+use ratatui::layout::Layout;
 use ratatui::style::{Color, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
@@ -16,15 +17,10 @@ pub fn draw_log_in(frame: &mut Frame, screen: &LogIn) {
     // The title, the hint (2 rows), the line, what is going on (2 rows) and
     // the keys, a row apart; plus a padding row each end.
     let inner = panel(frame, 13);
-    let [title, hint, line, news, keys] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(2),
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-    ])
-    .spacing(1)
-    .areas(inner);
+    let [title, hint, line, news, keys] =
+        Layout::vertical([Length(1), Length(2), Length(1), Min(1), Length(1)])
+            .spacing(1)
+            .areas(inner);
     frame.render_widget("Connect to your server".bold().fg(ACCENT), title);
     let paste = "Paste the connection link `commandant-server serve` printed.".fg(MUTED);
     frame.render_widget(Paragraph::new(paste).wrap(Wrap { trim: true }), hint);

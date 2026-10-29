@@ -4,7 +4,8 @@
 //! tasks, or one task's output.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Constraint::{Length, Min};
+use ratatui::layout::{Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
@@ -69,12 +70,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
     };
     let [header, tabs, thread, status, input, footer] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(3),
-        Constraint::Length(1),
+        Length(1),
+        Length(1),
+        Min(1),
+        Length(1),
+        Length(3),
+        Length(1),
     ])
     .areas(area);
     draw_tabs(frame, app, id, tabs);
@@ -239,14 +240,31 @@ fn draw_header(frame: &mut Frame, chat: &Chat, area: Rect) {
 }
 
 fn draw_thread(frame: &mut Frame, chat: &Chat, view: &mut ChatView, area: Rect) {
-    let rows = thread_rows(chat, area.width as usize);
-    // Follow the bottom unless the user has scrolled up.
+    draw_scrolled(
+        frame,
+        thread_rows(chat, area.width as usize),
+        &mut view.scroll,
+        area,
+    );
+}
+
+/// `rows`, following the bottom unless scrolled up `scroll` rows, which
+/// stops at the top.
+fn draw_scrolled(frame: &mut Frame, rows: Vec<Line<'static>>, scroll: &mut u16, area: Rect) {
     let height = area.height as usize;
     let bottom = rows.len().saturating_sub(height);
-    view.scroll = view.scroll.min(bottom as u16);
-    let top = bottom - view.scroll as usize;
+    *scroll = (*scroll).min(bottom as u16);
+    let top = bottom - *scroll as usize;
     let visible: Vec<Line> = rows.into_iter().skip(top).take(height).collect();
     frame.render_widget(Paragraph::new(visible), area);
+}
+
+/// `↓ 12 more lines`, right-aligned, when scrolled up.
+fn draw_more(frame: &mut Frame, scroll: u16, area: Rect) {
+    if scroll > 0 {
+        let more = Line::from(format!("↓ {scroll} more lines  ")).fg(MUTED);
+        frame.render_widget(more.right_aligned(), area);
+    }
 }
 
 /// The thread, wrapped to `width`, each entry behind its gutter.
@@ -320,10 +338,23 @@ fn thread_rows(chat: &Chat, width: usize) -> Vec<Line<'static>> {
 fn command_rows(entry: &Entry, width: usize) -> Vec<Line<'static>> {
     let command = Line::from(Span::raw(entry.text.clone()).bold());
     let mut rows = text::wrap(command, width, &"$ ".fg(MUTED), &INDENT.into());
-    let Some(run) = &entry.run else {
-        return rows;
-    };
-    rows.extend(output_rows(run, width));
+    if let Some(run) = &entry.run {
+        rows.extend(run_rows(run, width));
+    }
+    rows
+}
+
+/// What a command printed, behind its gutter, then how it ended, wrapped
+/// to `width`.
+fn run_rows(run: &Run, width: usize) -> Vec<Line<'static>> {
+    let gutter = "│ ".fg(MUTED);
+    let dropped = run
+        .dropped
+        .then(|| Line::from("… its earlier output wasn't kept".fg(MUTED).italic()));
+    let lines = dropped.into_iter().chain(output_lines(run));
+    let mut rows: Vec<_> = lines
+        .flat_map(|line| text::wrap(line, width, &gutter, &gutter))
+        .collect();
     rows.extend(text::wrap(
         end_line(run),
         width,
@@ -331,18 +362,6 @@ fn command_rows(entry: &Entry, width: usize) -> Vec<Line<'static>> {
         &INDENT.into(),
     ));
     rows
-}
-
-/// What a command printed, behind its gutter, wrapped to `width`.
-fn output_rows(run: &Run, width: usize) -> Vec<Line<'static>> {
-    let gutter = "│ ".fg(MUTED);
-    let dropped = run
-        .dropped
-        .then(|| Line::from("… its earlier output wasn't kept".fg(MUTED).italic()));
-    let lines = dropped.into_iter().chain(output_lines(run));
-    lines
-        .flat_map(|line| text::wrap(line, width, &gutter, &gutter))
-        .collect()
 }
 
 /// How a command ended, or that it still runs.
@@ -451,31 +470,11 @@ fn draw_status(frame: &mut Frame, chat: &Chat, scroll: u16, area: Rect) {
             Span::raw(format!("{} ", spinner())).yellow(),
             Span::raw(doing.to_string()).yellow(),
         ]),
-        Activity::Idle if let Some(repository) = &chat.preparing => {
-            loading(format!("getting {repository} ready on {}…", chat.node.name))
-        }
-        Activity::Idle if chat.listing_projects => {
-            loading(format!("listing {}'s projects…", chat.node.name))
-        }
-        Activity::Idle if chat.listing_providers.is_some() => {
-            loading(format!("listing {}'s model providers…", chat.node.name))
-        }
-        Activity::Idle if chat.loading_history => {
-            loading("loading the session's earlier messages…".into())
-        }
-        Activity::Idle if chat.options.is_none() && chat.fetching_options => {
-            loading(format!("asking {} what its agent offers…", chat.node.name))
-        }
-        Activity::Idle if chat.loading() => {
-            loading("connecting MCP servers; commands follow…".into())
-        }
+        Activity::Idle if let Some(what) = chat.getting_ready() => loading(what),
         Activity::Idle => mcp_summary(chat),
     };
     frame.render_widget(left, area);
-    if scroll > 0 {
-        let more = Line::from(format!("↓ {scroll} more lines  ")).fg(MUTED);
-        frame.render_widget(more.right_aligned(), area);
-    }
+    draw_more(frame, scroll, area);
 }
 
 /// Which commands run, and how to stop them; `None` when none does.

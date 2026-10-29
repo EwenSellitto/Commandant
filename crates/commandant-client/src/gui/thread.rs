@@ -6,21 +6,78 @@ use std::ops::Range;
 use commandant_client_core::chat::{Entry, Role};
 use commandant_client_core::{Chat, ChatId, Intent};
 use gpui::{
-    AnyElement, App, Context, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, Window, div, px,
+    AnyElement, App, Context, DefiniteLength, Empty, Hsla, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
+    WeakEntity, Window, div, px,
 };
 use gpui_component::clipboard::Clipboard;
+use gpui_component::message_scroller::MessageScroller;
 use gpui_component::text::markdown_ast::Node;
 use gpui_component::text::{
     MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin, TextView,
 };
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 
+use super::chat::agent_name;
 use super::command::render_command;
 use super::connected::Connected;
 use super::rows::Row;
 
+/// A chat's thread as a view of its own, so that it is drawn again only
+/// when the window or its scrolling changes, not at each key typed below it.
+pub(super) struct Thread {
+    pub(super) connected: WeakEntity<Connected>,
+    pub(super) id: ChatId,
+}
+
+impl Render for Thread {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let id = self.id;
+        self.connected
+            .update(cx, |connected, cx| connected.render_thread(id, cx))
+            .unwrap_or_else(|_| Empty.into_any_element())
+    }
+}
+
 impl Connected {
+    /// The thread, following its end unless scrolled up; or, while it is
+    /// empty, where prompts go.
+    fn render_thread(&mut self, id: ChatId, cx: &mut Context<Self>) -> AnyElement {
+        let (Some(chat), Some(pane)) = (self.core.chat(id), self.panes.get_mut(&id)) else {
+            return Empty.into_any_element();
+        };
+        if chat.thread.is_empty() {
+            return div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(cx.theme().muted_foreground)
+                .child(format!(
+                    "Ask {} on {} anything.",
+                    agent_name(chat),
+                    chat.node.name
+                ))
+                .into_any_element();
+        }
+        if !pane.scroller.read(cx).is_scrolled_up() {
+            pane.tally.read();
+        }
+        let label = match pane.tally.unread() {
+            0 => "Latest".to_string(),
+            new => format!("{new} new"),
+        };
+        let mut gap = StyleRefinement::default();
+        gap.padding.bottom = Some(DefiniteLength::from(px(12.0)));
+        let renderer = cx.processor(move |this, index: usize, window, cx| {
+            this.render_row(id, index, window, cx)
+        });
+        MessageScroller::new(("thread", id), pane.scroller.clone(), renderer)
+            .with_row_style(gap)
+            .with_jump_button_renderer(move |button| button.label(label))
+            .into_any_element()
+    }
+
     /// The thread's row `index` of the chat `id`, as its role is drawn.
     pub(super) fn render_row(
         &mut self,

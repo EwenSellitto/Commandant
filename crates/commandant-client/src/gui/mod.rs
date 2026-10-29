@@ -6,6 +6,7 @@
 
 mod asks;
 mod chat;
+mod chords;
 mod command;
 mod connected;
 mod login;
@@ -30,9 +31,9 @@ use gpui::{
 use gpui_component::{ActiveTheme as _, Root, Theme, ThemeMode};
 use tokio::runtime::Handle;
 
-use self::connected::Connected;
+use self::connected::{Connected, Resized};
 use self::login::Card;
-use self::placement::{MIN_HEIGHT, MIN_WIDTH, Placement};
+use self::placement::{MIN_HEIGHT, MIN_WIDTH, Placement, SIDEBAR_WIDTH};
 use crate::cli::{ClientArgs, GuiArgs, UiArgs};
 
 /// The window's size on a first run, before it has a saved placement.
@@ -61,12 +62,14 @@ pub fn run(args: GuiArgs, client: &ClientArgs, handle: Handle) -> Result<()> {
         client.token.clone(),
         client.token_file.clone(),
     );
+    let placement = Placement::load(&placement_file);
     let failed = Rc::new(RefCell::new(None));
     let failure = failed.clone();
     let app = gpui_platform::application().with_assets(gpui_kit_assets::Assets);
     app.run(move |cx| {
         gpui_component::init(cx);
         asks::bind_keys(cx);
+        chords::bind_keys(cx);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -74,7 +77,7 @@ pub fn run(args: GuiArgs, client: &ClientArgs, handle: Handle) -> Result<()> {
         })
         .detach();
         let options = WindowOptions {
-            window_bounds: Some(window_bounds(&placement_file, cx)),
+            window_bounds: Some(window_bounds(placement, cx)),
             window_min_size: Some(size(px(MIN_WIDTH), px(MIN_HEIGHT))),
             titlebar: Some(TitlebarOptions {
                 title: Some("Commandant".into()),
@@ -87,7 +90,9 @@ pub fn run(args: GuiArgs, client: &ClientArgs, handle: Handle) -> Result<()> {
             // Dark whatever the system says: many Linux desktops don't tell
             // GPUI, which then takes them for light.
             Theme::change(ThemeMode::Dark, Some(window), cx);
-            let shell = cx.new(|cx| Shell::new(placement_file, args.ui, handle, saved, window, cx));
+            let sidebar = placement.map_or(SIDEBAR_WIDTH, |p| p.sidebar);
+            let shell = cx
+                .new(|cx| Shell::new(placement_file, sidebar, args.ui, handle, saved, window, cx));
             cx.new(|cx| Root::new(shell, window, cx))
         });
         if let Err(e) = opened {
@@ -103,9 +108,9 @@ pub fn run(args: GuiArgs, client: &ClientArgs, handle: Handle) -> Result<()> {
 
 /// Where the window opens: where it last was, or centred when that is
 /// nowhere on today's displays.
-fn window_bounds(placement_file: &Path, cx: &App) -> WindowBounds {
+fn window_bounds(saved: Option<Placement>, cx: &App) -> WindowBounds {
     let centred = || WindowBounds::centered(size(px(FIRST_SIZE.0), px(FIRST_SIZE.1)), cx);
-    let Some(saved) = Placement::load(placement_file) else {
+    let Some(saved) = saved else {
         return centred();
     };
     let bounds = Bounds::new(
@@ -123,7 +128,7 @@ fn window_bounds(placement_file: &Path, cx: &App) -> WindowBounds {
     }
 }
 
-fn placement_of(window: &Window) -> Placement {
+fn placement_of(window: &Window, sidebar: f32) -> Placement {
     let state = window.window_bounds();
     let bounds = state.get_bounds();
     Placement {
@@ -132,6 +137,7 @@ fn placement_of(window: &Window) -> Placement {
         width: bounds.size.width.into(),
         height: bounds.size.height.into(),
         maximized: matches!(state, WindowBounds::Maximized(_)),
+        sidebar,
     }
 }
 
@@ -151,17 +157,22 @@ struct Shell {
     /// Where the views start.
     args: UiArgs,
     placement_file: PathBuf,
+    /// How wide the sidebar was last dragged, to open as wide next time.
+    sidebar: f32,
     /// Saves the placement once the window has stopped moving, so it is kept
     /// even when the process is stopped rather than the window closed. It
     /// runs on the main thread, as the save on closing does, so the two
     /// never write at once.
     saving: Option<Task<()>>,
     _placing: Subscription,
+    /// Saves the placement once the sidebar is dragged.
+    _resizing: Option<Subscription>,
 }
 
 impl Shell {
     fn new(
         placement_file: PathBuf,
+        sidebar: f32,
         args: UiArgs,
         handle: Handle,
         saved: Result<Option<Client>>,
@@ -169,8 +180,10 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Self {
         let on_close = placement_file.clone();
-        window.on_window_should_close(cx, move |window, _| {
-            save(placement_of(window), &on_close);
+        let this = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            let sidebar = this.upgrade().map_or(SIDEBAR_WIDTH, |s| s.read(cx).sidebar);
+            save(placement_of(window, sidebar), &on_close);
             true
         });
         let placing = cx.observe_window_bounds(window, |shell, window, cx| {
@@ -186,8 +199,10 @@ impl Shell {
             handle,
             args,
             placement_file,
+            sidebar,
             saving: None,
             _placing: placing,
+            _resizing: None,
         };
         if try_saved {
             shell.retry(window, cx);
@@ -196,7 +211,7 @@ impl Shell {
     }
 
     fn save_soon(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let placement = placement_of(window);
+        let placement = placement_of(window, self.sidebar);
         let file = self.placement_file.clone();
         let settled = cx.background_executor().timer(SAVE_AFTER);
         // Replacing the task drops, and so cancels, the previous one.

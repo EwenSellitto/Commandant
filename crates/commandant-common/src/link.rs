@@ -373,11 +373,10 @@ impl std::str::FromStr for Link {
             .strip_prefix(SCHEME)
             .with_context(|| format!("a link starts with {SCHEME}"))?
             .trim_end_matches('/');
-        let (token, host, pin) = if is_hand_written(payload) {
-            let (token, host) = payload.rsplit_once('@').expect("has an @");
-            (token.to_string(), host.to_string(), None)
-        } else {
-            decode(payload).context("invalid link (truncated or mistyped?)")?
+        let (token, host, pin) = match payload.rsplit_once('@') {
+            // `commandant://<token>@<host>` rather than the obfuscated form.
+            Some((token, host)) => (token.to_string(), host.to_string(), None),
+            None => decode(payload).context("invalid link (truncated or mistyped?)")?,
         };
         let link = Self::new(&token, &host).with_pin(pin);
         if token.is_empty() || link.hosts.is_empty() {
@@ -385,11 +384,6 @@ impl std::str::FromStr for Link {
         }
         Ok(link)
     }
-}
-
-/// `commandant://<token>@<host>` rather than the obfuscated form.
-fn is_hand_written(payload: &str) -> bool {
-    payload.contains('@')
 }
 
 /// Appends `default_port` unless `host` already has a port.

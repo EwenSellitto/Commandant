@@ -4,9 +4,7 @@
 
 use std::collections::HashMap;
 
-use commandant_client_core::{
-    Ask, Chat, ChatId, Core, Go, Intent, Next, OutputId, Scope, Update, cycle,
-};
+use commandant_client_core::{Ask, Chat, ChatId, Core, Go, Intent, Next, OutputId, Scope, Update};
 use commandant_proto::TaskInfo;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -367,12 +365,10 @@ impl App {
 
     /// Shows the highlighted node's last chat, or starts one.
     fn open_selected_node(&mut self) {
-        let Some(node) = self.core.nodes().get(self.selected) else {
-            return;
-        };
-        let chat = self.last.get(&node.id).copied();
-        let node = node.id.clone();
-        self.act(Intent::Open { node, chat });
+        if let Some(node) = self.selected_node() {
+            let chat = self.last.get(&node).copied();
+            self.act(Intent::Open { node, chat });
+        }
     }
 
     /// Shows the next (or previous) chat on the same node.
@@ -380,14 +376,13 @@ impl App {
         let Some(chat) = self.chat() else {
             return;
         };
-        let ids: Vec<ChatId> = self.core.chats_on(&chat.node.id).map(|c| c.id).collect();
-        if let Some(next) = cycle(&ids, chat.id, step) {
+        if let Some(next) = self.core.chat_beside(chat.id, step) {
             self.show(next);
         }
     }
 
     pub fn on_update(&mut self, update: Update) {
-        let selected = self.core.nodes().get(self.selected).map(|n| n.id.clone());
+        let selected = self.selected_node();
         let task = self.task_id().map(str::to_string);
         let next = self.core.on_update(update);
         // Keep the same node, and the same task, highlighted.
@@ -438,8 +433,7 @@ impl App {
             Some(Go::Help) => self.open_help(),
             // Still looking at it: open it.
             Some(Go::Ready(node)) => {
-                let selected = self.core.nodes().get(self.selected).map(|n| &n.id);
-                if self.screen == Screen::Nodes && selected == Some(&node) {
+                if self.screen == Screen::Nodes && self.selected_node() == Some(node) {
                     self.open_selected_node();
                 }
             }
@@ -828,7 +822,7 @@ pub(crate) mod tests {
 
         // "+ New session" is a new chat.
         app.on_key(ctrl('u'));
-        app.on_key(key(KeyCode::Up));
+        type_text(&mut app, "new session");
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.core.chats().len(), 2);
         assert!(!app.pickers.contains_key(&Scope::App));

@@ -1,21 +1,24 @@
 //! The sidebar: every node, live from the core's node poll, with its open
-//! chats beneath it.
+//! chats beneath it. Its edge is dragged to widen it.
 
 use commandant_client_core::chat::Unseen;
 use commandant_client_core::{Chat, Intent};
 use commandant_proto::NodeInfo;
 use gpui::{
-    App, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, Stateful,
-    StatefulInteractiveElement as _, Styled as _, div, px,
+    App, AppContext as _, Context, Div, DragMoveEvent, Empty, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Stateful, StatefulInteractiveElement as _, Styled as _, Window,
+    div, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::spinner::Spinner;
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 
-use super::connected::Connected;
+use super::connected::{Connected, Resized};
+use super::placement::sidebar_within;
 
-/// The sidebar's width, in logical pixels.
-const WIDTH: f32 = 240.0;
+/// How wide the sidebar's edge is to grab, in logical pixels.
+const EDGE: f32 = 4.0;
 
 /// Room for a chat's mark, so titles line up.
 const MARK: f32 = 14.0;
@@ -56,8 +59,19 @@ impl Connected {
                 tree.push(self.chat_row(chat, cx));
             }
         }
+        let edge = div()
+            .id("sidebar-edge")
+            .absolute()
+            .top_0()
+            .right_0()
+            .w(px(EDGE))
+            .h_full()
+            .cursor_col_resize()
+            .hover(|s| s.bg(theme.border))
+            .on_drag(DraggedEdge, |edge, _, _, cx| cx.new(|_| *edge));
         v_flex()
-            .w(px(WIDTH))
+            .relative()
+            .w(px(self.sidebar))
             .h_full()
             .flex_none()
             .p_2()
@@ -76,11 +90,27 @@ impl Connected {
                     .children(empty),
             )
             .children(notice)
+            .child(edge)
+    }
+
+    /// Widens or narrows the sidebar to where its edge is dragged.
+    pub(super) fn on_drag_sidebar(
+        &mut self,
+        drag: &DragMoveEvent<DraggedEdge>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let width = sidebar_within((drag.event.position.x - drag.bounds.left()).into());
+        if width != self.sidebar {
+            self.sidebar = width;
+            cx.emit(Resized(width));
+            cx.notify();
+        }
     }
 
     /// A node's status dot and name, dimmed while it is offline and turning
     /// while it starts its agent; a click opens its last chat, `[+]` a new
-    /// one.
+    /// one or its sessions.
     fn node_row(&self, at: usize, node: &NodeInfo, cx: &Context<Self>) -> Stateful<Div> {
         let theme = cx.theme();
         let id = node.id.clone();
@@ -89,25 +119,33 @@ impl Connected {
             let node = id.clone();
             this.act(Intent::Open { node, chat }, window, cx);
         });
-        let id = node.id.clone();
+        let connected = cx.entity().downgrade();
+        let new_chat = Intent::OpenSession {
+            node: node.id.clone(),
+            session: None,
+        };
+        let sessions = Intent::NodeSessions {
+            node: node.id.clone(),
+            chat: self.last.get(&node.id).copied(),
+        };
         let new = node.online.then(|| {
             Button::new(("new-chat", at))
                 .ghost()
                 .xsmall()
                 .icon(IconName::Plus)
-                .tooltip("New chat")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    cx.stop_propagation();
-                    let node = id.clone();
-                    this.act(
-                        Intent::OpenSession {
-                            node,
-                            session: None,
-                        },
-                        window,
-                        cx,
-                    );
-                }))
+                .tooltip("New chat or session")
+                .dropdown_menu(move |menu, _, _| {
+                    // An item asking the core for `intent`.
+                    let item = |label: &'static str, intent: &Intent| {
+                        let (connected, intent) = (connected.clone(), intent.clone());
+                        PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                            let intent = intent.clone();
+                            let _ = connected.update(cx, |this, cx| this.act(intent, window, cx));
+                        })
+                    };
+                    menu.item(item("New chat", &new_chat))
+                        .item(item("Sessions…", &sessions))
+                })
         });
         let row = h_flex()
             .id(("node", at))
@@ -197,5 +235,16 @@ impl Connected {
         } else {
             row
         }
+    }
+}
+
+/// The sidebar's edge, while it is dragged.
+#[derive(Clone, Copy)]
+pub(super) struct DraggedEdge;
+
+/// Nothing follows the pointer: the sidebar's edge is what moves.
+impl Render for DraggedEdge {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
     }
 }

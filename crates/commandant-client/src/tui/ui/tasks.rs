@@ -8,25 +8,20 @@ use commandant_client_core::{Output, what_ran};
 use commandant_common::time::ago;
 use commandant_proto::TaskInfo;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Constraint::{Length, Min};
+use ratatui::layout::{Layout, Rect};
 use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{List, ListItem, ListState};
 
-use super::{INDENT, MUTED, SELECTED, dotted, end_line, hints, output_rows, spinner};
+use super::{INDENT, MUTED, SELECTED, dotted, draw_more, draw_scrolled, hints, run_rows, spinner};
 use crate::tui::app::App;
 use crate::tui::text;
 
 /// The task list: node, kind, how it ended, when, and what ran.
 pub(super) fn draw_tasks(frame: &mut Frame, app: &App, area: Rect) {
-    let [header, _, list, notice, footer] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(area);
+    let [header, _, list, notice, footer] =
+        Layout::vertical([Length(1), Length(1), Min(1), Length(1), Length(1)]).areas(area);
     let core = &app.core;
     let Some(tasks) = core.tasks() else {
         return;
@@ -106,14 +101,8 @@ fn status(task: &TaskInfo) -> Span<'static> {
 /// A task's output filling the screen: what ran and where, then what it
 /// printed, following the end unless scrolled up.
 pub(super) fn draw_output(frame: &mut Frame, output: &Output, scroll: &mut u16, area: Rect) {
-    let [command, facts, _, body, footer] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-    ])
-    .areas(area);
+    let [command, facts, _, body, footer] =
+        Layout::vertical([Length(1), Length(1), Length(1), Min(1), Length(1)]).areas(area);
     let width = area.width as usize;
     let line = Line::from(Span::raw(output.line.replace(['\r', '\n'], " ")).bold());
     let line = text::wrap(line, width, &"$ ".fg(MUTED), &INDENT.into());
@@ -121,39 +110,26 @@ pub(super) fn draw_output(frame: &mut Frame, output: &Output, scroll: &mut u16, 
     let cwd = commandant_common::or(&output.cwd, "worker's directory").to_string();
     let took = output.finished.unwrap_or_else(commandant_common::time::now) - output.started;
     let took = elapsed(Duration::from_secs(took.max(0) as u64));
-    let mut said = vec![Span::raw(output.node.clone()), Span::raw(cwd), took.into()];
-    said.iter_mut().for_each(|s| *s = s.clone().fg(MUTED));
+    let said = [output.node.clone(), cwd, took].map(|s| s.fg(MUTED));
     frame.render_widget(Line::from(dotted(said)), facts);
 
-    let mut rows = Vec::new();
-    if output.pruned {
-        rows.push(Line::from(
+    let pruned = output.pruned.then(|| {
+        Line::from(
             "output pruned: the server no longer keeps it"
                 .fg(MUTED)
                 .italic(),
-        ));
-    }
-    rows.extend(output_rows(&output.run, width));
-    rows.extend(text::wrap(
-        end_line(&output.run),
-        width,
-        &"└ ".fg(MUTED),
-        &"  ".into(),
-    ));
-    let height = body.height as usize;
-    let bottom = rows.len().saturating_sub(height);
-    *scroll = (*scroll).min(bottom as u16);
-    let top = bottom - *scroll as usize;
-    let visible: Vec<Line> = rows.into_iter().skip(top).take(height).collect();
-    frame.render_widget(Paragraph::new(visible), body);
+        )
+    });
+    let rows = pruned
+        .into_iter()
+        .chain(run_rows(&output.run, width))
+        .collect();
+    draw_scrolled(frame, rows, scroll, body);
 
     let mut keys = vec![("↑↓", "scroll"), ("esc", "back")];
     if output.following() {
         keys.insert(1, ("x", "stop"));
     }
     frame.render_widget(hints(&keys), footer);
-    if *scroll > 0 {
-        let more = Line::from(format!("↓ {scroll} more lines  ")).fg(MUTED);
-        frame.render_widget(more.right_aligned(), footer);
-    }
+    draw_more(frame, *scroll, footer);
 }
