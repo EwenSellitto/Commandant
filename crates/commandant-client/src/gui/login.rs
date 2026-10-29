@@ -178,39 +178,22 @@ impl Shell {
         let logging_out = cx.subscribe_in(
             &connected,
             window,
-            move |shell, connected, LoggedOut, window, cx| {
-                shell.log_out(&client, connected, window, cx);
-            },
+            move |shell, _, LoggedOut, window, cx| shell.log_out(&client, window, cx),
         );
         self._watching = vec![resizing, logging_out];
         self.screen = Screen::Connected(connected);
     }
 
-    /// Cancels what still runs, forgets the server and asks for a link.
-    fn log_out(
-        &mut self,
-        client: &Client,
-        connected: &Entity<Connected>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // Heard once: logging out again while this waits does nothing.
+    /// Forgets the server the core, now shut down, was on, and asks for a
+    /// link.
+    fn log_out(&mut self, client: &Client, window: &mut Window, cx: &mut Context<Self>) {
+        // A server flags or the environment named keeps the saved one.
+        let error = config::forget_if_saved(client)
+            .err()
+            .map(|e| format!("couldn't forget the server: {e:#}").into());
         self._watching.clear();
-        let stopping = connected.read(cx).core.shutdown();
-        let client = client.clone();
-        cx.spawn_in(window, async move |shell, cx| {
-            stopping.await;
-            // A server flags or the environment named keeps the saved one.
-            let forgot = config::forget_if_saved(&client);
-            let _ = shell.update_in(cx, |shell, window, cx| {
-                let error = forgot
-                    .err()
-                    .map(|e| format!("couldn't forget the server: {e:#}").into());
-                shell.screen = Screen::LogIn(Card::new(None, error, window, cx));
-                cx.notify();
-            });
-        })
-        .detach();
+        self.screen = Screen::LogIn(Card::new(None, error, window, cx));
+        cx.notify();
     }
 
     pub(super) fn render_card(&self, card: &Card, cx: &mut Context<Self>) -> impl IntoElement {

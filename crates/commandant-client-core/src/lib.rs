@@ -92,7 +92,7 @@ impl Core {
     /// Cancels the tasks still running, so no agent works for nobody, and
     /// stops calling the server; the cancels start now, and are done once
     /// it is awaited.
-    pub fn shutdown(&self) -> impl Future<Output = ()> + 'static {
+    pub fn shutdown(&self) -> impl Future<Output = ()> + use<> {
         let stopping = self
             .server
             .as_ref()

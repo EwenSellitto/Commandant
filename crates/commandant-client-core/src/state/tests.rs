@@ -413,8 +413,11 @@ fn logging_out_leaves_the_tasks_to_cancel() {
     send(&mut state, id, "one");
     state.update(Update::Chat(id, started("t1")));
     let outcome = submit(&mut state, id, "/logout");
-    assert_eq!(outcome.go, Some(Go::LogOut));
+    assert_eq!(outcome.go, None, "not before it is confirmed");
     assert!(outcome.effects.is_empty(), "no providers are listed");
+    assert!(matches!(state.ask(Scope::App), Some(Ask::Confirm { .. })));
+    let outcome = state.intent(Intent::Confirm(Scope::App));
+    assert_eq!(outcome.go, Some(Go::LogOut));
     assert_eq!(state.running_tasks(), ["t1"]);
 }
 
@@ -492,6 +495,16 @@ fn a_notice_says_if_it_is_an_error_and_counts_each_time_said() {
     });
     assert_eq!(state.notice.text, "couldn't cancel task t1: gone");
     assert!(state.notice.error);
+}
+
+#[test]
+fn a_notice_cleared_before_it_is_told_is_still_known() {
+    let mut state = state();
+    open(&mut state, "n3");
+    // Opening a node that has a chat to show clears what was said.
+    chat_on(&mut state, "n1");
+    assert!(state.notice.text.is_empty());
+    assert_eq!(state.notice.last, "box-n3 is offline");
 }
 
 #[test]

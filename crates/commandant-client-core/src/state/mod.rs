@@ -239,7 +239,7 @@ impl State {
                 let then = match command {
                     None => Outcome::default(),
                     Some(AppCommand::Quit) => Outcome::go(Go::Quit),
-                    Some(AppCommand::LogOut) => Outcome::go(Go::LogOut),
+                    Some(AppCommand::LogOut) => self.intent(Intent::LogOut),
                     Some(AppCommand::Link) => self.intent(Intent::ShowLink),
                     Some(AppCommand::New) => self.another_chat(id),
                     Some(AppCommand::Sessions) => self.intent(Intent::Sessions(id)),
@@ -764,7 +764,10 @@ impl State {
 pub struct Notice {
     /// Empty once cleared.
     pub text: String,
-    /// It says something failed, rather than how things are.
+    /// The last said, kept once cleared: a front end telling each one may
+    /// come to it only after.
+    pub last: String,
+    /// The last said is about something failing, rather than how things are.
     pub error: bool,
     /// How many have been said, so one said again is news too.
     pub said: u64,
@@ -780,6 +783,7 @@ impl Notice {
     }
 
     fn say(&mut self, text: String, error: bool) {
+        self.last.clone_from(&text);
         self.text = text;
         self.error = error;
         self.said += 1;
@@ -787,7 +791,6 @@ impl Notice {
 
     fn clear(&mut self) {
         self.text.clear();
-        self.error = false;
     }
 }
 

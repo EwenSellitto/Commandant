@@ -5,12 +5,13 @@ use std::collections::HashMap;
 
 use commandant_client_core::{ChatId, Core, Edit, Go, Intent, Next, OutputId, Scope, Updates};
 use gpui::{
-    Anchor, Context, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, ScrollHandle, Styled as _, Task, Window, div,
-    prelude::FluentBuilder as _,
+    Anchor, AsyncWindowContext, Context, EventEmitter, FocusHandle, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, ScrollHandle, Styled as _, Task, WeakEntity, Window,
+    div, prelude::FluentBuilder as _,
 };
 use gpui_component::notification::{Notification, NotificationType};
 use gpui_component::{ActiveTheme as _, WindowExt as _, h_flex, v_flex};
+use tokio::sync::oneshot;
 
 use super::asks::Question;
 use super::chat::Pane;
@@ -46,6 +47,8 @@ pub(super) struct Connected {
     pub(super) sidebar_open: bool,
     /// How many of the core's notices have been shown as toasts.
     told: u64,
+    /// Has the update pump log out; taken once it is asked to.
+    log_out: Option<oneshot::Sender<()>>,
     /// Takes the chords while no chat is shown to take them.
     focus: FocusHandle,
     /// Hands the core what its calls report, for as long as it is shown.
@@ -62,8 +65,20 @@ impl Connected {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let (log_out, mut logging_out) = oneshot::channel();
         let pump = cx.spawn_in(window, async move |this, cx| {
-            while let Some(update) = updates.next().await {
+            loop {
+                let update = tokio::select! {
+                    biased;
+                    update = updates.next() => update,
+                    asked = &mut logging_out => {
+                        if asked.is_ok() {
+                            Self::log_out(&this, &mut updates, cx).await;
+                        }
+                        None
+                    }
+                };
+                let Some(update) = update else { break };
                 let taken = this.update_in(cx, |this, window, cx| {
                     // A reply streams in many small pieces: take what has
                     // come before drawing again.
@@ -98,6 +113,7 @@ impl Connected {
             sidebar,
             sidebar_open: true,
             told: 0,
+            log_out: Some(log_out),
             focus: cx.focus_handle(),
             _updates: pump,
         };
@@ -174,8 +190,11 @@ impl Connected {
                 let next = self.core.act(Intent::Open { node, chat: None });
                 self.apply(next, window, cx);
             }
-            // The shell forgets the server, and asks for another.
-            Some(Go::LogOut) => cx.emit(LoggedOut),
+            Some(Go::LogOut) => {
+                if let Some(log_out) = self.log_out.take() {
+                    let _ = log_out.send(());
+                }
+            }
             // Quitting and the help come with the views that go there.
             Some(Go::Quit | Go::Help | Go::Ready(_)) | None => {}
         }
@@ -332,6 +351,20 @@ impl Connected {
 }
 
 impl Connected {
+    /// Takes in what has come, so a task that has just started is known,
+    /// cancels what still runs, then has the shell forget the server.
+    async fn log_out(this: &WeakEntity<Self>, updates: &mut Updates, cx: &mut AsyncWindowContext) {
+        let stopping = this.update(cx, |this, _| {
+            while let Some(update) = updates.ready() {
+                this.core.on_update(update);
+            }
+            this.core.shutdown()
+        });
+        let Ok(stopping) = stopping else { return };
+        stopping.await;
+        let _ = this.update(cx, |_, cx| cx.emit(LoggedOut));
+    }
+
     /// Shows the core's notice, if it is new, at the bottom right: an error
     /// stays until dismissed, the rest fades.
     fn toast(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -340,15 +373,12 @@ impl Connected {
             return;
         }
         self.told = notice.said;
-        if notice.text.is_empty() {
-            return;
-        }
         let kind = match notice.error {
             true => NotificationType::Error,
             false => NotificationType::Info,
         };
         let toast = Notification::new()
-            .message(notice.text.clone())
+            .message(notice.last.clone())
             .with_type(kind)
             .placement(Anchor::BottomRight)
             .autohide(!notice.error);
@@ -543,6 +573,34 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(told.get());
+    }
+
+    #[gpui::test]
+    fn logging_out_first_learns_of_tasks_that_just_started(cx: &mut TestAppContext) {
+        use commandant_client_core::state::fixtures::started;
+        let (connected, cx, send) = connected(vec![node("n1", true)], cx);
+        let (id, _) = watch(&connected, cx);
+        connected.update_in(cx, |c, window, cx| {
+            c.act(Intent::Submit(id, "count".into()), window, cx)
+        });
+        cx.run_until_parked();
+        let known = Rc::new(Cell::new(Vec::new()));
+        let knowing = known.clone();
+        cx.update(|_, cx| {
+            cx.subscribe(&connected, move |connected, _: &LoggedOut, cx| {
+                let chat = connected.read(cx).core.chat(id).unwrap();
+                knowing.set(chat.tasks().collect());
+            })
+            .detach()
+        });
+        // Its start is waiting to be taken in as the person logs out.
+        send.send(Update::Chat(id, started("t1"))).unwrap();
+        connected.update_in(cx, |c, window, cx| {
+            c.act(Intent::LogOut, window, cx);
+            c.act(Intent::Confirm(Scope::App), window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(known.take(), ["t1"], "the task would go on uncancelled");
     }
 
     #[gpui::test]
