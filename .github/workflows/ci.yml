@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # What GPUI links against on Linux.
+      - run: >
+          sudo apt-get update && sudo apt-get install -y
+          libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
+          libfontconfig-dev libfreetype-dev libx11-xcb-dev libxcb1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Formatting and lints run in the pre-commit hook (.githooks/pre-commit).
+      - run: cargo test --workspace --features commandant-client/gui-tests

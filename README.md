@@ -234,7 +234,15 @@ workers join through the link in the server's volume.
 ## Development
 
 ```sh
-cargo test                                  # unit and end-to-end tests
-cargo clippy --all-targets -- -D warnings
+cargo test --workspace --features commandant-client/gui-tests   # unit, GUI and end-to-end tests
+cargo clippy --workspace --all-targets --features commandant-client/gui-tests -- -D warnings
+cargo fmt --all --check
 RUST_LOG=debug commandant-server serve      # verbose logs, for either binary
+```
+
+CI runs the tests on every push to `main` and every pull request. Formatting
+and clippy run before each commit once the repository's hooks are on:
+
+```sh
+git config core.hooksPath .githooks
 ```
