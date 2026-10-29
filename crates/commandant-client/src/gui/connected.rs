@@ -3,10 +3,10 @@
 
 use std::collections::HashMap;
 
-use commandant_client_core::{ChatId, Core, Edit, Go, Intent, Next, Scope, Updates};
+use commandant_client_core::{ChatId, Core, Edit, Go, Intent, Next, OutputId, Scope, Updates};
 use gpui::{
     Context, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, Styled as _, Task, Window, div, prelude::FluentBuilder as _,
+    Render, ScrollHandle, Styled as _, Task, Window, div, prelude::FluentBuilder as _,
 };
 use gpui_component::h_flex;
 
@@ -21,6 +21,11 @@ pub(super) struct Connected {
     /// The chat in the main pane: none until one is opened, or once the one
     /// shown closes with no other on its node.
     pub(super) shown: Option<ChatId>,
+    /// The output in the main pane, over the tasks; none is open while a
+    /// chat is shown, nor are the tasks.
+    pub(super) output: Option<OutputId>,
+    /// Where the output shown is scrolled to.
+    pub(super) output_scroll: ScrollHandle,
     /// The chat last shown on each node, to go back to.
     pub(super) last: HashMap<String, ChatId>,
     /// What the window keeps of each open chat.
@@ -73,6 +78,8 @@ impl Connected {
         let mut connected = Self {
             core,
             shown: None,
+            output: None,
+            output_scroll: ScrollHandle::new(),
             last: HashMap::new(),
             panes: HashMap::new(),
             questions: HashMap::new(),
@@ -120,18 +127,36 @@ impl Connected {
             Some(Go::Chat(id)) => self.show(id, window, cx),
             // The prompt that had the keys is gone with its chat.
             Some(Go::Nodes) => {
+                self.close_views();
+                self.shown = None;
+                self.refocus(window, cx);
+            }
+            // The list, back from any output.
+            Some(Go::Tasks) => {
+                if let Some(id) = self.output.take() {
+                    self.core.act(Intent::CloseOutput(id));
+                }
+                self.shown = None;
+                self.refocus(window, cx);
+            }
+            Some(Go::Output(id)) => {
+                if let Some(from) = self.output.replace(id).filter(|from| *from != id) {
+                    self.core.act(Intent::CloseOutput(from));
+                }
+                self.output_scroll = ScrollHandle::new();
                 self.shown = None;
                 self.refocus(window, cx);
             }
             // Its agent started while nothing else was opened: open it.
-            Some(Go::Ready(node)) if self.shown.is_none() => {
+            Some(Go::Ready(node))
+                if self.shown.is_none() && self.output.is_none() && self.core.tasks().is_none() =>
+            {
                 let next = self.core.act(Intent::Open { node, chat: None });
                 self.apply(next, window, cx);
             }
-            // Quitting, logging out, the help, and the nodes, tasks and
-            // output views come with the views that go there.
-            Some(Go::Quit | Go::LogOut | Go::Help | Go::Ready(_) | Go::Tasks | Go::Output(_))
-            | None => {}
+            // Quitting, logging out, the help and the nodes view come with
+            // the views that go there.
+            Some(Go::Quit | Go::LogOut | Go::Help | Go::Ready(_)) | None => {}
         }
     }
 
@@ -141,6 +166,7 @@ impl Connected {
             return;
         };
         self.last.insert(chat.node.id.clone(), id);
+        self.close_views();
         if let Some(from) = self.shown.filter(|from| *from != id) {
             self.core.act(Intent::Leave { chat: from, to: id });
         }
@@ -150,6 +176,24 @@ impl Connected {
         // A pane new to the window learns its thread.
         self.sync(window, cx);
         self.refocus(window, cx);
+    }
+
+    /// Goes back from the output shown to the tasks.
+    pub(super) fn close_output(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.output.take() {
+            self.act(Intent::CloseOutput(id), window, cx);
+        }
+    }
+
+    /// Leaves the output and the tasks: the output is no longer watched,
+    /// nor the tasks refreshed.
+    fn close_views(&mut self) {
+        if let Some(id) = self.output.take() {
+            self.core.act(Intent::CloseOutput(id));
+        }
+        if self.core.tasks().is_some() {
+            self.core.act(Intent::CloseTasks);
+        }
     }
 
     /// Puts the keys where they go: the question over the window, else the
@@ -241,9 +285,11 @@ impl Connected {
 
 impl Render for Connected {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let main = match self.shown {
-            Some(id) => self.render_chat(id, window, cx).into_any_element(),
-            None => div().into_any_element(),
+        let main = match (self.output, self.shown) {
+            (Some(id), _) => self.render_output(id, cx).into_any_element(),
+            (None, Some(id)) => self.render_chat(id, window, cx).into_any_element(),
+            (None, None) if self.core.tasks().is_some() => self.render_tasks(cx).into_any_element(),
+            (None, None) => div().into_any_element(),
         };
         let sidebar = self
             .sidebar_open

@@ -13,6 +13,7 @@ mod login;
 mod placement;
 mod rows;
 mod sidebar;
+mod tasks;
 mod thread;
 
 use std::cell::RefCell;

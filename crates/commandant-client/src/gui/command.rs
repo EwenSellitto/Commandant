@@ -16,6 +16,17 @@ pub(super) fn render_command(
     stop: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     cx: &App,
 ) -> Div {
+    render_printed(run, Some(command_header(line, run, stop, cx)), cx)
+}
+
+/// The command and, while it runs, its Stop button: atop its block, or
+/// kept in view over an output view's.
+pub(super) fn command_header(
+    line: &str,
+    run: &Run,
+    stop: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> Div {
     let theme = cx.theme();
     let stopping = run.stopping();
     let stop = run.running().then(|| {
@@ -27,9 +38,10 @@ pub(super) fn render_command(
             .disabled(stopping)
             .on_click(stop)
     });
-    let header = h_flex()
+    h_flex()
         .gap_2()
         .justify_between()
+        .font_family(theme.mono_font_family.clone())
         .child(
             div()
                 .flex_1()
@@ -37,7 +49,13 @@ pub(super) fn render_command(
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(format!("$ {line}")),
         )
-        .children(stop);
+        .children(stop)
+}
+
+/// What `run` printed, with its error output tinted, and how it ended,
+/// laid under `header`.
+pub(super) fn render_printed(run: &Run, header: Option<Div>, cx: &App) -> Div {
+    let theme = cx.theme();
     let output = run.output.iter().map(|printed| {
         let color = match printed.stderr {
             true => theme.danger,
@@ -61,14 +79,14 @@ pub(super) fn render_command(
         .bg(theme.muted)
         .font_family(theme.mono_font_family.clone())
         .text_sm()
-        .child(header)
+        .children(header)
         .children(dropped)
         .children(output)
         .child(div().text_xs().text_color(color).child(end))
 }
 
 /// How a command ended, or that it still runs, and its color.
-fn end_label(run: &Run, cx: &App) -> (String, Hsla) {
+pub(super) fn end_label(run: &Run, cx: &App) -> (String, Hsla) {
     let theme = cx.theme();
     match &run.ended {
         None if run.stopping() => ("stopping…".into(), theme.warning),

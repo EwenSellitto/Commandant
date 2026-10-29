@@ -93,9 +93,24 @@ impl Connected {
         cx.notify();
     }
 
-    /// Nothing yet: the tasks come with their view, and listing them now
-    /// would keep them refreshing with nobody to see them.
-    pub(super) fn on_show_tasks(&mut self, _: &ShowTasks, _: &mut Window, _: &mut Context<Self>) {}
+    pub(super) fn on_show_tasks(
+        &mut self,
+        _: &ShowTasks,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_tasks(window, cx);
+    }
+
+    /// Shows the tasks: back from an output, kept as filtered if already
+    /// listed, else listed anew.
+    pub(super) fn show_tasks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.output.is_some() {
+            self.close_output(window, cx);
+        } else if self.core.tasks().is_none() {
+            self.act(Intent::ListTasks { node: None }, window, cx);
+        }
+    }
 
     pub(super) fn on_previous_chat(
         &mut self,
