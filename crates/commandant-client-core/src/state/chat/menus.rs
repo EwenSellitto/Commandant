@@ -5,15 +5,19 @@ use std::sync::Arc;
 
 use commandant_proto::{AgentOptions, McpServer, auth_action};
 
+use commandant_common::or;
+
 use super::Chat;
 use crate::state::{Ask, Choice, Choices, Choose, Edit, Effect, Outcome, Wanted};
-use commandant_common::or;
 
 /// What a chat offers to choose from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Menu {
+    /// The agents, to send prompts to.
     Agent,
+    /// The models, to send prompts with.
     Model,
+    /// The model's thinking efforts.
     Effort,
     /// One of the agent's commands or skills, to fill in.
     Command,

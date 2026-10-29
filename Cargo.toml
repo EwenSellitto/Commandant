@@ -62,7 +62,7 @@ uuid = { version = "1.26.1", features = ["v4"] }
 
 # The house Rust rules (rust-dev skill) that a lint can check.
 [workspace.lints.rust]
-# missing_docs = "warn"  # on once every public item has its doc
+missing_docs = "warn"
 
 [workspace.lints.clippy]
 allow_attributes = "warn"
@@ -74,7 +74,7 @@ cast_sign_loss = "warn"
 implicit_clone = "warn"
 manual_let_else = "warn"
 match_wildcard_for_single_variants = "warn"
-# missing_errors_doc = "warn"  # on once every fallible fn says when it fails
+missing_errors_doc = "warn"
 missing_panics_doc = "warn"
 needless_for_each = "warn"
 needless_pass_by_value = "warn"

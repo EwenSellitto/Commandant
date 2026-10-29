@@ -63,6 +63,10 @@ pub struct Next {
 impl Core {
     /// Connects to the server and learns its nodes; new chats start with
     /// `defaults`. Calls are made on `handle`.
+    ///
+    /// # Errors
+    ///
+    /// If the server can't be reached or refuses the token.
     pub async fn start(
         client: &Client,
         defaults: Settings,
@@ -134,6 +138,7 @@ impl Core {
         &self.state.chats
     }
 
+    /// The open chat `id`; none once it is closed.
     pub fn chat(&self, id: ChatId) -> Option<&Chat> {
         self.state.chat(id)
     }

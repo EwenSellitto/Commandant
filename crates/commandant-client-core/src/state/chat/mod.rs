@@ -558,6 +558,7 @@ impl Chat {
             .map(|task_id| Effect::Cancel(self.id, task_id))
     }
 
+    /// Adds a remark of commandant's own to the thread.
     pub fn info(&mut self, text: &str) {
         self.push(Role::Info, text);
     }

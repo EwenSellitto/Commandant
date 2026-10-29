@@ -14,6 +14,7 @@ pub fn link() -> Link {
     Link::new(&admin, "192.168.1.15:7400").with_pin(Some(Pin::of(b"a certificate")))
 }
 
+/// A node hosting opencode, with id `id`, named `box-{id}`.
 pub fn node(id: &str, online: bool) -> NodeInfo {
     NodeInfo {
         id: id.into(),
@@ -33,6 +34,7 @@ pub fn bare(id: &str) -> NodeInfo {
     }
 }
 
+/// A turn's task has started, as `task_id`.
 pub fn started(task_id: &str) -> Message {
     Message::Task(TaskEvent::Started(TaskStarted {
         task_id: task_id.into(),
@@ -49,6 +51,7 @@ pub fn for_run(run: RunId, message: Message) -> Message {
     }
 }
 
+/// A turn's task printed `data` on `stream`.
 pub fn output(stream: OutputStream, data: &[u8]) -> Message {
     Message::Task(TaskEvent::Output(TaskOutput {
         stream: stream as i32,
@@ -67,6 +70,7 @@ pub fn acme(methods: Vec<AuthMethod>) -> ModelProvider {
     }
 }
 
+/// One of a provider's sign-in methods.
 pub fn method(label: &str, oauth: bool, index: u32) -> AuthMethod {
     AuthMethod {
         label: label.into(),

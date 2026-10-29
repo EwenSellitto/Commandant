@@ -33,6 +33,7 @@ const TASKS_OF: &str = "Show the tasks of";
 pub struct Tasks {
     /// Only this node's; every node's when `None`.
     pub node: Option<String>,
+    /// What the server listed.
     pub tasks: Vec<TaskInfo>,
     /// Not listed yet.
     pub loading: bool,
@@ -44,6 +45,7 @@ pub struct Tasks {
 /// One task's output, read-only, followed while it runs.
 #[derive(Debug)]
 pub struct Output {
+    /// Unique among the output views, never reused.
     pub id: OutputId,
     /// What ran.
     pub line: String,
@@ -57,6 +59,7 @@ pub struct Output {
     pub pruned: bool,
     /// When it started and, once it has, ended, in Unix seconds.
     pub started: i64,
+    /// When it ended; none while it runs.
     pub finished: Option<i64>,
     /// Started from here rather than watched, so cancelled on quitting.
     pub(super) ran_here: bool,

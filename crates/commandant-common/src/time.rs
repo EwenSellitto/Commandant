@@ -21,6 +21,10 @@ pub fn ago(ts: i64) -> String {
 }
 
 /// A lifetime as typed: `90` or `90s`, `30m`, `1h`, `7d`.
+///
+/// # Errors
+///
+/// What is wrong with `s`, to show: no number, or an unknown unit.
 pub fn parse_duration(s: &str) -> Result<Duration, String> {
     let s = s.trim();
     let unit_start = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());

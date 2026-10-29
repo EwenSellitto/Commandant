@@ -4,9 +4,12 @@
 use std::fmt;
 use std::str::FromStr;
 
+/// A coding agent a worker can host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HarnessKind {
+    /// opencode, driven over its HTTP API.
     Opencode,
+    /// Claude Code, driven through its CLI.
     ClaudeCode,
 }
 
@@ -14,6 +17,7 @@ impl HarnessKind {
     /// Every harness a worker can host.
     pub const ALL: [Self; 2] = [Self::Opencode, Self::ClaudeCode];
 
+    /// What workers and clients call it, as [`FromStr`] reads it back.
     pub fn name(self) -> &'static str {
         match self {
             Self::Opencode => "opencode",

@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 
 use crate::DEFAULT_PORT;
 
+/// What every connection link starts with.
 pub const SCHEME: &str = "commandant://";
 
 /// First byte of an encoded link, so the format can evolve. Links in the
@@ -42,8 +43,11 @@ const CUSTOM_PORT: u8 = 0x80;
 const TOKEN_TEXT: u8 = 0;
 const TOKEN_PREFIXES: [&str; 3] = ["cmda", "cmdj", "cmdn"];
 
+/// A connection link: where a server is, the token it takes and, if pinned,
+/// the certificate it must show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
+    /// The admin or join token it hands over.
     pub token: String,
     /// `host:port`s the orchestrator may be reached on, as advertised: a
     /// client tries each (a public name, say, then a LAN address).
@@ -95,6 +99,10 @@ pub struct Target {
 
 /// Takes apart an orchestrator's URL, `https://host:port#sha256=<hex>`: it
 /// is spoken to over TLS, and must show that certificate.
+///
+/// # Errors
+///
+/// If `url` isn't `https` or carries no pin.
 pub fn target(url: &str) -> Result<Target> {
     match parse_url(url)? {
         ("https", host, Some(pin)) => Ok(Target { host, pin }),
@@ -431,6 +439,7 @@ fn is_local(ip: IpAddr) -> bool {
     ip.is_loopback() || UdpSocket::bind(SocketAddr::new(ip, 0)).is_ok()
 }
 
+/// The loopback address in `ip`'s family, IPv4 or IPv6.
 pub fn loopback_of_same_family(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),

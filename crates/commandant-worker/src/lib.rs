@@ -38,6 +38,7 @@ const MIN_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const NO_HARNESS: &str = "this node runs no agent harness";
 
+/// How to run a worker, as its flags and environment say.
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
     /// Orchestrator URL, e.g. `https://10.0.0.1:7400#sha256=…`; when unset, the one the
@@ -47,6 +48,7 @@ pub struct WorkerConfig {
     pub join_token: Option<String>,
     /// Defaults to the hostname.
     pub name: Option<String>,
+    /// Where the node's credentials are kept.
     pub state_dir: PathBuf,
     /// When another worker runs from `state_dir`, use the first free
     /// `<state_dir>-2`, `-3`… (each its own node) instead of failing.
@@ -93,6 +95,12 @@ impl From<tonic::Status> for Stop {
 
 /// Sets up the harness, then stays connected to the orchestrator,
 /// reconnecting with backoff, until a fatal error occurs.
+///
+/// # Errors
+///
+/// That fatal error: it runs as root, its state directory is taken, no
+/// server is known, the harness can't be set up, or the node has neither
+/// credentials nor a join token.
 pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
     #[cfg(unix)]
     // SAFETY: plain syscall, no arguments.

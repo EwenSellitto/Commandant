@@ -1,3 +1,5 @@
+//! `commandant`: the CLI, TUI and GUI that talk to an orchestrator.
+
 mod admin;
 mod cli;
 #[cfg(feature = "gui")]

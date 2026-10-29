@@ -63,11 +63,22 @@ impl Ask {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wanted {
     /// The API key to sign in to a provider with.
-    ApiKey { provider: String },
+    ApiKey {
+        /// The provider's id, as the agent names it.
+        provider: String,
+    },
     /// The code a provider's page showed, to finish its OAuth method `index`.
-    Code { provider: String, index: u32 },
+    Code {
+        /// The provider's id, as the agent names it.
+        provider: String,
+        /// Which of its methods, as the agent numbers them.
+        index: u32,
+    },
     /// A shell command to run on a node, in its worker's directory.
-    Command { node: String },
+    Command {
+        /// The node's id.
+        node: String,
+    },
     /// How long a new node's join token lasts.
     Lifetime,
 }
@@ -89,9 +100,12 @@ pub enum Choose {
     Provider(String),
     /// Sign in to a provider: with an API key, or its OAuth method `oauth`.
     SignIn {
+        /// The provider's id, as the agent names it.
         provider: String,
+        /// Which of its OAuth methods; none for an API key.
         oauth: Option<u32>,
     },
+    /// Sign out of a provider, by its id.
     SignOut(String),
     /// Clone a new copy of a project (a repository, or its name) to work in.
     NewCopy(String),
@@ -113,20 +127,26 @@ pub enum Choose {
     LogOut,
     /// An agent harness to start on a node that hosts none.
     Harness {
+        /// The node's id.
         node: String,
+        /// The harness, as the node names it.
         harness: String,
     },
 }
 
+/// One line of an [`Ask::Choose`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Choice {
+    /// What choosing it means.
     pub value: Choose,
+    /// What it is called, to filter by.
     pub label: String,
     /// Said after the label.
     pub detail: String,
 }
 
 impl Choice {
+    /// `value`, shown as `label` then `detail`.
     pub fn new(value: Choose, label: impl Into<String>, detail: impl Into<String>) -> Self {
         Self {
             value,
@@ -143,7 +163,9 @@ pub struct Choices {
     pub id: u64,
     /// Changes whenever its choices do, while it stays open.
     pub revision: u64,
+    /// The question, which also tells which one it is.
     pub title: &'static str,
+    /// What it offers, in order.
     pub choices: Vec<Choice>,
     /// The choice in effect, to start on.
     pub current: Option<Choose>,
@@ -154,6 +176,7 @@ pub struct Choices {
 }
 
 impl Choices {
+    /// A new question, unfiltered, starting on `current`.
     pub fn new(title: &'static str, choices: Vec<Choice>, current: Option<Choose>) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -168,6 +191,7 @@ impl Choices {
         }
     }
 
+    /// The same, narrowed down by `filter` to start with.
     pub fn with_filter(mut self, filter: &str) -> Self {
         self.filter = filter.to_string();
         self

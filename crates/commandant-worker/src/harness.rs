@@ -37,6 +37,7 @@ pub fn hostable(kind: HarnessKind) -> String {
 /// number may run at once.
 #[tonic::async_trait]
 pub trait Harness: Send + Sync {
+    /// Which agent it is.
     fn kind(&self) -> HarnessKind;
 
     /// Runs one prompt, streaming the reply on `out` as `TaskOutput` (text on

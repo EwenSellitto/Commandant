@@ -1,9 +1,13 @@
 //! Finding things by exact key or unambiguous prefix, as users type ids.
 
+/// What a lookup by key or prefix found.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Match<T> {
+    /// Exactly one item, or the one whose key is the whole needle.
     One(T),
+    /// The prefix fits several items.
     Ambiguous,
+    /// Nothing fits.
     None,
 }
 

@@ -7,7 +7,9 @@ pub mod link;
 pub mod lookup;
 pub mod time;
 
+/// The port the orchestrator listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 7400;
+/// This build's version, which workers and clients report.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// `bytes` random bytes from the OS, in hex.
