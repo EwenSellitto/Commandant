@@ -118,6 +118,9 @@ GPUI (`gpui-pre`, `gpui-pre-platform`), `gpui-component` and its icons
 (`gpui-kit-assets`) are pinned with `=` and bumped together: their weekly
 snapshots break freely.
 
+Tests that open a window run on GPUI's test platform, with no display, under
+the `gui-tests` feature: `cargo test --features commandant-client/gui-tests`.
+
 ## `commandant-client-core`
 
 What any front end knows and does, apart from how it is shown. It depends on

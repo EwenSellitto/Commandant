@@ -38,8 +38,9 @@ const COMPLETIONS_HEIGHT: f32 = 240.0;
 pub(super) struct Pane {
     /// The prompt being written.
     pub(super) composer: Entity<TextareaState>,
-    /// The thread, drawn as a view of its own.
-    thread: Entity<Thread>,
+    /// The thread, drawn as a view of its own: told when its rows change,
+    /// as it is otherwise kept as last drawn.
+    pub(super) thread: Entity<Thread>,
     /// Where the thread is scrolled, and how tall its rows are.
     pub(super) scroller: Entity<MessageScrollerState>,
     /// The thread's rows, as last synced.
