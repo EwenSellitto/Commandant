@@ -814,6 +814,7 @@ fn a_block_keeps_the_end_of_a_long_output() {
     let kept: usize = yes.output.iter().map(|p| p.text.len()).sum();
     assert!(kept <= 64 * 1024 && kept > 60 * 1024, "{kept}");
     assert!(yes.dropped);
+    assert_eq!(yes.printed, 100 * 1000 + 5, "kept or not");
     // From the start of a line, to the very end.
     assert!(yes.output[0].text.starts_with(&line));
     assert_eq!(yes.output.last().unwrap().text, "oops\n");

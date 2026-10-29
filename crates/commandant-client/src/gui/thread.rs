@@ -3,12 +3,12 @@
 
 use std::ops::Range;
 
-use commandant_client_core::chat::{Ended, Entry, Role, Run};
-use commandant_client_core::{Chat, ChatId};
+use commandant_client_core::chat::{Entry, Role};
+use commandant_client_core::{Chat, ChatId, Intent};
 use gpui::{
-    AnyElement, App, Context, DefiniteLength, Div, Empty, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    StatefulInteractiveElement as _, StyleRefinement, Styled as _, WeakEntity, Window, div, px,
+    AnyElement, App, Context, DefiniteLength, Empty, Hsla, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
+    WeakEntity, Window, div, px,
 };
 use gpui_component::clipboard::Clipboard;
 use gpui_component::message_scroller::MessageScroller;
@@ -19,6 +19,7 @@ use gpui_component::text::{
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 
 use super::chat::agent_name;
+use super::command::render_command;
 use super::connected::Connected;
 use super::rows::Row;
 
@@ -194,7 +195,16 @@ impl Connected {
                 .text_color(theme.muted_foreground)
                 .child(text)
                 .into_any_element(),
-            Role::Command => render_command(entry, cx).into_any_element(),
+            Role::Command => match &entry.run {
+                Some(run) => {
+                    let (id, run_id) = (chat.id, run.id);
+                    let stop = cx.listener(move |this, _, window, cx| {
+                        this.act(Intent::StopRun(id, run_id), window, cx)
+                    });
+                    render_command(&entry.text, run, stop, cx).into_any_element()
+                }
+                None => div().into_any_element(),
+            },
             Role::Tool => self.render_tools(chat, at..at + 1, open, cx),
         }
     }
@@ -245,60 +255,6 @@ impl Connected {
             .child(div().flex_1().min_w_0().truncate().child(last.to_string()))
             .children(more.map(|more| div().flex_none().child(more)))
             .into_any_element()
-    }
-}
-
-/// A command's block: `$ <command>`, what it printed with its error output
-/// tinted, then how it ended.
-fn render_command(entry: &Entry, cx: &App) -> Div {
-    let theme = cx.theme();
-    let block = v_flex()
-        .p_2()
-        .gap_1()
-        .rounded_md()
-        .bg(theme.muted)
-        .font_family(theme.mono_font_family.clone())
-        .text_sm()
-        .child(
-            div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(format!("$ {}", entry.text)),
-        );
-    let Some(run) = &entry.run else {
-        return block;
-    };
-    let output = run.output.iter().map(|printed| {
-        let color = match printed.stderr {
-            true => theme.danger,
-            false => theme.foreground,
-        };
-        div()
-            .text_color(color)
-            .child(printed.text.trim_end_matches('\n').to_string())
-    });
-    let dropped = run.dropped.then(|| {
-        div()
-            .italic()
-            .text_color(theme.muted_foreground)
-            .child("… its earlier output wasn't kept")
-    });
-    let (end, color) = end_label(run, cx);
-    block
-        .children(dropped)
-        .children(output)
-        .child(div().text_xs().text_color(color).child(end))
-}
-
-/// How a command ended, or that it still runs, and its color.
-fn end_label(run: &Run, cx: &App) -> (String, Hsla) {
-    let theme = cx.theme();
-    match &run.ended {
-        None if run.stopping() => ("stopping…".into(), theme.warning),
-        None => ("running…".into(), theme.info),
-        Some(ended) if ended.succeeded() => ("exit 0".into(), theme.muted_foreground),
-        Some(Ended::Exited(code)) => (format!("exit {code}"), theme.danger),
-        Some(Ended::Cancelled) => ("cancelled".into(), theme.warning),
-        Some(Ended::Failed(why)) => (why.clone(), theme.danger),
     }
 }
 

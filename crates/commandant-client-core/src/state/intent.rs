@@ -51,6 +51,8 @@ pub enum Intent {
     Dismiss(Scope),
     /// Stop the chat's commands, or else cancel its turn.
     Cancel(ChatId),
+    /// Stop one of the chat's commands, from its block.
+    StopRun(ChatId, RunId),
     /// The next (or previous) agent.
     CycleAgent(ChatId, isize),
     /// The next thinking effort.

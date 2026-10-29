@@ -281,6 +281,7 @@ impl State {
             }
             Intent::Dismiss(Scope::Chat(id)) => self.in_chat(id, Chat::dismiss),
             Intent::Cancel(id) => self.in_chat(id, Chat::cancel),
+            Intent::StopRun(id, run) => self.in_chat(id, |c| c.stop_run(run)),
             Intent::CycleAgent(id, step) => self.in_chat(id, |c| c.cycle_agent(step)),
             Intent::CycleEffort(id) => self.in_chat(id, Chat::cycle_effort),
             Intent::Seen(id) => self.in_chat(id, |c| c.unseen = None),

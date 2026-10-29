@@ -475,6 +475,35 @@ fn a_running_command_keeps_its_chat_busy_and_open() {
 }
 
 #[test]
+fn a_blocks_stop_stops_that_command_alone() {
+    let mut state = state();
+    let id = chat_on(&mut state, "n1");
+    let ran = |state: &mut State, line: &str| match submit(state, id, line).effects.pop() {
+        Some(Effect::RunCommand { run, .. }) => run,
+        _ => panic!("{line:?} should run"),
+    };
+    let one = ran(&mut state, "!sleep 9");
+    let two = ran(&mut state, "!sleep 8");
+    state.update(Update::Chat(id, for_run(one, started("t1"))));
+    state.update(Update::Chat(id, for_run(two, started("t2"))));
+    send(&mut state, id, "hi");
+    state.update(Update::Chat(id, started("t3")));
+
+    let stop = |state: &mut State, run| state.intent(Intent::StopRun(id, run)).effects;
+    assert!(matches!(&stop(&mut state, two)[..], [Effect::Cancel(_, t)] if t == "t2"));
+    assert!(stop(&mut state, two).is_empty(), "it is stopping");
+    let stopping: Vec<_> = chat(&state, id).runs().map(|r| r.stopping()).collect();
+    assert_eq!(stopping, [false, true], "the other runs on");
+    assert!(chat(&state, id).activity.working(), "and so does the turn");
+
+    // One not started yet is stopped once it is.
+    let three = ran(&mut state, "!sleep 7");
+    assert!(stop(&mut state, three).is_empty());
+    let late = state.update(Update::Chat(id, for_run(three, started("t4"))));
+    assert!(matches!(&late.effects[..], [Effect::Cancel(_, t)] if t == "t4"));
+}
+
+#[test]
 fn cancelling_before_a_background_task_starts_still_cancels_it() {
     let mut state = state();
     let id = chat_on(&mut state, "n1");

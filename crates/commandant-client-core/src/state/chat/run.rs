@@ -24,6 +24,8 @@ pub struct Run {
     pub output: Vec<Printed>,
     /// Whether the start of its output was dropped.
     pub dropped: bool,
+    /// How many bytes it has printed in all, kept or not.
+    pub printed: usize,
     /// How much of its output is kept, at most: the end of it.
     keep: usize,
     /// How it ended; `None` while it runs.
@@ -62,11 +64,12 @@ impl Ended {
 
 impl Run {
     /// A command just asked for, keeping the last `keep` bytes it prints.
-    pub(in crate::state) fn new(id: RunId, keep: usize) -> Self {
+    pub fn new(id: RunId, keep: usize) -> Self {
         Self {
             id,
             output: Vec::new(),
             dropped: false,
+            printed: 0,
             keep,
             ended: None,
             task_id: None,
@@ -123,6 +126,7 @@ impl Run {
 
     /// Adds what a stream printed, to the last piece if it came from the same one.
     fn print(&mut self, stderr: bool, data: &[u8]) {
+        self.printed += data.len();
         let partial = match stderr {
             true => &mut self.partial_stderr,
             false => &mut self.partial_stdout,
@@ -233,6 +237,13 @@ impl Chat {
         runs.peek()?;
         let stops = runs.filter_map(|r| r.stop());
         Some(stops.map(|task_id| Effect::Cancel(chat, task_id)).collect())
+    }
+
+    /// Stops the command `id`, if it still runs.
+    pub(in crate::state) fn stop_run(&mut self, id: RunId) -> Option<Effect> {
+        let chat = self.id;
+        let run = self.runs_mut().find(|r| r.id == id)?;
+        run.stop().map(|task_id| Effect::Cancel(chat, task_id))
     }
 
     /// Takes in what a command's task reports, which may call for an effect.
