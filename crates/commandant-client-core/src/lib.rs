@@ -12,7 +12,7 @@ pub use self::state::chat::{self, Chat, Settings};
 pub use self::state::tasks::{Output, OutputId, Tasks, command_line, what_ran};
 pub use self::state::{
     Ask, ChatId, Choice, Choices, Choose, Edit, Effect, Go, Intent, Notice, Scope, Update, Wanted,
-    cycle, lacks_agent,
+    cycle, lacks_agent, step_index,
 };
 
 use anyhow::Result;

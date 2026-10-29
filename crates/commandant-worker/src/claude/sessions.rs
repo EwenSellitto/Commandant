@@ -48,7 +48,7 @@ pub fn list(projects: &Path) -> Result<Vec<AgentSession>> {
             session.id = file.file_stem()?.to_string_lossy().into_owned();
             session.updated = modified
                 .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs() as i64);
+                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
             Some(session)
         })
         .collect())
@@ -108,7 +108,7 @@ pub fn history(projects: &Path, session_id: &str) -> Result<Vec<HistoryEntry>> {
                     match block["type"].as_str().unwrap_or_default() {
                         "text" => push("agent", block["text"].as_str().unwrap_or_default()),
                         "thinking" => {
-                            push("thinking", block["thinking"].as_str().unwrap_or_default())
+                            push("thinking", block["thinking"].as_str().unwrap_or_default());
                         }
                         "tool_use" => push(
                             "tool",

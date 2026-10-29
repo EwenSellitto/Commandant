@@ -1,6 +1,6 @@
 //! `/project`: the node's projects to browse, join or copy, from a chat.
 
-use commandant_proto::*;
+use commandant_proto::ProjectCopy;
 
 use super::Chat;
 use crate::state::{Choice, Choices, Choose, Effect};

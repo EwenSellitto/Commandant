@@ -456,7 +456,7 @@ mod tests {
         }
     }
 
-    fn part(message: &str, id: &str, extra: serde_json::Value) -> Event {
+    fn part(message: &str, id: &str, extra: &serde_json::Value) -> Event {
         let mut part = json!({ "id": id, "sessionID": "s", "messageID": message });
         part.as_object_mut()
             .unwrap()
@@ -503,32 +503,32 @@ mod tests {
             part(
                 "prompt",
                 "p0",
-                json!({ "type": "text", "text": "the prompt" }),
+                &json!({ "type": "text", "text": "the prompt" }),
             ),
             message("reply", "assistant"),
             status("s", "busy"),
             status("other", "idle"),
-            part("reply", "r1", json!({ "type": "reasoning", "text": "" })),
+            part("reply", "r1", &json!({ "type": "reasoning", "text": "" })),
             delta("r1", "hmm"),
             delta("p1", "po"),
             delta("p1", "ng"),
-            part("reply", "p1", json!({ "type": "text", "text": "pong" })),
+            part("reply", "p1", &json!({ "type": "text", "text": "pong" })),
             part(
                 "reply",
                 "p2",
-                json!({ "type": "tool", "tool": "bash", "state": { "status": "running" } }),
+                &json!({ "type": "tool", "tool": "bash", "state": { "status": "running" } }),
             ),
             part(
                 "reply",
                 "p2",
-                json!({ "type": "tool", "tool": "bash", "state": { "status": "completed", "title": "ls" } }),
+                &json!({ "type": "tool", "tool": "bash", "state": { "status": "completed", "title": "ls" } }),
             ),
             part(
                 "reply",
                 "p2",
-                json!({ "type": "tool", "tool": "bash", "state": { "status": "completed", "title": "ls" } }),
+                &json!({ "type": "tool", "tool": "bash", "state": { "status": "completed", "title": "ls" } }),
             ),
-            part("reply", "p3", json!({ "type": "text", "text": "bye" })),
+            part("reply", "p3", &json!({ "type": "text", "text": "bye" })),
             usage("reply", 10, 3, 0.5),
             usage("reply2", 0, 0, 0.0),
             usage("reply2", 20, 4, 0.25),
@@ -577,12 +577,12 @@ mod tests {
             delta("p1", "po"),
             delta("p1", "ng"),
             // Tagged once streamed, the reply comes back whole.
-            part("reply", "p1", json!({ "type": "text", "text": tagged })),
+            part("reply", "p1", &json!({ "type": "text", "text": tagged })),
             // Tagged as it came, without deltas.
             part(
                 "reply",
                 "p2",
-                json!({ "type": "text", "text": "bye <dcp-message-id>m0005</dcp-message-id>" }),
+                &json!({ "type": "text", "text": "bye <dcp-message-id>m0005</dcp-message-id>" }),
             ),
         ];
         for event in events {

@@ -229,7 +229,7 @@ impl Connected {
         };
         let close = div()
             .invisible()
-            .group_hover("chat-row", |s| s.visible())
+            .group_hover("chat-row", gpui::Styled::visible)
             .child(
                 Button::new(("close", id))
                     .ghost()

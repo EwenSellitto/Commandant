@@ -11,6 +11,10 @@ pub const DEFAULT_PORT: u16 = 7400;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// `bytes` random bytes from the OS, in hex.
+///
+/// # Panics
+///
+/// If the OS has no random number generator to read.
 pub fn random_hex(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
     getrandom::fill(&mut buf).expect("OS random number generator unavailable");

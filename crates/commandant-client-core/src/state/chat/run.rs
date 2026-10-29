@@ -3,7 +3,7 @@
 //! and never reach the agent.
 
 use commandant_proto::task_event::Event as TaskEvent;
-use commandant_proto::*;
+use commandant_proto::{OutputStream, RunCommandRequest, TaskFinished};
 
 use super::events::decode;
 use super::{Chat, Entry, Role, Unseen};
@@ -237,7 +237,7 @@ impl Chat {
         let chat = self.id;
         let mut runs = self.runs_mut().filter(|r| r.running()).peekable();
         runs.peek()?;
-        let stops = runs.filter_map(|r| r.stop());
+        let stops = runs.filter_map(Run::stop);
         Some(stops.map(|task_id| Effect::Cancel(chat, task_id)).collect())
     }
 

@@ -6,7 +6,10 @@ use std::time::Instant;
 
 use commandant_common::or;
 use commandant_proto::task_event::Event as TaskEvent;
-use commandant_proto::*;
+use commandant_proto::{
+    AgentOptions, HistoryEntry, ModelChoice, ModelProvider, NodeInfo, ProjectReady, PromptRequest,
+    ProviderAuthResult,
+};
 
 use super::{Ask, ChatId, Effect, Outcome, cycle};
 
@@ -30,15 +33,21 @@ use self::sign_in::SigningIn;
 /// Sent with every prompt; `session_id` fills in after the first reply.
 #[derive(Clone, Default)]
 pub struct Settings {
+    /// The agent's session to carry on; empty starts a new one.
     pub session_id: String,
+    /// Where the agent works on the node; empty for its worker's directory.
     pub cwd: String,
+    /// The model chosen; empty for the agent's default.
     pub model: String,
+    /// The agent chosen; empty for the harness's default.
     pub agent: String,
+    /// The thinking effort chosen (the model's variant); empty for its default.
     pub effort: String,
 }
 
 /// What background tasks report to a chat.
 pub enum Message {
+    /// What the turn's task reports.
     Task(TaskEvent),
     /// The prompt couldn't be sent, or its stream broke.
     Failed(String),
@@ -46,29 +55,39 @@ pub enum Message {
     Run(RunId, Result<TaskEvent, String>),
     /// The task of the turn or of a command couldn't be cancelled.
     CancelFailed {
+        /// The task, as the server names it.
         task_id: String,
+        /// Why, as the server says.
         error: String,
     },
+    /// The chat's node, as the server last listed it.
     Node(NodeInfo),
+    /// What the node's agent offers, or why it couldn't say.
     Options(Result<Arc<AgentOptions>, String>),
     /// A resumed session's earlier turns.
     History(Result<Vec<HistoryEntry>, String>),
+    /// The model providers the node's agent knows.
     Providers(Result<Vec<ModelProvider>, String>),
     /// How a step of signing in went.
     Auth(Result<ProviderAuthResult, String>),
     /// Where the project asked for is ready to work in.
     Project(Result<ProjectReady, String>),
+    /// The projects the node has cloned, to browse.
     Projects(Result<Vec<commandant_proto::Project>, String>),
 }
 
+/// Who wrote an entry of the thread, which tells how it is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
+    /// The person, prompting.
     User,
     /// The model's thinking, before or between its replies.
     Thinking,
+    /// The agent's reply.
     Agent,
     /// A tool the agent used.
     Tool,
+    /// Something that went wrong.
     Error,
     /// A remark from commandant itself.
     Info,
@@ -78,8 +97,11 @@ pub enum Role {
     Command,
 }
 
+/// One entry of a chat's thread.
 pub struct Entry {
+    /// Who wrote it.
     pub role: Role,
+    /// What it says, as markdown for the agent's replies.
     pub text: String,
     /// The agent that was chosen when it was written.
     pub agent: String,
@@ -87,17 +109,23 @@ pub struct Entry {
     pub run: Option<Run>,
 }
 
+/// Whether the chat's agent is at work on a turn.
 #[derive(Default)]
 pub enum Activity {
+    /// Nothing sent waits for an answer.
     #[default]
     Idle,
+    /// A turn is under way.
     Working {
         /// Known once the orchestrator has started the task.
         task_id: Option<String>,
+        /// When the prompt was sent.
         since: Instant,
+        /// Asked to stop, not stopped yet.
         cancelling: bool,
         /// What the prompt was sent with, for the turn's summary.
         agent: String,
+        /// The thinking effort the prompt was sent with.
         effort: String,
         /// Started elsewhere and watched here, so left running on quitting.
         watched: bool,
@@ -105,6 +133,7 @@ pub enum Activity {
 }
 
 impl Activity {
+    /// Whether a turn is under way.
     pub fn working(&self) -> bool {
         matches!(self, Self::Working { .. })
     }
@@ -113,57 +142,66 @@ impl Activity {
 /// How a turn ended that nobody has looked at yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unseen {
+    /// It finished.
     Done,
+    /// It failed, or was cancelled.
     Failed,
 }
 
+/// A session with a node's agent, as one front end tab shows it.
 #[derive(Default)]
 pub struct Chat {
+    /// Unique among the app's chats, never reused.
     pub id: ChatId,
     /// The session's title: its first prompt, or what the node saved.
     pub title: String,
     /// Set when a turn ends; the app clears it once the chat is shown.
     pub unseen: Option<Unseen>,
+    /// The node the agent runs on, as last listed.
     pub node: NodeInfo,
+    /// What the next prompt is sent with.
     pub settings: Settings,
+    /// What was said, oldest first.
     pub thread: Vec<Entry>,
+    /// Whether a turn is under way.
     pub activity: Activity,
+    /// The agents, models and efforts the node offers, once it has said.
+    pub options: Option<Arc<AgentOptions>>,
+    /// Waiting for the node to say what it offers.
+    pub fetching_options: bool,
+    /// Waiting for a resumed session's earlier turns.
+    pub loading_history: bool,
+    /// The filter to choose a model provider with, while they're listed.
+    pub listing_providers: Option<String>,
+    /// The repository the node is cloning for this chat.
+    pub preparing: Option<String>,
+    /// Waiting for the node's projects, to browse them.
+    pub listing_projects: bool,
+    /// The model that last replied, which tells what "default" means.
+    pub used_model: String,
+    /// What the session has cost so far, in US dollars.
+    pub spent: f64,
+    /// Tokens in the session's context after the last turn.
+    pub context: u64,
+    /// What the chat asks the person, if anything.
+    pub(in crate::state) ask: Option<Ask>,
     /// Bytes of a UTF-8 character split across output chunks, per stream.
     partial_stdout: Vec<u8>,
     partial_stderr: Vec<u8>,
     partial_reasoning: Vec<u8>,
     /// A note line still waiting for its newline.
     partial_note: String,
-    /// The agents, models and efforts the node offers, once it has said.
-    pub options: Option<Arc<AgentOptions>>,
-    pub fetching_options: bool,
-    /// Waiting for a resumed session's earlier turns.
-    pub loading_history: bool,
     /// The prompt of the turn attached to, which its history, still to
     /// come, ends with.
     attached: Option<String>,
-    /// The node's model providers, as last listed; the filter to choose
-    /// from them with while they're listed.
+    /// The node's model providers, as last listed.
     providers: Vec<ModelProvider>,
-    pub listing_providers: Option<String>,
     /// The node at a step of signing in.
     signing_in: Option<SigningIn>,
-    /// The repository the node is cloning for this chat.
-    pub preparing: Option<String>,
-    /// Waiting for the node's projects, to browse them.
-    pub listing_projects: bool,
     /// A menu asked for before the options came, to open once they do.
     pending: Option<(Menu, String)>,
-    /// The model that last replied, which tells what "default" means.
-    pub used_model: String,
-    /// What the chat asks the person, if anything.
-    pub(in crate::state) ask: Option<Ask>,
     /// What was sent, oldest first, to bring back.
     sent: Vec<String>,
-    /// What the session has cost so far, in US dollars.
-    pub spent: f64,
-    /// Tokens in the session's context after the last turn.
-    pub context: u64,
     next_run: RunId,
 }
 
@@ -416,14 +454,14 @@ impl Chat {
     /// Sends `prompt` (or runs `command` with it), showing `text` in the
     /// thread. While the agent works the text stays in the prompt, to send
     /// once it is done.
-    fn send(&mut self, text: String, command: String, prompt: String) -> Outcome {
+    fn send(&mut self, text: &str, command: String, prompt: String) -> Outcome {
         if self.activity.working() {
             return Outcome::default();
         }
         if self.title.is_empty() {
-            self.title = text.clone();
+            self.title = text.to_string();
         }
-        self.push(Role::User, &text);
+        self.push(Role::User, text);
         self.activity = Activity::Working {
             task_id: None,
             since: Instant::now(),

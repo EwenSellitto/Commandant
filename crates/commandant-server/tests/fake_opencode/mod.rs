@@ -341,7 +341,7 @@ async fn route(
         ("GET", ["experimental", "session"]) if state.legacy => {
             (404, json!({ "error": "not found" }))
         }
-        ("GET", ["experimental", "session"]) | ("GET", ["session"]) => {
+        ("GET", ["experimental", "session"] | ["session"]) => {
             let mut sessions = state.sessions.lock().unwrap().clone();
             sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
             let listed: Vec<Value> = sessions

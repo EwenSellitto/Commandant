@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use commandant_common::time;
-use commandant_proto::*;
+use commandant_proto::{AgentSession, RunCommandRequest, TaskInfo, task_event};
 
 use super::chat::Run;
 use super::{Ask, Choice, Choices, Choose, Effect, Go, Outcome, State, Wanted};

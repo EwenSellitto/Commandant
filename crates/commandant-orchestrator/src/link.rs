@@ -217,7 +217,7 @@ async fn handle_messages(
                 }
                 shared
                     .queries
-                    .answer(conn_id, worker_msg::Msg::HarnessStarted(started))
+                    .answer(conn_id, worker_msg::Msg::HarnessStarted(started));
             }
             answer @ (worker_msg::Msg::Options(_)
             | worker_msg::Msg::Sessions(_)

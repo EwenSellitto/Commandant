@@ -29,11 +29,11 @@ fn listed(
             let methods = match methods.remove(&p.id) {
                 Some(methods) => methods
                     .into_iter()
-                    .enumerate()
-                    .map(|(index, m)| AuthMethod {
+                    .zip(0..)
+                    .map(|(m, index)| AuthMethod {
                         oauth: m.kind == "oauth",
                         label: m.label,
-                        index: index as u32,
+                        index,
                     })
                     .collect(),
                 None => vec![AuthMethod {

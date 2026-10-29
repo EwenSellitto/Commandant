@@ -6,7 +6,10 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use commandant_client_core::config::Client;
 use commandant_proto::task_event::Event;
-use commandant_proto::*;
+use commandant_proto::{
+    CancelTaskRequest, ControlClient, OutputStream, PromptRequest, RunCommandRequest, TaskEvent,
+    TaskFinished, WatchTaskRequest,
+};
 
 use crate::cli::{PromptArgs, RunArgs};
 
@@ -99,7 +102,7 @@ async fn stream_task(
                 task_id = Some(started.task_id);
             }
             Event::Output(output) if output.stream() == OutputStream::Stderr => {
-                write_now(std::io::stderr(), &output.data)?
+                write_now(std::io::stderr(), &output.data)?;
             }
             // The model's thinking isn't part of the reply.
             Event::Output(output) if output.stream() == OutputStream::Reasoning => {}

@@ -72,7 +72,7 @@ impl Connected {
         let starting = self.core.starting(&node.id);
         let chats = self.core.chats_on(&node.id).count();
         // A button acting on this node, by its id.
-        let action = |name: &str, act: fn(&mut Connected, String) -> Intent| {
+        let action = |name: &str, act: fn(&mut Self, String) -> Intent| {
             let id = node.id.clone();
             Button::new(SharedString::from(format!("{name}-{}", node.id)))
                 .ghost()

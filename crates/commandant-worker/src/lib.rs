@@ -85,8 +85,8 @@ impl From<tonic::Status> for Stop {
     fn from(status: tonic::Status) -> Self {
         let err = status_error(&status);
         match status.code() {
-            Code::Unauthenticated | Code::AlreadyExists | Code::InvalidArgument => Stop::Fatal(err),
-            _ => Stop::Retry(err),
+            Code::Unauthenticated | Code::AlreadyExists | Code::InvalidArgument => Self::Fatal(err),
+            _ => Self::Retry(err),
         }
     }
 }

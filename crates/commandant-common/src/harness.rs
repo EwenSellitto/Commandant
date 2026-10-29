@@ -12,7 +12,7 @@ pub enum HarnessKind {
 
 impl HarnessKind {
     /// Every harness a worker can host.
-    pub const ALL: [HarnessKind; 2] = [HarnessKind::Opencode, HarnessKind::ClaudeCode];
+    pub const ALL: [Self; 2] = [Self::Opencode, Self::ClaudeCode];
 
     pub fn name(self) -> &'static str {
         match self {

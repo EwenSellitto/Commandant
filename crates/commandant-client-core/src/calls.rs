@@ -7,7 +7,13 @@ use std::time::Duration;
 
 use anyhow::Result;
 use commandant_common::link::Link;
-use commandant_proto::*;
+use commandant_proto::{
+    AuthenticateProviderRequest, CancelTaskRequest, ControlClient, CreateJoinTokenRequest,
+    GetAgentOptionsRequest, GetSessionHistoryRequest, ListAgentSessionsRequest, ListNodesRequest,
+    ListProjectsRequest, ListProvidersRequest, ListTasksRequest, NodeInfo, PrepareProjectRequest,
+    RemoveNodeRequest, StartHarnessRequest, SwitchMcpServerRequest, TaskEvent, WatchTaskRequest,
+    task_event,
+};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};

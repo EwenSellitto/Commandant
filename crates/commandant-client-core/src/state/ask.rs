@@ -174,7 +174,7 @@ impl Choices {
     }
 
     /// The same question, open, with new choices.
-    pub(super) fn revise(self, previous: &Choices) -> Self {
+    pub(super) fn revise(self, previous: &Self) -> Self {
         Self {
             id: previous.id,
             ..self

@@ -2,7 +2,9 @@
 
 use commandant_common::link::{Link, Pin};
 use commandant_proto::task_event::Event as TaskEvent;
-use commandant_proto::*;
+use commandant_proto::{
+    AuthMethod, ModelProvider, NodeInfo, OutputStream, TaskOutput, TaskStarted,
+};
 
 use super::chat::{Message, RunId};
 

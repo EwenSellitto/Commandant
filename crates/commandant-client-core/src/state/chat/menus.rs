@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use commandant_proto::*;
+use commandant_proto::{AgentOptions, McpServer, auth_action};
 
 use super::Chat;
 use crate::state::{Ask, Choice, Choices, Choose, Edit, Effect, Outcome, Wanted};

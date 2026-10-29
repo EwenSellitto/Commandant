@@ -267,10 +267,10 @@ impl App {
         let task = self.task_id().map(str::to_string);
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
-                self.selected_task = self.selected_task.saturating_sub(1)
+                self.selected_task = self.selected_task.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.selected_task = (self.selected_task + 1).min(listed.saturating_sub(1))
+                self.selected_task = (self.selected_task + 1).min(listed.saturating_sub(1));
             }
             KeyCode::Enter => {
                 if let Some(task) = task {
@@ -293,10 +293,10 @@ impl App {
     fn on_output_key(&mut self, id: OutputId, key: KeyEvent) {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
-                self.output_scroll = self.output_scroll.saturating_add(1)
+                self.output_scroll = self.output_scroll.saturating_add(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.output_scroll = self.output_scroll.saturating_sub(1)
+                self.output_scroll = self.output_scroll.saturating_sub(1);
             }
             KeyCode::PageUp => self.output_scroll = self.output_scroll.saturating_add(PAGE),
             KeyCode::PageDown => self.output_scroll = self.output_scroll.saturating_sub(PAGE),

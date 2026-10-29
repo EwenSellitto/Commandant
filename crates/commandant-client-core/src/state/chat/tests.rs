@@ -1,3 +1,8 @@
+use commandant_proto::{
+    AgentChoice, AgentCommand, AgentUsage, McpServer, OutputStream, ProjectCopy, RunCommandRequest,
+    TaskFinished, auth_action,
+};
+
 use super::*;
 use crate::state::fixtures::{acme, for_run, method, output, started};
 use crate::state::{Ask, Choose, Edit, Wanted};
@@ -173,7 +178,7 @@ fn with_options() -> Chat {
     let model = |id: &str, variants: &[&str]| ModelChoice {
         id: id.into(),
         name: id.into(),
-        variants: variants.iter().map(|v| v.to_string()).collect(),
+        variants: variants.iter().map(ToString::to_string).collect(),
         ..Default::default()
     };
     let agent = |name: &str| AgentChoice {
@@ -621,7 +626,7 @@ fn projects_are_browsed_joined_or_copied() {
         id: id.into(),
         path: format!("/state/projects/app/{id}"),
         branch: "main".into(),
-        sessions: sessions.iter().map(|s| s.to_string()).collect(),
+        sessions: sessions.iter().map(ToString::to_string).collect(),
     };
     let projects = vec![commandant_proto::Project {
         name: "app".into(),

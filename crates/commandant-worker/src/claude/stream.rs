@@ -187,7 +187,7 @@ impl<'a> Turn<'a> {
                         match delta["type"].as_str().unwrap_or_default() {
                             "text_delta" => self.say(OutputStream::Stdout, &delta["text"]).await,
                             "thinking_delta" => {
-                                self.say(OutputStream::Reasoning, &delta["thinking"]).await
+                                self.say(OutputStream::Reasoning, &delta["thinking"]).await;
                             }
                             _ => {}
                         }

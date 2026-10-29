@@ -390,12 +390,12 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         if res.rows_affected() == 1 {
-            for (seq, chunk) in output.iter().enumerate() {
+            for (seq, chunk) in (0_i64..).zip(output) {
                 sqlx::query(
                     "INSERT INTO task_output (task_id, seq, stream, data) VALUES (?, ?, ?, ?)",
                 )
                 .bind(id)
-                .bind(seq as i64)
+                .bind(seq)
                 .bind(chunk.stream)
                 .bind(&chunk.data)
                 .execute(&mut *tx)

@@ -199,7 +199,7 @@ impl Connected {
                 Some(run) => {
                     let (id, run_id) = (chat.id, run.id);
                     let stop = cx.listener(move |this, _, window, cx| {
-                        this.act(Intent::StopRun(id, run_id), window, cx)
+                        this.act(Intent::StopRun(id, run_id), window, cx);
                     });
                     render_command(&entry.text, run, stop, cx).into_any_element()
                 }

@@ -1,3 +1,5 @@
+use commandant_proto::{HistoryEntry, OutputStream, TaskFinished, TaskOutput, TaskStarted};
+
 use super::super::fixtures::node;
 use super::*;
 use crate::state::ChatId;
@@ -121,9 +123,9 @@ fn list(state: &mut State, tasks: Vec<TaskInfo>) -> ListId {
 
 /// The output view an outcome goes to.
 fn output_shown(outcome: &Outcome) -> OutputId {
-    match outcome.go {
-        Some(Go::Output(id)) => id,
-        ref go => panic!("should show an output, not {go:?}"),
+    match &outcome.go {
+        Some(Go::Output(id)) => *id,
+        go => panic!("should show an output, not {go:?}"),
     }
 }
 
@@ -349,9 +351,9 @@ fn prompt_task(id: &str, status: &str, session: &str) -> TaskInfo {
 
 /// The chat an outcome goes to.
 fn chat_shown(outcome: &Outcome) -> ChatId {
-    match outcome.go {
-        Some(Go::Chat(id)) => id,
-        ref go => panic!("should show a chat, not {go:?}"),
+    match &outcome.go {
+        Some(Go::Chat(id)) => *id,
+        go => panic!("should show a chat, not {go:?}"),
     }
 }
 

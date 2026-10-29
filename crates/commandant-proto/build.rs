@@ -1,3 +1,5 @@
+//! Generates the gRPC code from `proto/commandant.proto`.
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Use a vendored protoc so building doesn't require a system install.
     // SAFETY: build scripts are single-threaded.

@@ -152,7 +152,10 @@ impl Connected {
         // A prompt sent: back to the bottom of its thread.
         if let Some(id) = sent {
             let scroller = self.pane(id, window, cx).scroller.clone();
-            scroller.update(cx, |scroller, cx| scroller.scroll_to_end(cx));
+            scroller.update(
+                cx,
+                gpui_component::message_scroller::MessageScrollerState::scroll_to_end,
+            );
         }
         self.go(go, window, cx);
     }
@@ -500,7 +503,7 @@ mod tests {
         let counted = told.clone();
         cx.update(|_, cx| {
             cx.observe(&thread, move |_, _| counted.set(counted.get() + 1))
-                .detach()
+                .detach();
         });
         (id, told)
     }
@@ -510,7 +513,7 @@ mod tests {
         let (connected, cx, send) = connected(vec![node("n1", true)], cx);
         let (id, told) = watch(&connected, cx);
         connected.update_in(cx, |c, window, cx| {
-            c.act(Intent::Submit(id, "count".into()), window, cx)
+            c.act(Intent::Submit(id, "count".into()), window, cx);
         });
         let asked = told.get();
         send.send(Update::Chat(id, output(OutputStream::Stdout, b"one")))
@@ -563,13 +566,13 @@ mod tests {
         let telling = told.clone();
         cx.update(|_, cx| {
             cx.subscribe(&connected, move |_, _: &LoggedOut, _| telling.set(true))
-                .detach()
+                .detach();
         });
         connected.update_in(cx, |c, window, cx| c.act(Intent::LogOut, window, cx));
         cx.run_until_parked();
         assert!(!told.get(), "not before it is confirmed");
         connected.update_in(cx, |c, window, cx| {
-            c.act(Intent::Confirm(Scope::App), window, cx)
+            c.act(Intent::Confirm(Scope::App), window, cx);
         });
         cx.run_until_parked();
         assert!(told.get());
@@ -581,7 +584,7 @@ mod tests {
         let (connected, cx, send) = connected(vec![node("n1", true)], cx);
         let (id, _) = watch(&connected, cx);
         connected.update_in(cx, |c, window, cx| {
-            c.act(Intent::Submit(id, "count".into()), window, cx)
+            c.act(Intent::Submit(id, "count".into()), window, cx);
         });
         cx.run_until_parked();
         let known = Rc::new(Cell::new(Vec::new()));
@@ -591,7 +594,7 @@ mod tests {
                 let chat = connected.read(cx).core.chat(id).unwrap();
                 knowing.set(chat.tasks().collect());
             })
-            .detach()
+            .detach();
         });
         // Its start is waiting to be taken in as the person logs out.
         send.send(Update::Chat(id, started("t1"))).unwrap();
@@ -608,7 +611,7 @@ mod tests {
         use commandant_client_core::state::fixtures::bare;
         let (connected, cx, send) = connected(vec![node("n1", true), bare("b2"), bare("b3")], cx);
         connected.update_in(cx, |c, window, cx| {
-            c.show_nodes(Some("b3".into()), window, cx)
+            c.show_nodes(Some("b3".into()), window, cx);
         });
         let hosting = |id: &str| {
             let node = NodeInfo {
