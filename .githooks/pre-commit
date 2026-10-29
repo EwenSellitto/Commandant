@@ -1,0 +1,6 @@
+#!/bin/sh
+# Formatting and lints before each commit; CI runs the tests.
+# shortcut: checks the working tree, not only what is staged, so unstaged edits count too.
+set -e
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --features commandant-client/gui-tests -q -- -D warnings

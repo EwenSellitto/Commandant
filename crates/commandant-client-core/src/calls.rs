@@ -403,7 +403,9 @@ mod tests {
 
     #[test]
     fn only_failing_to_get_there_is_out_of_reach() {
-        assert!(out_of_reach(&tonic::Status::unavailable("tcp connect error")));
+        assert!(out_of_reach(&tonic::Status::unavailable(
+            "tcp connect error"
+        )));
         assert!(!out_of_reach(&tonic::Status::unauthenticated("bad token")));
         assert!(!out_of_reach(&tonic::Status::internal("database locked")));
     }
