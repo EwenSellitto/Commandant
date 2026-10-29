@@ -2,7 +2,7 @@
 //! closing, the nodes, the tasks, the chat before or after, the next
 //! effort; and Ctrl-B, which folds the sidebar away.
 
-use commandant_client_core::{ChatId, Go, Intent};
+use commandant_client_core::{ChatId, Intent};
 use gpui::{App, Context, KeyBinding, Window};
 
 use super::connected::Connected;
@@ -89,8 +89,7 @@ impl Connected {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.go(Some(Go::Nodes), window, cx);
-        cx.notify();
+        self.show_nodes(None, window, cx);
     }
 
     pub(super) fn on_show_tasks(
@@ -105,7 +104,7 @@ impl Connected {
     /// Shows the tasks: back from an output, kept as filtered if already
     /// listed, else listed anew.
     pub(super) fn show_tasks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.output.is_some() {
+        if self.output.is_some() && self.core.tasks().is_some() {
             self.close_output(window, cx);
         } else if self.core.tasks().is_none() {
             self.act(Intent::ListTasks { node: None }, window, cx);
