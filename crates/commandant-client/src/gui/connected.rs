@@ -97,7 +97,14 @@ impl Connected {
 
     /// Asks the core for something, and follows where that leads.
     pub(super) fn act(&mut self, intent: Intent, window: &mut Window, cx: &mut Context<Self>) {
-        let next = self.core.act(intent);
+        let chats = self.core.chats().len();
+        let mut next = self.core.act(intent);
+        // A chat closed from the sidebar while another, or the tasks, is
+        // shown leaves the view where it is.
+        let shown_kept = self.shown.is_none_or(|id| self.core.chat(id).is_some());
+        if self.core.chats().len() < chats && shown_kept {
+            next.go = None;
+        }
         self.apply(next, window, cx);
         self.sync(window, cx);
         cx.notify();

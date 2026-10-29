@@ -34,7 +34,7 @@ pub(super) fn status_dot(online: bool, cx: &App) -> Div {
 }
 
 impl Connected {
-    /// Every node and its chats, then the core's notice.
+    /// Every node and its chats, then the Tasks entry and the core's notice.
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let nodes = self.core.nodes();
@@ -80,7 +80,6 @@ impl Connected {
             .text_color(theme.sidebar_foreground)
             .border_r_1()
             .border_color(theme.sidebar_border)
-            .child(self.tasks_row(cx))
             .child(
                 v_flex()
                     .id("nodes")
@@ -90,6 +89,7 @@ impl Connected {
                     .children(tree)
                     .children(empty),
             )
+            .child(self.tasks_row(cx))
             .children(notice)
             .child(edge)
     }

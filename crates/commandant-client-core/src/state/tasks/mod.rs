@@ -161,6 +161,9 @@ impl State {
         if let Some(output) = self.outputs.last_mut() {
             output.started = task.created_at;
             output.finished = task.finished_at;
+            output.pruned = task.output_pruned;
+            // Known already, so it can be stopped before it reports starting.
+            output.run.task_id = Some(task.id.clone());
         }
         let watch = Effect::Watch {
             output: id,

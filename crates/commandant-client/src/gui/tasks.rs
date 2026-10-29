@@ -139,8 +139,7 @@ impl Connected {
 
     /// A task's node, kind, how it ended, when it started and what ran; a
     /// click opens it, and × cancels it while it runs. Greyed once its
-    /// output is pruned.
-    /// Known by its id, as rows move when the list refreshes.
+    /// output is pruned. Known by its id, as rows move when the list refreshes.
     fn task_row(&self, task: &TaskInfo, cx: &Context<Self>) -> Stateful<Div> {
         let theme = cx.theme();
         let id = task.id.clone();
