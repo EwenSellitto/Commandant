@@ -12,7 +12,8 @@ x-worker: &worker
   image: commandant:dev
   # The link is only there once the server has started. It holds the admin
   # token, as does the volume it is read from: fine for a dev cluster on one
-  # host, not for workers you trust less.
+  # host, never for remote workers, which get a worker-only link from
+  # `commandant token create` (see docker/worker.compose.yml).
   init: true
   entrypoint: ["sh", "-c"]
   command:

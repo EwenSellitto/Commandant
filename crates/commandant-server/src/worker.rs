@@ -1,6 +1,6 @@
 //! `commandant-server worker`: joins an orchestrator and runs what it's told.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use commandant_common::dirs;
 use commandant_worker::WorkerConfig;
 
@@ -13,7 +13,16 @@ pub async fn run(args: WorkerArgs) -> Result<()> {
         Some(dir) => dir,
         None => dirs::worker_state()?,
     };
-    let (server, join_token) = match args.link {
+    let link = match args.link_file {
+        Some(path) => Some(
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("reading the link from {}", path.display()))?
+                .trim()
+                .parse()?,
+        ),
+        None => args.link,
+    };
+    let (server, join_token) = match link {
         Some(link) => (Some(link.addr()), Some(link.token)),
         None => (args.server, args.join_token),
     };

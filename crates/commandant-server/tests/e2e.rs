@@ -926,10 +926,10 @@ mod watching {
 }
 
 /// A worker whose saved credentials the orchestrator doesn't know (say it
-/// was reset) joins again with the token it was given, but only when it
-/// starts: a node removed while running stays removed.
+/// was reset) stops, even with a token: it joins afresh only once its
+/// credentials are deleted.
 #[tokio::test(flavor = "multi_thread")]
-async fn stale_credentials_give_way_to_a_fresh_token() {
+async fn stale_credentials_stop_the_worker_until_deleted() {
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = tmp.path().join("worker");
     let (old_addr, old_token, _old_stop) = start_orchestrator(&tmp.path().join("old")).await;
@@ -941,17 +941,24 @@ async fn stale_credentials_give_way_to_a_fresh_token() {
     worker.abort();
     let _ = worker.await;
 
-    // A fresh orchestrator: without a token, the stale credentials are fatal.
+    // A fresh orchestrator: the stale credentials are fatal, token or not,
+    // and the worker says how to join again.
     let (addr, token, _stop) = start_orchestrator(&tmp.path().join("new")).await;
     let mut client = connect_control(&addr, &token).await.unwrap();
-    let err = tokio::time::timeout(WAIT, spawn_worker(&addr, None, &state_dir))
-        .await
-        .expect("an unknown node should fail fast")
-        .unwrap()
-        .unwrap_err();
-    assert!(format!("{err:#}").contains("unknown node"), "{err:#}");
+    for join_token in [None, Some(token.clone())] {
+        let err = tokio::time::timeout(WAIT, spawn_worker(&addr, join_token, &state_dir))
+            .await
+            .expect("an unknown node should fail fast")
+            .unwrap()
+            .unwrap_err();
+        let err = format!("{err:#}");
+        assert!(err.contains("unknown node"), "{err}");
+        assert!(err.contains("node.json"), "{err}");
+    }
+    assert_eq!(saved_credentials(&state_dir).await.node_id, stale.node_id);
 
-    // With one, it joins afresh and keeps the new credentials.
+    // Once they are deleted, it joins afresh and keeps the new credentials.
+    std::fs::remove_file(state_dir.join("node.json")).unwrap();
     let worker = spawn_worker(&addr, Some(token.clone()), &state_dir);
     let node = wait_for_node(&mut client, true).await;
     let fresh = eventually("the new credentials were never saved", || async {
@@ -969,68 +976,48 @@ async fn stale_credentials_give_way_to_a_fresh_token() {
         .unwrap()
         .unwrap_err();
     assert!(format!("{err:#}").contains("another --name"), "{err:#}");
+    worker.abort();
+}
 
-    // Removed while running, it stops rather than joining again.
+/// A node removed while running stops, and stays removed when its worker is
+/// started again with the same link, as Docker or systemd would restart it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removed_node_stays_removed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("worker");
+    let (addr, token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
+    let mut client = connect_control(&addr, &token).await.unwrap();
+    let worker = spawn_worker(&addr, Some(token.clone()), &state_dir);
+    wait_for_node(&mut client, true).await;
+    saved_credentials(&state_dir).await;
+
     client
         .remove_node(RemoveNodeRequest { node: "w1".into() })
         .await
         .unwrap();
-    let stopped = tokio::time::timeout(WAIT, worker)
+    let err = tokio::time::timeout(WAIT, worker)
         .await
         .expect("a removed node should stop")
-        .unwrap();
-    let err = stopped.unwrap_err();
+        .unwrap()
+        .unwrap_err();
     assert!(
         format!("{err:#}").contains("this node was removed"),
         "{err:#}"
     );
+
+    let err = tokio::time::timeout(WAIT, spawn_worker(&addr, Some(token), &state_dir))
+        .await
+        .expect("a removed node should fail fast")
+        .unwrap()
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("node.json"), "{err:#}");
     let nodes = client
         .list_nodes(ListNodesRequest {})
         .await
         .unwrap()
         .into_inner()
         .nodes;
-    assert!(nodes.is_empty(), "it didn't come back");
-}
-
-/// Having joined afresh, a worker reconnects as its new node from then on:
-/// its old credentials are gone, not merely set aside for one connection.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_rejoined_worker_reconnects_as_its_new_node() {
-    let tmp = tempfile::tempdir().unwrap();
-    let state_dir = tmp.path().join("worker");
-    let (old_addr, old_token, _old_stop) = start_orchestrator(&tmp.path().join("old")).await;
-    let mut old = connect_control(&old_addr, &old_token).await.unwrap();
-    let worker = spawn_worker(&old_addr, Some(old_token), &state_dir);
-    wait_for_node(&mut old, true).await;
-    let stale = saved_credentials(&state_dir).await;
-    // Gone for good, its state directory free.
-    worker.abort();
-    let _ = worker.await;
-
-    let data_dir = tmp.path().join("new");
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = serve_on(&data_dir, listener).await;
-    let (addr, token) = (server.addr.clone(), server.token.clone());
-    let mut client = connect_control(&addr, &token).await.unwrap();
-    let _worker = spawn_worker(&addr, Some(token.clone()), &state_dir);
-    let node = wait_for_node(&mut client, true).await;
-    assert_ne!(node.id, stale.node_id);
-
-    // The orchestrator restarts; the worker comes back as the same node.
-    server.stop().await;
-    let server = serve_on(&data_dir, rebind(port).await).await;
-    let mut client = connect_control(&server.addr, &server.token).await.unwrap();
-    let back = wait_for_node(&mut client, true).await;
-    assert_eq!(back.id, node.id);
-    let nodes = client
-        .list_nodes(ListNodesRequest {})
-        .await
-        .unwrap()
-        .into_inner()
-        .nodes;
-    assert_eq!(nodes.len(), 1);
+    assert!(nodes.is_empty(), "it came back: {nodes:?}");
 }
 
 /// Workers started together on one machine, from the default state

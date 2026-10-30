@@ -196,7 +196,7 @@ pub async fn ensure_installed(name: &str, installed_in: &str, install: &str) -> 
     info!("{name} not found; installing it with: {install}");
     #[cfg(unix)]
     {
-        let status = tokio::process::Command::new("bash")
+        let status = crate::process::command("bash")
             .args(["-c", &format!("set -o pipefail; {install}")])
             .stdin(std::process::Stdio::null())
             .status()

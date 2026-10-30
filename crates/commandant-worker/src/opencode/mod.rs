@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, info, warn};
 
@@ -26,7 +26,7 @@ use commandant_proto::{
 use tokio::sync::oneshot;
 
 use crate::harness::{Busy, Harness, HarnessKind, ensure_installed};
-use crate::process::{Signal, signal_group};
+use crate::process::{self, Signal, signal_group};
 
 use self::api::Api;
 
@@ -193,7 +193,7 @@ fn untagged(text: &str) -> Cow<'_, str> {
 /// Runs `opencode serve` on a free loopback port, behind a random password.
 async fn start_server(binary: &Path) -> Result<Server> {
     let password = commandant_common::random_hex(32);
-    let mut command = Command::new(binary);
+    let mut command = process::command(binary);
     command
         .args(["serve", "--hostname", "127.0.0.1", "--port", "0"])
         .env("OPENCODE_SERVER_PASSWORD", &password)

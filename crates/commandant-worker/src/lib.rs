@@ -73,9 +73,6 @@ enum Stop {
     /// Retrying won't help (bad credentials, name conflict...).
     Fatal(anyhow::Error),
     Retry(anyhow::Error),
-    /// The orchestrator doesn't know the saved credentials, but there is a
-    /// join token to join with instead.
-    Stale(anyhow::Error),
 }
 
 /// A status as an error: `Unauthenticated: invalid join token`.
@@ -137,26 +134,13 @@ pub async fn run(config: WorkerConfig) -> anyhow::Result<()> {
             .with_context(|| format!("setting up {kind}"))?;
     }
     let mut backoff = MIN_BACKOFF;
-    // Saved credentials the orchestrator rejects are given up only on the
-    // first connection, when the token was just given (say after the
-    // orchestrator was reset). A node removed later stays removed.
-    let mut first = true;
     loop {
         let started = Instant::now();
-        let Err(stop) = session(&node, &host, first).await;
+        let Err(stop) = session(&node, &host).await;
         match stop {
             Stop::Fatal(e) => return Err(e),
-            Stop::Stale(e) => {
-                warn!(
-                    "{e:#}: the orchestrator doesn't know the node saved in {}; joining again with the token",
-                    node.state_dir.display()
-                );
-                state::forget(&node.state_dir)?;
-                continue;
-            }
             Stop::Retry(e) => warn!("connection to {} lost: {e:#}", node.server),
         }
-        first = false;
         let was_healthy = started.elapsed() > MAX_BACKOFF;
         if was_healthy {
             backoff = MIN_BACKOFF;
@@ -178,14 +162,22 @@ fn normal_user(uid: u32) -> anyhow::Result<()> {
 }
 
 /// One connection to the orchestrator, from handshake until it breaks.
-async fn session(node: &Node, host: &Arc<Host>, first: bool) -> Result<Infallible, Stop> {
+async fn session(node: &Node, host: &Arc<Host>) -> Result<Infallible, Stop> {
     let saved = state::load(&node.state_dir).map_err(Stop::Fatal)?;
     let hosted = host.current().map(|h| h.kind());
     let hello = hello(node, saved.as_ref(), hosted)?;
     let channel = connect(&node.server).await?;
-    let can_rejoin = first && saved.is_some() && node.join_token.is_some();
+    // Never given up for the join token: under a supervisor that restarts
+    // the worker, a node removed with `node rm` would be back in seconds.
+    let has_credentials = saved.is_some();
     let rejected = |status: tonic::Status| match status.code() {
-        Code::Unauthenticated if can_rejoin => Stop::Stale(status_error(&status)),
+        Code::Unauthenticated if has_credentials => {
+            Stop::Fatal(status_error(&status).context(format!(
+                "the server no longer knows this node (it was removed, or the server was reset); \
+                 to join again as a new node, delete {} and start the worker with a new link",
+                state::path(&node.state_dir).display()
+            )))
+        }
         _ => status.into(),
     };
 
