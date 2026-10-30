@@ -62,10 +62,15 @@ pub struct ServeArgs {
 
 #[derive(Args)]
 pub struct WorkerArgs {
-    /// Connection link printed by `commandant-server serve`. Only needed the
-    /// first time; afterwards the worker reconnects on its own.
+    /// Connection link, best a worker-only one from `commandant token
+    /// create`. Only needed the first time; afterwards the worker reconnects
+    /// on its own. Every local user can read it here: prefer --link-file.
     #[arg(env = "COMMANDANT_LINK", hide_env_values = true)]
     pub link: Option<Link>,
+    /// File holding the link, which keeps it off the command line;
+    /// `/dev/stdin` to paste it (then Ctrl-D).
+    #[arg(long, env = "COMMANDANT_LINK_FILE", conflicts_with = "link")]
+    pub link_file: Option<PathBuf>,
     /// Orchestrator URL, e.g. https://10.0.0.1:7400#sha256=<its certificate's> (instead of a link).
     #[arg(long, env = "COMMANDANT_SERVER")]
     pub server: Option<String>,

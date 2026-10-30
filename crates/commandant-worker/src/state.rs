@@ -5,7 +5,7 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use commandant_common::fs::{read_optional, remove, write_private};
+use commandant_common::fs::{read_optional, write_private};
 use serde::{Deserialize, Serialize};
 
 /// Who the node is to the orchestrator, once it has joined.
@@ -90,7 +90,8 @@ fn lock(dir: &Path) -> Result<Option<File>> {
     }
 }
 
-fn path(state_dir: &Path) -> PathBuf {
+/// `node.json`: deleting it is how a node joins again as a new one.
+pub(crate) fn path(state_dir: &Path) -> PathBuf {
     state_dir.join("node.json")
 }
 
@@ -105,16 +106,6 @@ pub fn load(state_dir: &Path) -> Result<Option<Credentials>> {
         .map(|json| serde_json::from_str(&json))
         .transpose()
         .with_context(|| format!("parsing {}", path.display()))
-}
-
-/// Drops credentials the orchestrator no longer knows, so the next
-/// connection joins afresh.
-///
-/// # Errors
-///
-/// If the file is there but can't be deleted.
-pub fn forget(state_dir: &Path) -> Result<()> {
-    remove(&path(state_dir)).map(drop)
 }
 
 /// Keeps `creds` for the next start, readable only by their owner.
@@ -152,19 +143,5 @@ mod tests {
         drop(first);
         assert_eq!(claim(&base, false).unwrap().instance, 1);
         drop(third);
-    }
-
-    #[test]
-    fn forgetting_drops_the_credentials_once() {
-        let tmp = tempfile::tempdir().unwrap();
-        let creds = Credentials {
-            node_id: "n1".into(),
-            secret: "s".into(),
-            server: None,
-        };
-        save(tmp.path(), &creds).unwrap();
-        forget(tmp.path()).unwrap();
-        assert!(load(tmp.path()).unwrap().is_none());
-        forget(tmp.path()).expect("nothing to forget is fine");
     }
 }

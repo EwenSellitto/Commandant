@@ -8,7 +8,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::process::{Signal, signal_group};
+use crate::process::{self, Signal, signal_group};
 
 const CHUNK_SIZE: usize = 16 * 1024;
 /// How long to keep draining pipes after the process exits (a background
@@ -81,7 +81,7 @@ fn command(task: &RunTask) -> std::io::Result<Command> {
     let Some((program, args)) = task.argv.split_first() else {
         return Err(std::io::Error::other("empty command"));
     };
-    let mut cmd = Command::new(program);
+    let mut cmd = process::command(program);
     cmd.args(args)
         .envs(&task.env)
         .stdin(Stdio::null())

@@ -105,6 +105,15 @@ sequenceDiagram
 - No message for 30 s: the server drops the connection and the node is offline.
 - The worker reconnects with backoff (1 s up to 30 s). It only gives up on bad
   credentials or a name refused.
+- Saved credentials the server rejects (the node was removed, or the server
+  reset) stop the worker, even if it was also given a join token, and on every
+  restart. Otherwise Docker or systemd would restart it and it would rejoin
+  as a new node within seconds. Deleting `node.json` is what makes it join
+  again.
+- Workers join with a worker-only link from `token create`, given with
+  `--link-file` rather than on the command line, where every local user can
+  read it. Nothing the worker starts (commands, harness servers, agent CLIs)
+  inherits `COMMANDANT_LINK` or `COMMANDANT_JOIN_TOKEN`.
 - A worker locks its state directory, so two workers are never the same node.
   If a secret still turns up twice, the server keeps the newer connection and
   stops the older worker.

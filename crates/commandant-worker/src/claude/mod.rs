@@ -25,6 +25,7 @@ use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::harness::{Busy, Harness, HarnessKind, ensure_installed};
+use crate::process;
 
 /// The native installer, into `~/.local/bin`.
 const INSTALL: &str = "curl -fsSL https://claude.ai/install.sh | bash";
@@ -49,7 +50,7 @@ impl ClaudeCode {
             Some(binary) => binary,
             None => ensure_installed("claude", ".local/bin", INSTALL).await?,
         };
-        let version = Command::new(&binary)
+        let version = process::command(&binary)
             .arg("--version")
             .output()
             .await
@@ -70,7 +71,7 @@ impl ClaudeCode {
     /// (else with whatever login Claude Code has on this machine), so the
     /// subscription pays, never an API key.
     fn command(&self, directory: &Path) -> Command {
-        let mut command = Command::new(&self.binary);
+        let mut command = process::command(&self.binary);
         command
             .current_dir(directory)
             .stdin(Stdio::piped())

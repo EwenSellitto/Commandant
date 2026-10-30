@@ -1,10 +1,18 @@
-# A worker joining an orchestrator, using the link `commandant-server serve` printed:
+# A worker joining an orchestrator, with a worker-only link from
+# `commandant token create`:
 #
 #   COMMANDANT_LINK='commandant://...' docker compose -f docker/worker.compose.yml up -d --build
 #
+# Not the admin link `commandant-server serve` printed: what the worker runs,
+# its agent included, could read it from the container, and it controls the
+# whole cluster. A worker-only link joins one worker, then is worthless.
+#
 # The link is only needed on the first start; credentials are kept in the
-# volume. For several workers on one host, give each its own project name
-# (and optionally a node name):
+# volume. A node removed with `commandant node rm` stays removed: the worker
+# stops at every restart. To join again as a new node, delete the state
+# volume (`docker volume rm <project>_state`, once the container is down) and
+# start it with a new link. For several workers on one host, give each its own project name (and
+# optionally a node name):
 #
 #   COMMANDANT_LINK='commandant://...' COMMANDANT_NODE_NAME=box-2b \
 #     docker compose -p box-2b -f docker/worker.compose.yml up -d

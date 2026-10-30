@@ -75,7 +75,8 @@ fn reset(data_dir: &Path) -> Result<()> {
     eprintln!(
         "\nThis deletes every node, join token and task recorded in {}.\n\
          The admin token changes: the current link stops working, clients must\n\
-         log in again and every worker must join again.\n",
+         log in again and every worker must join again: delete its node.json,\n\
+         then give it a new link.\n",
         data_dir.display()
     );
     if !ask("Reset the database? [y/N] ")?.eq_ignore_ascii_case("y") {
@@ -109,9 +110,12 @@ fn ask(question: &str) -> Result<String> {
 
 fn print_welcome(listen: SocketAddr, link: &Link) {
     eprintln!("\nCommandant is listening on {listen}. Connection link:\n\n    {link}\n");
-    eprintln!("  Add a worker:    commandant-server worker {link}");
-    eprintln!("  Control it:      commandant login {link}\n");
-    eprintln!("Anyone with this link controls the cluster; keep it private.\n");
+    eprintln!("  Control it:      commandant login {link}");
+    eprintln!("  Add a worker:    commandant token create, then give the worker that link\n");
+    eprintln!(
+        "Anyone with this link controls the cluster; keep it private, and off\n\
+         workers: whatever they run could read it.\n"
+    );
 }
 
 /// The `host:port`s for the link, comma-separated, which clients try in

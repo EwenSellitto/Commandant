@@ -55,11 +55,13 @@ commandant-cli` first, or cargo refuses to install the client over it.
 commandant-server serve --local-worker
 #    It prints a link: commandant://AuMPUzAc6IS5ocQ1a_7AWy_ocXe-CvHX8jw
 
-# 2. On every other machine:
-commandant-server worker commandant://…
-
-# 3. On your laptop, once (or paste it in `commandant tui`, which asks for it):
+# 2. On your laptop, once (or paste it in `commandant tui`, which asks for it):
 commandant login commandant://…
+
+# 3. For every other machine, a worker-only link (one use, within the hour):
+commandant token create
+#    and on that machine, paste it, then Ctrl-D:
+commandant-server worker --link-file /dev/stdin
 
 # 4. Use it:
 commandant node ls
@@ -69,11 +71,23 @@ commandant tui                       # chat with the nodes' coding agents
 
 A worker remembers its credentials: afterwards `commandant-server worker` alone is enough.
 
+Give workers a worker-only link, never the one `serve` printed. Whatever a
+worker runs, its agents included, runs as its user and could read what the
+worker was given; a worker-only link only joins one worker, then is worthless.
+`--link-file` keeps the link off the command line, which every user of the
+machine can read. Commands and agents never inherit `COMMANDANT_LINK` or
+`COMMANDANT_JOIN_TOKEN`.
+
+A node removed with `commandant node rm` (or after `serve --reset`) stays
+removed: its worker stops, and stops again if restarted. To join it again as a
+new node, delete its `node.json` (in `~/.local/share/commandant/worker`, or
+its `--state-dir`) and give it a new link.
+
 ### The link
 
 - It holds the server's address and the **admin token**: whoever has it controls
-  every worker. Keep it private. For a machine you trust less, use a
-  worker-only link from `commandant token create`.
+  every worker. Keep it to the machines you control the cluster from; workers
+  get a worker-only link from `commandant token create`.
 - It also holds the fingerprint of the server's TLS certificate, so whoever uses
   it talks to that server and no other.
 - It survives restarts. It is saved in `~/.local/share/commandant/server/link`.
@@ -182,7 +196,7 @@ Every command has `--help`.
 | Command | |
 |---|---|
 | `serve [--local-worker] [--harness H] [--advertise HOSTS] [--reset]` | Run the orchestrator (port 7400) |
-| `worker [LINK] [--harness H] [--name N] [--state-dir DIR]` | Run a worker |
+| `worker [LINK \| --link-file FILE] [--harness H] [--name N] [--state-dir DIR]` | Run a worker |
 
 `commandant` finds the server from `--addr`/`--token`, then
 `COMMANDANT_ADDR`/`COMMANDANT_TOKEN`, then what `login` saved:
@@ -216,7 +230,8 @@ directory (`worker`, `worker-2`, …) and name. Workers refuse to run as root.
 docker compose -f docker/orchestrator.compose.yml up -d --build && \
   docker compose -f docker/orchestrator.compose.yml exec server cat /data/link
 
-# A worker, on each machine (add COMMANDANT_HARNESS=opencode for an agent):
+# A worker, on each machine, with a worker-only link from `commandant token
+# create` (add COMMANDANT_HARNESS=opencode for an agent):
 COMMANDANT_LINK='commandant://…' docker compose -f docker/worker.compose.yml up -d --build
 ```
 

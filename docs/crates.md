@@ -68,10 +68,10 @@ code, so every front end shares it. Code used by several crates goes in
 
 | File | |
 |---|---|
-| `lib.rs` | Connects and reconnects, then runs tasks and answers questions |
+| `lib.rs` | Connects and reconnects, then runs tasks and answers questions; stops for good when its saved credentials are rejected |
 | `state.rs` | `node.json` (credentials), and the state-directory lock |
 | `exec.rs` | Runs a command in its own process group and streams its output |
-| `process.rs` | Signals a child's whole process group |
+| `process.rs` | Every child the worker starts, without its link or tokens in the environment; signals a child's whole process group |
 | `project.rs` | Clones and lists projects and their copies (git2) |
 | `harness.rs` | The `Harness` trait, the `Host` of the running harness, and what harnesses share (session lock, installer, output writer) |
 | `opencode/` | OpenCode: the server process (`mod.rs`), its HTTP API (`api.rs`), prompts (`prompt.rs`), options, sessions and sign-in |
@@ -82,7 +82,7 @@ code, so every front end shares it. Code used by several crates goes in
 | File | |
 |---|---|
 | `main.rs`, `cli.rs` | Logging, and the command line (clap) |
-| `serve.rs`, `worker.rs` | `serve` (link, reset, local worker) and `worker` |
+| `serve.rs`, `worker.rs` | `serve` (link, reset, local worker) and `worker` (the link as an argument or from `--link-file`) |
 | `tests/e2e.rs` | End-to-end tests with a real server and workers in-process, and a real client core against them |
 | `tests/fake_opencode/` | A fake OpenCode the tests drive (`hold`, `fail`, `permission` in a prompt) |
 
