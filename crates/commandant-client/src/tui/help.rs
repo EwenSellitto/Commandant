@@ -214,6 +214,8 @@ fn keys(keys: &[(&str, &str, Option<Key>)]) -> impl Iterator<Item = (String, Str
 
 #[cfg(test)]
 mod tests {
+    use commandant_client_core::ChatId;
+
     use super::*;
     use crate::picker::Picked;
 
@@ -227,7 +229,7 @@ mod tests {
 
     fn chat() -> Chat {
         let node = commandant_proto::NodeInfo::default();
-        Chat::new(1, node, Default::default(), None)
+        Chat::new(ChatId::default(), node, Default::default(), None)
     }
 
     #[test]

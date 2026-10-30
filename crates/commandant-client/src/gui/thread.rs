@@ -72,7 +72,7 @@ impl Connected {
         let renderer = cx.processor(move |this, index: usize, window, cx| {
             this.render_row(id, index, window, cx)
         });
-        MessageScroller::new(("thread", id), pane.scroller.clone(), renderer)
+        MessageScroller::new(("thread", u64::from(id)), pane.scroller.clone(), renderer)
             .with_row_style(gap)
             .with_jump_button_renderer(move |button| button.label(label))
             .into_any_element()

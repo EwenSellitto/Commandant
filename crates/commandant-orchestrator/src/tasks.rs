@@ -168,7 +168,7 @@ mod tests {
 
     use super::*;
 
-    const CONN: ConnId = 7;
+    const CONN: ConnId = ConnId(7);
 
     fn owner() -> Owner {
         Owner {
@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(text(&backlog), "one ");
         hub.output(CONN, out("two"));
         // Another connection can't speak for the task.
-        hub.output(CONN + 1, out("forged"));
+        hub.output(ConnId(8), out("forged"));
         let done = TaskFinished {
             task_id: "t".into(),
             exit_code: Some(0),

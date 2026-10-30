@@ -202,7 +202,7 @@ pub struct Chat {
     pending: Option<(Menu, String)>,
     /// What was sent, oldest first, to bring back.
     sent: Vec<String>,
-    next_run: RunId,
+    next_run: u64,
 }
 
 impl Chat {

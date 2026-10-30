@@ -10,7 +10,8 @@ use tonic::Status;
 
 /// Unique per connection, so a stale connection closing can't evict a newer
 /// one for the same node.
-pub type ConnId = u64;
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct ConnId(pub(crate) u64);
 
 pub type NodeTx = mpsc::Sender<Result<OrchestratorMsg, Status>>;
 
@@ -39,7 +40,7 @@ impl Registry {
         harnesses: Vec<String>,
         can_host: Vec<String>,
     ) -> ConnId {
-        let id = self.last_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = ConnId(self.last_id.fetch_add(1, Ordering::Relaxed) + 1);
         let connection = Connection {
             id,
             tx,

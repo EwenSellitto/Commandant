@@ -30,10 +30,18 @@ use commandant_proto::task_event::Event as TaskEvent;
 use commandant_proto::{AgentOptions, AgentSession, NodeInfo};
 
 use self::chat::{Activity, AppCommand, Chat, Message, Settings};
-use self::tasks::{ListId, Output, OutputId, Tasks};
+use self::tasks::{Output, Tasks};
 
 /// Tells chats apart for as long as the client runs.
-pub type ChatId = u64;
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct ChatId(pub(crate) u64);
+
+/// For front ends that key their widgets by number.
+impl From<ChatId> for u64 {
+    fn from(id: ChatId) -> Self {
+        id.0
+    }
+}
 
 /// How long to wait before asking again for commands that were loading.
 const OPTIONS_RETRY: Duration = Duration::from_secs(3);
@@ -77,9 +85,9 @@ pub(crate) struct State {
     link: String,
     /// The last node listing failed; the next to succeed clears it.
     unreachable: bool,
-    next_id: ChatId,
-    next_list: ListId,
-    next_output: OutputId,
+    next_id: u64,
+    next_list: u64,
+    next_output: u64,
 }
 
 impl State {
@@ -426,7 +434,7 @@ impl State {
         {
             return Outcome::go(Go::Chat(blank.id));
         }
-        let id = self.next_id;
+        let id = ChatId(self.next_id);
         self.next_id += 1;
         let options = self.options.get(&node.id).cloned();
         let fetch = options.is_none().then(|| Effect::fetch_options(&node.id));
@@ -584,7 +592,7 @@ impl State {
 
     /// Opens a chat on a session `node` saved, as it was last used.
     fn resume_on(&mut self, node: NodeInfo, saved: AgentSession) -> Outcome {
-        let id = self.next_id;
+        let id = ChatId(self.next_id);
         let fetch = Effect::FetchHistory {
             chat: id,
             node: node.id.clone(),

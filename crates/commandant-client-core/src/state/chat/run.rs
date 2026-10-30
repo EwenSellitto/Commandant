@@ -10,7 +10,15 @@ use super::{Chat, Entry, Role, Unseen};
 use crate::state::{Effect, Outcome};
 
 /// Tells a chat's commands apart.
-pub type RunId = u64;
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct RunId(pub(crate) u64);
+
+/// For front ends that key their widgets by number.
+impl From<RunId> for u64 {
+    fn from(id: RunId) -> Self {
+        id.0
+    }
+}
 
 /// How much of a command's output its block keeps: the end of it. The
 /// server keeps more.
@@ -197,7 +205,7 @@ impl Chat {
             self.info("! runs a shell command on the node, in this chat's directory: !ls");
             return Outcome::default();
         }
-        let id = self.next_run;
+        let id = RunId(self.next_run);
         self.next_run += 1;
         self.thread.push(Entry {
             role: Role::Command,

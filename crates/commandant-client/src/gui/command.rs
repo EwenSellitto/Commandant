@@ -30,7 +30,7 @@ pub(super) fn command_header(
     let theme = cx.theme();
     let stopping = run.stopping();
     let stop = run.running().then(|| {
-        Button::new(("stop-run", run.id))
+        Button::new(("stop-run", u64::from(run.id)))
             .danger()
             .xsmall()
             .icon(IconName::Square)

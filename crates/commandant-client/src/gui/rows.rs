@@ -149,7 +149,7 @@ impl Tally {
 
 #[cfg(test)]
 mod tests {
-    use commandant_client_core::chat::{Activity, Ended, Printed, Run};
+    use commandant_client_core::chat::{Activity, Ended, Printed, Run, RunId};
 
     use super::*;
 
@@ -236,7 +236,7 @@ mod tests {
         use Role::*;
         let mut tally = Tally::default();
         let mut chat = chat(&[User, Command, Agent], true);
-        chat.thread[1].run = Some(Run::new(0, usize::MAX));
+        chat.thread[1].run = Some(Run::new(RunId::default(), usize::MAX));
         let all = rows(&chat.thread);
         tally.change(&chat, &all, false);
         let run = chat.thread[1].run.as_mut().unwrap();

@@ -231,7 +231,7 @@ impl Connected {
             .invisible()
             .group_hover("chat-row", gpui::Styled::visible)
             .child(
-                Button::new(("close", id))
+                Button::new(("close", u64::from(id)))
                     .ghost()
                     .xsmall()
                     .icon(IconName::Close)
@@ -243,7 +243,7 @@ impl Connected {
             );
         let shown = self.shown == Some(id);
         let row = h_flex()
-            .id(("chat", id))
+            .id(("chat", u64::from(id)))
             .group("chat-row")
             .gap_1()
             .pl_4()
