@@ -20,7 +20,8 @@ More detail: [how it works](docs/architecture.md) · [code layout](docs/crates.m
 
 ## Install
 
-Needs Rust 1.95+. The server binary also needs `pkg-config` and OpenSSL's
+Needs Rust 1.95+; `rust-toolchain.toml` pins 1.98.1, which rustup installs
+on the first build. The server binary also needs `pkg-config` and OpenSSL's
 headers (`libssl-dev` on Debian, `openssl-devel` on Fedora), or use
 [Docker](#docker).
 
