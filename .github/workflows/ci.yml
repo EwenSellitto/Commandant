@@ -8,14 +8,26 @@ on:
 jobs:
   check:
     runs-on: ubuntu-24.04
+    env:
+      # sccache caches the workspace's own crates, which rust-cache leaves out.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      # Branches can only read main's caches, so only main writes them.
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
     steps:
       - uses: actions/checkout@v4
-      # What GPUI links against on Linux.
-      - run: >
-          sudo apt-get update && sudo apt-get install -y
-          libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
-          libfontconfig-dev libfreetype-dev libx11-xcb-dev libxcb1-dev
-      - uses: dtolnay/rust-toolchain@stable
+      # What GPUI links against on Linux, cached instead of downloaded each run.
+      - uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: >-
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
+            libfontconfig-dev libfreetype-dev libx11-xcb-dev libxcb1-dev
+          version: 1
+      # Installs the toolchain rust-toolchain.toml pins.
+      - run: rustup toolchain install
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Formatting and lints run in the pre-commit hook (.githooks/pre-commit).
       - run: cargo test --workspace --features commandant-client/gui-tests

@@ -1,0 +1,5 @@
+# The toolchain CI and local builds use; bump it on purpose, not on each release.
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

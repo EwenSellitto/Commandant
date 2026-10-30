@@ -147,3 +147,4 @@ server, which keeps the calls it would make.
 | `docker/Dockerfile` | The image: `commandant-server`, `git`, `curl`, run as user `commandant` |
 | `docker/*.compose.yml` | Orchestrator and worker deployments |
 | `docker-compose.yml` | A server and two workers on one host, for development |
+| `rust-toolchain.toml` | The Rust version CI and local builds use |
