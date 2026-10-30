@@ -23,6 +23,11 @@ use crate::{Shared, internal};
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// Three missed worker heartbeats.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest node name, in bytes; a Linux hostname fits.
+const MAX_NAME: usize = 64;
+/// Longest hostname, os, arch, version or capability a hello may carry.
+const MAX_FACT: usize = 256;
+const MAX_CAPABILITIES: usize = 64;
 
 pub struct LinkService {
     shared: Arc<Shared>,
@@ -34,6 +39,7 @@ impl LinkService {
     }
 
     async fn admit(&self, hello: &Hello) -> Result<Welcome, Status> {
+        check_facts(hello)?;
         let facts = NodeFacts {
             hostname: &hello.hostname,
             os: &hello.os,
@@ -55,19 +61,24 @@ impl LinkService {
         facts: &NodeFacts<'_>,
     ) -> Result<Welcome, Status> {
         let store = &self.shared.store;
-        // Checked before spending a single-use token on a join that would fail.
+        let admin = self.shared.admin_tokens.accepts(join_token);
+        let hash = hash_token(join_token);
+        // The token first, so a stranger learns nothing about the nodes; the
+        // names next, before a single-use token is spent on a join that fails.
+        if !admin && !store.join_token_usable(&hash).await.map_err(internal)? {
+            return Err(bad_join_token());
+        }
         if store.node_name_taken(name).await.map_err(internal)? {
             return Err(name_taken(name));
         }
-        let accepted = self.shared.admin_tokens.accepts(join_token)
-            || store
-                .consume_join_token(&hash_token(join_token))
-                .await
-                .map_err(internal)?;
-        if !accepted {
-            return Err(Status::unauthenticated(
-                "invalid, expired or already used join token",
-            ));
+        if store.node_id_starts_with(name).await.map_err(internal)? {
+            return Err(Status::invalid_argument(format!(
+                "{name:?} is the start of a node's id, so it would not name one node; \
+                 give this worker another --name"
+            )));
+        }
+        if !admin && !store.consume_join_token(&hash).await.map_err(internal)? {
+            return Err(bad_join_token());
         }
 
         let node_id = uuid::Uuid::new_v4().to_string();
@@ -112,6 +123,8 @@ impl LinkService {
     }
 }
 
+/// The name a joining worker asks for: letters, digits, `.`, `_` and `-`,
+/// so it prints safely and reads as one word on a command line.
 fn node_name(hello: &Hello) -> Result<&str, Status> {
     let name = if hello.name.is_empty() {
         &hello.hostname
@@ -121,7 +134,42 @@ fn node_name(hello: &Hello) -> Result<&str, Status> {
     if name.is_empty() {
         return Err(Status::invalid_argument("node name is required"));
     }
+    let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-');
+    if name.len() > MAX_NAME || !name.chars().all(allowed) {
+        return Err(Status::invalid_argument(format!(
+            "node name {name:?} is not allowed: use up to {MAX_NAME} letters, digits, \
+             '.', '_' or '-' (set it with --name)"
+        )));
+    }
     Ok(name)
+}
+
+/// Refuses a hello whose facts are too long to keep or list.
+fn check_facts(hello: &Hello) -> Result<(), Status> {
+    let fields = [
+        ("hostname", &hello.hostname),
+        ("os", &hello.os),
+        ("arch", &hello.arch),
+        ("version", &hello.version),
+    ];
+    let capabilities = hello.capabilities.iter().map(|c| ("capability", c));
+    for (field, value) in fields.into_iter().chain(capabilities) {
+        if value.len() > MAX_FACT {
+            return Err(Status::invalid_argument(format!(
+                "{field} is longer than {MAX_FACT} bytes"
+            )));
+        }
+    }
+    if hello.capabilities.len() > MAX_CAPABILITIES {
+        return Err(Status::invalid_argument(format!(
+            "more than {MAX_CAPABILITIES} capabilities"
+        )));
+    }
+    Ok(())
+}
+
+fn bad_join_token() -> Status {
+    Status::unauthenticated("invalid, expired or already used join token")
 }
 
 /// With `prefix` [`HOSTS`], `harness:opencode` in the hello's capabilities
@@ -251,4 +299,28 @@ async fn forget_connection(shared: &Shared, node_id: &str, conn_id: ConnId) {
         shared.hub.close(&task_id);
     }
     let _ = shared.store.touch_node(node_id).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hellos_carry_short_facts_and_plain_names() {
+        let hello = |hostname: &str, capabilities: usize| Hello {
+            hostname: hostname.into(),
+            capabilities: vec!["exec".into(); capabilities],
+            ..Default::default()
+        };
+        assert!(check_facts(&hello("box", MAX_CAPABILITIES)).is_ok());
+        assert!(check_facts(&hello(&"h".repeat(MAX_FACT + 1), 1)).is_err());
+        assert!(check_facts(&hello("box", MAX_CAPABILITIES + 1)).is_err());
+
+        // Without --name, the hostname is the name, and a Linux one fits.
+        assert_eq!(node_name(&hello("Box-2.lan", 1)).unwrap(), "Box-2.lan");
+        assert!(node_name(&hello(&"h".repeat(MAX_NAME), 1)).is_ok());
+        for bad in ["", "a b", "a\u{1b}[2J", "café", &"h".repeat(MAX_NAME + 1)] {
+            assert!(node_name(&hello(bad, 1)).is_err(), "{bad:?}");
+        }
+    }
 }

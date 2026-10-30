@@ -36,7 +36,7 @@ fn main() {
         Ok(exit_code) => std::process::exit(exit_code),
         Err(e) => {
             match e.downcast_ref::<tonic::Status>() {
-                Some(status) => eprintln!("error: {}", status.message()),
+                Some(status) => eprintln!("error: {}", admin::printable(status.message())),
                 None => eprintln!("error: {e:#}"),
             }
             std::process::exit(1);

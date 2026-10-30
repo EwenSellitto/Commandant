@@ -130,7 +130,8 @@ pub async fn start_agent(client: &Client, node: String, harness: String) -> Resu
         .start_harness(StartHarnessRequest { node, harness })
         .await?
         .into_inner();
-    println!("{} now hosts {}", node.name, node.harnesses.join(", "));
+    let hosts = format!("{} now hosts {}", node.name, node.harnesses.join(", "));
+    println!("{}", printable(&hosts));
     Ok(())
 }
 
@@ -283,14 +284,22 @@ fn table<const N: usize>(header: [&str; N], rows: impl IntoIterator<Item = [Stri
     print!("{}", aligned(header, rows));
 }
 
+/// `text` without control characters, for printing what workers report: a
+/// hostname could otherwise carry escape sequences to the terminal.
+pub fn printable(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
+}
+
 /// `rows` under `header`, one line each, every column as wide as its widest
-/// cell but the last, which is left as long as it is.
+/// cell but the last, which is left as long as it is. Cells are
+/// [`printable`].
 fn aligned<const N: usize>(
     header: [&str; N],
     rows: impl IntoIterator<Item = [String; N]>,
 ) -> String {
     let rows: Vec<[String; N]> = std::iter::once(header.map(String::from))
         .chain(rows)
+        .map(|row| row.map(|cell| printable(&cell)))
         .collect();
     let widths: [usize; N] =
         std::array::from_fn(|i| rows.iter().map(|r| r[i].width()).max().unwrap_or_default());
@@ -324,5 +333,16 @@ mod tests {
              b2 a-much-longer-name -\n"
         );
         assert_eq!(aligned(["ID", "NAME"], []), "ID NAME\n");
+    }
+
+    #[test]
+    fn cells_cannot_reach_the_terminal() {
+        let clipboard = "\u{1b}]52;c;cm0gLXJmIH4=\u{7}box".to_string();
+        let rows = [[clipboard, "a\r\nb\u{9b}2J".into()]];
+        assert_eq!(
+            aligned(["NAME", "OS"], rows),
+            "NAME                  OS\n\
+             ]52;c;cm0gLXJmIH4=box ab2J\n"
+        );
     }
 }

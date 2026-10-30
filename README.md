@@ -203,6 +203,9 @@ Every command has `--help`.
 `NODE` is a name, an id or an id prefix. Most options also have an environment
 variable, shown in `--help`.
 
+A node's name (`--name`, else the hostname) is up to 64 letters, digits, `.`,
+`_` or `-`, and can't be the start of another node's id.
+
 Several workers can run on one machine: each takes the next free state
 directory (`worker`, `worker-2`, …) and name. Workers refuse to run as root.
 
