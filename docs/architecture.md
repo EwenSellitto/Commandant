@@ -76,6 +76,15 @@ kept in full, so the database alone gives back the same link.
 A worker may only report on what was sent down its own connection: output and
 results for its own tasks, answers to the questions put to it.
 
+A worker names itself (`--name`, else its hostname), so the server checks it:
+up to 64 letters, digits, `.`, `_` or `-`, not taken, and not the start of a
+node's id. A name that is one node's and the start of another's id is
+ambiguous, never a match, so a worker can't capture tasks meant for another
+node. A join's token is checked before its name, so a stranger can't learn
+which names exist, and a single-use token isn't spent on a refused name. The
+rest of a hello is capped in length, and the CLI prints what workers report
+without control characters.
+
 ### A worker's life
 
 ```mermaid
@@ -95,7 +104,7 @@ sequenceDiagram
 
 - No message for 30 s: the server drops the connection and the node is offline.
 - The worker reconnects with backoff (1 s up to 30 s). It only gives up on bad
-  credentials or a name already taken.
+  credentials or a name refused.
 - A worker locks its state directory, so two workers are never the same node.
   If a secret still turns up twice, the server keeps the newer connection and
   stops the older worker.

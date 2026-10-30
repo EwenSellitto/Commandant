@@ -234,6 +234,20 @@ impl Store {
         Ok(())
     }
 
+    /// Whether [`Self::consume_join_token`] would accept the token, without
+    /// using it.
+    pub async fn join_token_usable(&self, hash: &str) -> Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM join_tokens
+             WHERE hash = ? AND (reusable = 1 OR uses = 0)
+               AND (expires_at IS NULL OR expires_at > ?))",
+        )
+        .bind(hash)
+        .bind(now())
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     /// Atomically uses a join token. Returns false if unknown, expired or spent.
     pub async fn consume_join_token(&self, hash: &str) -> Result<bool> {
         let res = sqlx::query(
@@ -318,6 +332,16 @@ impl Store {
         Ok(
             sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM nodes WHERE name = ?)")
                 .bind(name)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    /// Whether some node's id starts with `prefix`.
+    pub async fn node_id_starts_with(&self, prefix: &str) -> Result<bool> {
+        Ok(
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM nodes WHERE instr(id, ?) = 1)")
+                .bind(prefix)
                 .fetch_one(&self.pool)
                 .await?,
         )

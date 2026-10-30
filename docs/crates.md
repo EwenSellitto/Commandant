@@ -36,7 +36,7 @@ code, so every front end shares it. Code used by several crates goes in
 | `harness.rs` | `HarnessKind`: the coding agents a worker can host, by name and description |
 | `fs.rs` | Private (0600) files, written atomically; reading optional and single-value files; deleting a file or directory |
 | `dirs.rs` | Default data, state and config directories |
-| `lookup.rs` | Finding a node by name, id or id prefix, and a task by id or id prefix |
+| `lookup.rs` | Finding a node by name, id or id prefix (a name that starts another node's id is ambiguous), and a task by id or id prefix |
 | `time.rs` | Unix time, `12s ago` for tables, and lifetimes as typed (`30m`, `1h`, `7d`) |
 
 ## `commandant-proto`
@@ -55,7 +55,7 @@ code, so every front end shares it. Code used by several crates goes in
 |---|---|
 | `lib.rs` | Opens the data directory, sets up the admin token, serves both services over TLS |
 | `tls.rs` | The server's self-signed certificate, made once and kept in the database |
-| `link.rs` | `NodeLink`: admits workers (join or reconnect) and handles their messages |
+| `link.rs` | `NodeLink`: admits workers (join or reconnect), checking their token before their name and the length of what they report, and handles their messages |
 | `control.rs` | `Control`: the admin API; sends tasks and questions to workers |
 | `registry.rs` | Which node is connected, on which connection, with which harnesses |
 | `tasks.rs` | Fans live task output out to watching clients, keeping its tail |
@@ -91,7 +91,7 @@ code, so every front end shares it. Code used by several crates goes in
 | File | |
 |---|---|
 | `main.rs`, `cli.rs` | Logging, the tokio runtime, and the command line (clap); a bare `commandant` prints help in a terminal and opens the GUI elsewhere |
-| `admin.rs`, `run.rs` | `login`, `token`, `node`, `task`; `run`, `prompt` and `task watch`: plain gRPC calls. `logout` forgets the saved server, and says if flags or the environment still name one; `link` prints the link, with no call |
+| `admin.rs`, `run.rs` | `login`, `token`, `node`, `task`; `run`, `prompt` and `task watch`: plain gRPC calls. Tables and errors are printed without control characters. `logout` forgets the saved server, and says if flags or the environment still name one; `link` prints the link, with no call |
 | `start.rs` | What `tui` and `gui` give the core: new chats' defaults, and the chat `--node` and `--session` open first |
 | `picker.rs` | A list narrowed down by typing, and what answers a choose-ask with one: the TUI drives it with keys, the GUI with its filter field |
 | `tui/mod.rs` | The TUI's event loop: draws, reads keys, hands the core's updates back to it; the first-run screen before it when no server is saved, and again after `/logout` |

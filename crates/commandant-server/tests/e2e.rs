@@ -472,6 +472,110 @@ async fn admin_link_enrols_workers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn only_the_admin_token_opens_the_control_api() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (addr, admin_token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
+    let mut client = connect_control(&addr, &admin_token).await.unwrap();
+    let join = client
+        .create_join_token(CreateJoinTokenRequest {
+            ttl_secs: 600,
+            reusable: true,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .token;
+    let state_dir = tmp.path().join("worker");
+    let worker = spawn_worker(&addr, Some(join.clone()), &state_dir);
+    wait_for_node(&mut client, true).await;
+    let secret = saved_credentials(&state_dir).await.secret;
+
+    for token in [join, secret] {
+        let mut intruder = connect_control(&addr, &token).await.unwrap();
+        let err = intruder.list_nodes(ListNodesRequest {}).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated, "{token}");
+    }
+    worker.abort();
+}
+
+/// What the orchestrator answers a hello with `auth` asking for `name`.
+async fn answer_hello(addr: &str, auth: hello::Auth, name: &str) -> tonic::Code {
+    let hello = Hello {
+        auth: Some(auth),
+        name: name.into(),
+        hostname: "host".into(),
+        ..Default::default()
+    };
+    let channel = commandant_proto::channel(addr).await.unwrap();
+    let messages = tokio_stream::iter([WorkerMsg::from(hello)]);
+    match node_link_client::NodeLinkClient::new(channel)
+        .link(messages)
+        .await
+    {
+        Ok(_) => tonic::Code::Ok,
+        Err(status) => status.code(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workers_cannot_take_names_that_mislead() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (addr, admin_token, _stop) = start_orchestrator(&tmp.path().join("server")).await;
+    let mut client = connect_control(&addr, &admin_token).await.unwrap();
+    let worker = spawn_worker(&addr, Some(admin_token), &tmp.path().join("worker"));
+    let w1 = wait_for_node(&mut client, true).await;
+    let join = client
+        .create_join_token(CreateJoinTokenRequest {
+            ttl_secs: 600,
+            reusable: false,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .token;
+    let with = |token: &str| hello::Auth::JoinToken(token.into());
+
+    // Without a valid token, nothing tells which names are taken.
+    assert_eq!(
+        answer_hello(&addr, with("cmdj_nope"), "w1").await,
+        tonic::Code::Unauthenticated
+    );
+    assert_eq!(
+        answer_hello(&addr, with("cmdj_nope"), "w2").await,
+        tonic::Code::Unauthenticated
+    );
+
+    // Names that would print badly or capture another node's id are refused,
+    // without spending the single-use token.
+    assert_eq!(
+        answer_hello(&addr, with(&join), "w1").await,
+        tonic::Code::AlreadyExists
+    );
+    for name in [
+        "evil\u{1b}]52;c;eA==\u{7}",
+        "a b",
+        &"x".repeat(65),
+        &w1.id[..4],
+        &w1.id,
+    ] {
+        assert_eq!(
+            answer_hello(&addr, with(&join), name).await,
+            tonic::Code::InvalidArgument,
+            "{name:?}"
+        );
+    }
+    assert_eq!(
+        answer_hello(&addr, with(&join), "w2.lab_1-a").await,
+        tonic::Code::Ok
+    );
+    assert_eq!(
+        answer_hello(&addr, with(&join), "w3").await,
+        tonic::Code::Unauthenticated
+    );
+    worker.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_restarted_server_keeps_its_link_and_nodes() {
     let tmp = tempfile::tempdir().unwrap();
     let data_dir = tmp.path().join("server");
