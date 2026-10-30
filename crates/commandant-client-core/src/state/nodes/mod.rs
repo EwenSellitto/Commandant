@@ -113,7 +113,7 @@ impl State {
         };
         self.notice.clear();
         if lacks_agent(&node) {
-            self.choose_harness(node);
+            self.choose_harness(&node);
         } else if !node.online {
             self.notice.tell(format!("{} is offline", node.name));
         } else {

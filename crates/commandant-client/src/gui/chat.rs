@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use commandant_client_core::chat::Menu;
-use commandant_client_core::{Chat, ChatId, Intent, Scope};
+use commandant_client_core::{Chat, ChatId, Intent, Scope, step_index};
 use commandant_common::or;
 use gpui::{
     App, AppContext as _, Context, Div, Entity, InteractiveElement as _, IntoElement,
@@ -140,11 +140,11 @@ impl Connected {
         let (Some(chat), Some(pane)) = (self.core.chat(id), self.panes.get_mut(&id)) else {
             return false;
         };
-        let count = suggestions(chat, pane, cx).len() as isize;
+        let count = suggestions(chat, pane, cx).len();
         if count == 0 {
             return false;
         }
-        pane.suggested = (pane.suggested as isize + step).rem_euclid(count) as usize;
+        pane.suggested = step_index(pane.suggested, step, count);
         pane.completions.scroll_to_item(pane.suggested);
         cx.notify();
         true
@@ -257,7 +257,7 @@ fn render_composer(
     if pane.placeholder != placeholder {
         pane.placeholder = placeholder.clone();
         pane.composer.update(cx, |composer, cx| {
-            composer.set_placeholder(placeholder, window, cx)
+            composer.set_placeholder(placeholder, window, cx);
         });
     }
     let completions = render_completions(chat, pane, cx);
@@ -424,7 +424,7 @@ fn render_header(chat: &Chat, cx: &Context<Connected>) -> Div {
                         .cursor_pointer()
                         .hover(|s| s.text_color(theme.foreground))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.act(Intent::Projects(id), window, cx)
+                            this.act(Intent::Projects(id), window, cx);
                         }))
                         .child(cwd.to_string()),
                 ),

@@ -146,7 +146,7 @@ async fn start_task(
 ) -> (String, tonic::Streaming<TaskEvent>) {
     let request = RunCommandRequest {
         node: "w1".into(),
-        argv: argv.iter().map(|s| s.to_string()).collect(),
+        argv: argv.iter().map(std::string::ToString::to_string).collect(),
         ..Default::default()
     };
     started(client.run_command(request).await.unwrap().into_inner()).await
@@ -169,7 +169,7 @@ async fn collect(mut events: tonic::Streaming<TaskEvent>) -> TaskResult {
         loop {
             match events.message().await.unwrap().and_then(|e| e.event) {
                 Some(task_event::Event::Output(out)) if out.stream() == OutputStream::Stderr => {
-                    stderr.extend(out.data)
+                    stderr.extend(out.data);
                 }
                 Some(task_event::Event::Output(out)) => stdout.extend(out.data),
                 Some(task_event::Event::Finished(done)) => return done,
@@ -574,17 +574,17 @@ mod reset {
                 // Kept open until the server exits, or it would read EOF.
                 let out = tokio::time::timeout(WAIT, child.wait_with_output()).await;
                 drop(pty.keyboard);
-                return stderr_of_failure(out.expect("reset never gave up").unwrap());
+                return stderr_of_failure(&out.expect("reset never gave up").unwrap());
             }
         };
         let out = tokio::time::timeout(WAIT, child.wait_with_output())
             .await
             .expect("reset never gave up")
             .unwrap();
-        stderr_of_failure(out)
+        stderr_of_failure(&out)
     }
 
-    fn stderr_of_failure(out: std::process::Output) -> String {
+    fn stderr_of_failure(out: &std::process::Output) -> String {
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
         assert!(!out.status.success(), "reset went through: {stderr}");
         stderr
@@ -651,7 +651,7 @@ mod reset {
         let node = wait_for_named(&mut client, &hostname, true).await;
         assert_ne!(node.id, old_node.id);
 
-        let pid = child.id().expect("still running") as i32;
+        let pid = i32::try_from(child.id().expect("still running")).unwrap();
         assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
         let status = tokio::time::timeout(WAIT, child.wait())
             .await
@@ -1673,7 +1673,10 @@ mod agents {
             line: String::new(),
         });
         assert!(asked.go.is_none());
-        assert!(core.ask(Scope::App).is_some_and(|a| a.wants_line()));
+        assert!(
+            core.ask(Scope::App)
+                .is_some_and(commandant_client_core::Ask::wants_line)
+        );
         let Some(Go::Output(ran)) = core.act(Intent::Enter(Scope::App, line.clone())).go else {
             panic!("running should show its output");
         };
@@ -2206,7 +2209,7 @@ echo '{"type":"result","is_error":false,"total_cost_usd":1.5,"usage":{"input_tok
                 client
                     .prepare_project(request)
                     .await
-                    .map(|r| r.into_inner())
+                    .map(tonic::Response::into_inner)
             }
         };
         let list = || {

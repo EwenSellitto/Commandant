@@ -7,8 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_default()
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 /// Human-friendly age of a timestamp: `12s ago`, `3h ago`...
@@ -22,6 +21,10 @@ pub fn ago(ts: i64) -> String {
 }
 
 /// A lifetime as typed: `90` or `90s`, `30m`, `1h`, `7d`.
+///
+/// # Errors
+///
+/// What is wrong with `s`, to show: no number, or an unknown unit.
 pub fn parse_duration(s: &str) -> Result<Duration, String> {
     let s = s.trim();
     let unit_start = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());

@@ -105,11 +105,11 @@ pub(super) fn draw_output(frame: &mut Frame, output: &Output, scroll: &mut u16, 
         Layout::vertical([Length(1), Length(1), Length(1), Min(1), Length(1)]).areas(area);
     let width = area.width as usize;
     let line = Line::from(Span::raw(output.line.replace(['\r', '\n'], " ")).bold());
-    let line = text::wrap(line, width, &"$ ".fg(MUTED), &INDENT.into());
+    let line = text::wrap(&line, width, &"$ ".fg(MUTED), &INDENT.into());
     frame.render_widget(line.into_iter().next().unwrap_or_default(), command);
     let cwd = commandant_common::or(&output.cwd, "worker's directory").to_string();
     let took = output.finished.unwrap_or_else(commandant_common::time::now) - output.started;
-    let took = elapsed(Duration::from_secs(took.max(0) as u64));
+    let took = elapsed(Duration::from_secs(u64::try_from(took).unwrap_or(0)));
     let said = [output.node.clone(), cwd, took].map(|s| s.fg(MUTED));
     frame.render_widget(Line::from(dotted(said)), facts);
 

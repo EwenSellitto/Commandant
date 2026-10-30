@@ -7,6 +7,10 @@ use anyhow::{Context, Result};
 /// Writes a file only the current user can read, creating parent directories.
 /// The new contents replace the old in one step, so a reader (or a crash)
 /// never meets a half-written file.
+///
+/// # Errors
+///
+/// If the directories can't be created or the file can't be written.
 pub fn write_private(path: &Path, contents: &str) -> Result<()> {
     use std::io::Write;
     if let Some(parent) = path.parent() {
@@ -29,6 +33,10 @@ pub fn write_private(path: &Path, contents: &str) -> Result<()> {
 
 /// Deletes a file, or a directory and all it holds; nothing there is fine.
 /// Whether there was something.
+///
+/// # Errors
+///
+/// If something is there but can't be deleted.
 pub fn remove(path: &Path) -> Result<bool> {
     let removed = if path.is_dir() {
         std::fs::remove_dir_all(path)
@@ -43,6 +51,10 @@ pub fn remove(path: &Path) -> Result<bool> {
 }
 
 /// Reads a file, or `None` if it doesn't exist.
+///
+/// # Errors
+///
+/// If it exists but can't be read as UTF-8 text.
 pub fn read_optional(path: &Path) -> Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
@@ -53,6 +65,10 @@ pub fn read_optional(path: &Path) -> Result<Option<String>> {
 
 /// A single-value setting kept in a file, trimmed; `None` if the file is
 /// missing or blank.
+///
+/// # Errors
+///
+/// As [`read_optional`].
 pub fn read_setting(path: &Path) -> Result<Option<String>> {
     Ok(non_blank(read_optional(path)?))
 }
@@ -63,6 +79,10 @@ pub fn non_blank(text: Option<String>) -> Option<String> {
 }
 
 /// Reads a single-value file (a token, a host...) without surrounding whitespace.
+///
+/// # Errors
+///
+/// If it doesn't exist or can't be read as UTF-8 text.
 pub fn read_trimmed(path: &Path) -> Result<String> {
     Ok(std::fs::read_to_string(path)
         .with_context(|| format!("reading {}", path.display()))?

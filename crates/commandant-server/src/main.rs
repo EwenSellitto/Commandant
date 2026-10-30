@@ -1,3 +1,5 @@
+//! `commandant-server`: runs an orchestrator or a worker node.
+
 mod cli;
 mod serve;
 mod worker;

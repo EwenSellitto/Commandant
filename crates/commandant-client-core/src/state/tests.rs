@@ -1,4 +1,9 @@
-use super::chat::{Menu, Message, Role, Unseen};
+use commandant_proto::{
+    AgentChoice, AgentCommand, HistoryEntry, OutputStream, PromptRequest, TaskFinished,
+    auth_action, task_event,
+};
+
+use super::chat::{Menu, Message, Role, Run, Unseen};
 use super::fixtures::{acme, bare, for_run, method, node, output, started};
 use super::*;
 
@@ -21,9 +26,9 @@ fn choices(state: &State) -> Option<&Choices> {
 
 /// The chat an outcome goes to.
 fn shown(outcome: &Outcome) -> ChatId {
-    match outcome.go {
-        Some(Go::Chat(id)) => id,
-        ref go => panic!("should show a chat, not {go:?}"),
+    match &outcome.go {
+        Some(Go::Chat(id)) => *id,
+        go => panic!("should show a chat, not {go:?}"),
     }
 }
 
@@ -564,7 +569,7 @@ fn a_blocks_stop_stops_that_command_alone() {
     let stop = |state: &mut State, run| state.intent(Intent::StopRun(id, run)).effects;
     assert!(matches!(&stop(&mut state, two)[..], [Effect::Cancel(_, t)] if t == "t2"));
     assert!(stop(&mut state, two).is_empty(), "it is stopping");
-    let stopping: Vec<_> = chat(&state, id).runs().map(|r| r.stopping()).collect();
+    let stopping: Vec<_> = chat(&state, id).runs().map(Run::stopping).collect();
     assert_eq!(stopping, [false, true], "the other runs on");
     assert!(chat(&state, id).activity.working(), "and so does the turn");
 

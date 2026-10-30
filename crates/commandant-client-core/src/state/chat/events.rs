@@ -3,9 +3,10 @@
 use std::time::Duration;
 
 use commandant_proto::task_event::Event as TaskEvent;
-use commandant_proto::*;
+use commandant_proto::{OutputStream, TaskFinished};
 
-use super::{Activity, Chat, Entry, Message, Role, Unseen, format::*};
+use super::format::{count, dollars, elapsed};
+use super::{Activity, Chat, Entry, Message, Role, Unseen};
 use crate::state::Effect;
 
 impl Chat {
@@ -25,7 +26,7 @@ impl Chat {
                         }
                     }
                     Err(e) if waiting || pending.is_some() => {
-                        self.error(&format!("couldn't list the agent's options: {e}"))
+                        self.error(&format!("couldn't list the agent's options: {e}"));
                     }
                     Err(_) => {}
                 }
@@ -127,12 +128,12 @@ impl Chat {
                     self.append(Role::Agent, &text);
                 }
             },
-            Message::Task(TaskEvent::Finished(finished)) => self.finish(finished),
+            Message::Task(TaskEvent::Finished(finished)) => self.finish(&finished),
         }
         None
     }
 
-    fn finish(&mut self, finished: TaskFinished) {
+    fn finish(&mut self, finished: &TaskFinished) {
         self.flush_output();
         if !finished.session_id.is_empty() {
             self.settings.session_id = finished.session_id.clone();
@@ -152,7 +153,7 @@ impl Chat {
                 agent,
                 effort,
                 ..
-            } => Some(self.summary(&finished, agent, effort, since.elapsed())),
+            } => Some(self.summary(finished, agent, effort, since.elapsed())),
             Activity::Idle => None,
         };
         let mut unseen = Unseen::Failed;

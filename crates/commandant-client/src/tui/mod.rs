@@ -41,7 +41,11 @@ pub async fn run(saved: Option<Client>, args: UiArgs, handle: Handle) -> Result<
         Some(client) => {
             let (core, updates) = Core::start(&client, args.defaults(), handle.clone()).await?;
             args.first_open(core.nodes())?;
-            Some((client, core, updates))
+            Some(Started {
+                client,
+                core,
+                updates,
+            })
         }
         None => None,
     };
@@ -66,7 +70,11 @@ pub async fn run(saved: Option<Client>, args: UiArgs, handle: Handle) -> Result<
 }
 
 /// A core on a server, and what its calls report.
-type Started = (Client, Core, Updates);
+struct Started {
+    client: Client,
+    core: Core,
+    updates: Updates,
+}
 
 /// Runs the app on a server, logging in first when there is none, and
 /// again after each log out; the app last left, unless it was by logging
@@ -82,7 +90,12 @@ async fn run_until_left(
             Some(started) => Some(started),
             None => log_in(terminal, args, handle).await?,
         };
-        let Some((client, core, mut updates)) = started else {
+        let Some(Started {
+            client,
+            core,
+            mut updates,
+        }) = started
+        else {
             return Ok(None);
         };
         let mut app = App::new(core);
@@ -141,7 +154,11 @@ async fn log_in(
 async fn connect(client: Client, defaults: Settings, handle: Handle) -> Result<Started> {
     let (core, updates) = Core::start(&client, defaults, handle).await?;
     config::remember(&client).context("saving the link")?;
-    Ok((client, core, updates))
+    Ok(Started {
+        client,
+        core,
+        updates,
+    })
 }
 
 async fn event_loop(

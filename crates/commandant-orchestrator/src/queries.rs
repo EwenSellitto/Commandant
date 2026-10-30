@@ -40,12 +40,13 @@ impl Queries {
         let Some(request_id) = answer.request_id() else {
             return;
         };
-        let mut pending = self.pending.lock().unwrap();
-        if pending.get(request_id).is_none_or(|asked| asked.to != from) {
-            return;
-        }
-        let asked = pending.remove(request_id).expect("just found");
-        drop(pending);
+        let asked = {
+            let mut pending = self.pending.lock().unwrap();
+            if pending.get(request_id).is_none_or(|asked| asked.to != from) {
+                return;
+            }
+            pending.remove(request_id).expect("just found")
+        };
         let _ = asked.asker.send(answer);
     }
 
@@ -71,35 +72,35 @@ mod tests {
     #[test]
     fn answers_reach_whoever_asked_and_nobody_else() {
         let queries = Queries::default();
-        let (options_id, mut options_rx) = queries.open(1);
-        let (sessions_id, mut sessions_rx) = queries.open(1);
+        let (options_id, mut options_rx) = queries.open(ConnId(1));
+        let (sessions_id, mut sessions_rx) = queries.open(ConnId(1));
         assert_ne!(options_id, sessions_id);
 
         // Answers to unknown or abandoned questions go nowhere.
-        queries.answer(1, options("someone-else"));
-        let (closed_id, mut closed_rx) = queries.open(1);
+        queries.answer(ConnId(1), options("someone-else"));
+        let (closed_id, mut closed_rx) = queries.open(ConnId(1));
         queries.close(&closed_id);
-        queries.answer(1, options(&closed_id));
+        queries.answer(ConnId(1), options(&closed_id));
         assert!(closed_rx.try_recv().is_err());
         // Nor do answers from a worker that wasn't asked.
-        queries.answer(2, options(&options_id));
+        queries.answer(ConnId(2), options(&options_id));
         assert!(options_rx.try_recv().is_err());
 
         queries.answer(
-            1,
+            ConnId(1),
             Msg::Sessions(AgentSessions {
                 request_id: sessions_id.clone(),
                 ..Default::default()
             }),
         );
-        queries.answer(1, options(&options_id));
+        queries.answer(ConnId(1), options(&options_id));
         assert!(
             matches!(sessions_rx.try_recv(), Ok(Msg::Sessions(s)) if s.request_id == sessions_id)
         );
         assert!(matches!(options_rx.try_recv(), Ok(Msg::Options(o)) if o.request_id == options_id));
 
         // Each question takes one answer.
-        queries.answer(1, options(&options_id));
+        queries.answer(ConnId(1), options(&options_id));
         assert!(queries.pending.lock().unwrap().is_empty());
     }
 }

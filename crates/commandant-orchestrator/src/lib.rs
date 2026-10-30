@@ -35,6 +35,7 @@ use crate::store::Store;
 use crate::tasks::TaskHub;
 use crate::tls::TlsIdentity;
 
+/// The admin token, in the data directory.
 pub const ADMIN_TOKEN_FILE: &str = "admin.token";
 /// The database, in the data directory.
 pub const DB_FILE: &str = "commandant.db";
@@ -50,6 +51,7 @@ pub(crate) struct Shared {
     pub queries: Queries,
 }
 
+/// The server: its store, the workers connected to it, and what they run.
 pub struct Orchestrator {
     shared: Arc<Shared>,
     admin_token: String,
@@ -63,6 +65,11 @@ pub(crate) fn internal(e: impl std::fmt::Display) -> tonic::Status {
 
 impl Orchestrator {
     /// Opens (or initialises) the data directory.
+    ///
+    /// # Errors
+    ///
+    /// If the directory, its database, admin token or TLS identity can't be
+    /// created or read.
     pub async fn open(data_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(data_dir)
             .with_context(|| format!("creating data dir {}", data_dir.display()))?;
@@ -105,6 +112,10 @@ impl Orchestrator {
 
     /// Serves both gRPC services over TLS on `listener` until `shutdown`
     /// resolves.
+    ///
+    /// # Errors
+    ///
+    /// If accepting connections fails.
     pub async fn serve(
         self,
         listener: TcpListener,

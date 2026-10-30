@@ -116,7 +116,7 @@ fn draw_asks(frame: &mut Frame, app: &App, accent: Color) {
                     Wanted::Lifetime => "make the token",
                     _ => "run",
                 };
-                draw_entry(frame, accent, label, enter, &app.entry)
+                draw_entry(frame, accent, label, enter, &app.entry);
             }
             (None, ask) => draw_dialog(frame, accent, ask, app.copied.as_deref()),
         }
@@ -248,13 +248,18 @@ fn draw_thread(frame: &mut Frame, chat: &Chat, view: &mut ChatView, area: Rect) 
     );
 }
 
+/// `n` terminal cells, as many as fit in a coordinate.
+fn cells(n: usize) -> u16 {
+    u16::try_from(n).unwrap_or(u16::MAX)
+}
+
 /// `rows`, following the bottom unless scrolled up `scroll` rows, which
 /// stops at the top.
 fn draw_scrolled(frame: &mut Frame, rows: Vec<Line<'static>>, scroll: &mut u16, area: Rect) {
     let height = area.height as usize;
     let bottom = rows.len().saturating_sub(height);
-    *scroll = (*scroll).min(bottom as u16);
-    let top = bottom - *scroll as usize;
+    *scroll = (*scroll).min(cells(bottom));
+    let top = bottom - usize::from(*scroll);
     let visible: Vec<Line> = rows.into_iter().skip(top).take(height).collect();
     frame.render_widget(Paragraph::new(visible), area);
 }
@@ -327,7 +332,7 @@ fn thread_rows(chat: &Chat, width: usize) -> Vec<Line<'static>> {
         };
         for (i, line) in lines.into_iter().enumerate() {
             let lead = if i == 0 { &first } else { &rest };
-            rows.extend(text::wrap(line, width, lead, &rest));
+            rows.extend(text::wrap(&line, width, lead, &rest));
         }
     }
     rows
@@ -337,7 +342,7 @@ fn thread_rows(chat: &Chat, width: usize) -> Vec<Line<'static>> {
 /// tinted, then how it ended.
 fn command_rows(entry: &Entry, width: usize) -> Vec<Line<'static>> {
     let command = Line::from(Span::raw(entry.text.clone()).bold());
-    let mut rows = text::wrap(command, width, &"$ ".fg(MUTED), &INDENT.into());
+    let mut rows = text::wrap(&command, width, &"$ ".fg(MUTED), &INDENT.into());
     if let Some(run) = &entry.run {
         rows.extend(run_rows(run, width));
     }
@@ -353,10 +358,10 @@ fn run_rows(run: &Run, width: usize) -> Vec<Line<'static>> {
         .then(|| Line::from("… its earlier output wasn't kept".fg(MUTED).italic()));
     let lines = dropped.into_iter().chain(output_lines(run));
     let mut rows: Vec<_> = lines
-        .flat_map(|line| text::wrap(line, width, &gutter, &gutter))
+        .flat_map(|line| text::wrap(&line, width, &gutter, &gutter))
         .collect();
     rows.extend(text::wrap(
-        end_line(run),
+        &end_line(run),
         width,
         &"└ ".fg(MUTED),
         &INDENT.into(),
@@ -424,7 +429,8 @@ fn welcome(chat: &Chat) -> Vec<Line<'static>> {
     let commands = chat::COMMANDS[1..8]
         .iter()
         .map(|&(n, d)| (format!("/{n}"), d));
-    let bang = std::iter::once((BANG.0.to_string(), BANG.1));
+    let (bang, does) = BANG;
+    let bang = std::iter::once((bang.to_string(), does));
     for (key, does) in keys.take(4).chain(commands).chain(bang) {
         lines.push(Line::from(vec![
             Span::raw(format!("{INDENT}{key:<13}")).bold(),
@@ -564,7 +570,7 @@ fn draw_input(frame: &mut Frame, chat: &Chat, view: &ChatView, area: Rect) {
         Span::raw(rest.to_string()),
     ];
     frame.render_widget(Line::from(spans), line);
-    let x = line.x + (input.cursor - offset) as u16;
+    let x = line.x + cells(input.cursor - offset);
     frame.set_cursor_position((x, line.y));
 }
 

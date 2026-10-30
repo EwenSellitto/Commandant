@@ -6,7 +6,11 @@ use anyhow::{Context, Result};
 use commandant_client_core::config::{self, Client};
 use commandant_common::link::Link;
 use commandant_common::time::ago;
-use commandant_proto::*;
+use commandant_proto::{
+    CancelTaskRequest, CreateJoinTokenRequest, GetAgentOptionsRequest, ListAgentSessionsRequest,
+    ListNodesRequest, ListTasksRequest, RemoveNodeRequest, StartHarnessRequest,
+    SwitchMcpServerRequest,
+};
 use unicode_width::UnicodeWidthStr;
 
 use crate::cli::{ClientArgs, LoginArgs};

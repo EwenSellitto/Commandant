@@ -100,7 +100,7 @@ const OUTPUT_KEYS: [(&str, &str, Option<Key>); 4] = [
 const LABEL_WIDTH: usize = 14;
 
 /// What choosing a row of the help does.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Does {
     /// Sends a line, as if typed: a `/command`.
     Run(String),
@@ -111,7 +111,7 @@ pub enum Does {
     Nothing,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     label: String,
     about: String,
@@ -214,6 +214,8 @@ fn keys(keys: &[(&str, &str, Option<Key>)]) -> impl Iterator<Item = (String, Str
 
 #[cfg(test)]
 mod tests {
+    use commandant_client_core::ChatId;
+
     use super::*;
     use crate::picker::Picked;
 
@@ -227,7 +229,7 @@ mod tests {
 
     fn chat() -> Chat {
         let node = commandant_proto::NodeInfo::default();
-        Chat::new(1, node, Default::default(), None)
+        Chat::new(ChatId::default(), node, Default::default(), None)
     }
 
     #[test]

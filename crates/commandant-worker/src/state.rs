@@ -8,9 +8,12 @@ use anyhow::{Context, Result, bail};
 use commandant_common::fs::{read_optional, remove, write_private};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Who the node is to the orchestrator, once it has joined.
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Credentials {
+    /// The node's id, as the orchestrator gave it.
     pub node_id: String,
+    /// What proves it is that node.
     pub secret: String,
     /// Orchestrator URL, so a restart needs no arguments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -23,6 +26,7 @@ const MAX_INSTANCES: u32 = 64;
 /// A state directory this worker holds until it is dropped (or exits).
 #[derive(Debug)]
 pub struct Claim {
+    /// The directory held.
     pub dir: PathBuf,
     /// 1 for the directory asked for, 2 for `<dir>-2`, and so on.
     pub instance: u32,
@@ -31,6 +35,11 @@ pub struct Claim {
 
 /// Locks `dir` for this worker. With `pick_free`, a directory another worker
 /// holds gives way to the first free `<dir>-2`, `<dir>-3`…, each its own node.
+///
+/// # Errors
+///
+/// If `dir` (or, with `pick_free`, every one of them) is held or can't be
+/// locked.
 pub fn claim(dir: &Path, pick_free: bool) -> Result<Claim> {
     for instance in 1..=MAX_INSTANCES {
         let candidate = match instance {
@@ -85,6 +94,11 @@ fn path(state_dir: &Path) -> PathBuf {
     state_dir.join("node.json")
 }
 
+/// The saved credentials; none before the node first joins.
+///
+/// # Errors
+///
+/// If the file can't be read or parsed.
 pub fn load(state_dir: &Path) -> Result<Option<Credentials>> {
     let path = path(state_dir);
     read_optional(&path)?
@@ -95,10 +109,19 @@ pub fn load(state_dir: &Path) -> Result<Option<Credentials>> {
 
 /// Drops credentials the orchestrator no longer knows, so the next
 /// connection joins afresh.
+///
+/// # Errors
+///
+/// If the file is there but can't be deleted.
 pub fn forget(state_dir: &Path) -> Result<()> {
     remove(&path(state_dir)).map(drop)
 }
 
+/// Keeps `creds` for the next start, readable only by their owner.
+///
+/// # Errors
+///
+/// If the file can't be written.
 pub fn save(state_dir: &Path, creds: &Credentials) -> Result<()> {
     write_private(&path(state_dir), &serde_json::to_string_pretty(creds)?)
 }

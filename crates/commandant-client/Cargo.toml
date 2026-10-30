@@ -39,3 +39,6 @@ unicode-width.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 commandant-client-core = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

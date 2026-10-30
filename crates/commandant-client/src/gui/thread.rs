@@ -72,7 +72,7 @@ impl Connected {
         let renderer = cx.processor(move |this, index: usize, window, cx| {
             this.render_row(id, index, window, cx)
         });
-        MessageScroller::new(("thread", id), pane.scroller.clone(), renderer)
+        MessageScroller::new(("thread", u64::from(id)), pane.scroller.clone(), renderer)
             .with_row_style(gap)
             .with_jump_button_renderer(move |button| button.label(label))
             .into_any_element()
@@ -199,7 +199,7 @@ impl Connected {
                 Some(run) => {
                     let (id, run_id) = (chat.id, run.id);
                     let stop = cx.listener(move |this, _, window, cx| {
-                        this.act(Intent::StopRun(id, run_id), window, cx)
+                        this.act(Intent::StopRun(id, run_id), window, cx);
                     });
                     render_command(&entry.text, run, stop, cx).into_any_element()
                 }

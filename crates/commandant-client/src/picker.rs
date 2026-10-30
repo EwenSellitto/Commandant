@@ -7,7 +7,7 @@ use commandant_client_core::{Choice, Choices, Intent, Scope};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Rows moved by PageUp / PageDown.
-const PAGE: usize = 10;
+const PAGE: isize = 10;
 
 /// What a [`Filtered`] shows of a row, and what typing narrows it down by.
 pub trait Row: Clone {
@@ -79,10 +79,10 @@ impl<R: Row> Filtered<R> {
             KeyCode::Enter => return self.picked().cloned().map(Picked::Chosen),
             KeyCode::Up => self.step(-1),
             KeyCode::Down => self.step(1),
-            KeyCode::PageUp => self.step(-(PAGE as isize)),
-            KeyCode::PageDown => self.step(PAGE as isize),
+            KeyCode::PageUp => self.step(-PAGE),
+            KeyCode::PageDown => self.step(PAGE),
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.set_filter("")
+                self.set_filter("");
             }
             KeyCode::Char(c) => self.set_filter(&format!("{}{c}", self.filter)),
             KeyCode::Backspace => {

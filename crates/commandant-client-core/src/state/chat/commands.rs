@@ -8,7 +8,7 @@ use super::{Chat, Menu};
 use crate::state::{Edit, Effect, Outcome};
 
 /// What a submitted line asks of the app rather than the chat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(in crate::state) enum AppCommand {
     Quit,
     /// Leave, forgetting the server.
@@ -105,7 +105,7 @@ impl Chat {
                 // One of the agent's own commands or skills, its arguments after it.
                 name if self.is_agent_command(name) => {
                     let (name, arguments) = (name.to_string(), filter.trim().to_string());
-                    return (self.send(text, name, arguments), None);
+                    return (self.send(&text, name, arguments), None);
                 }
                 // Unless the agent has its own, logging in is the client's,
                 // and done: no way to sign in.
@@ -122,12 +122,12 @@ impl Chat {
                     return Default::default();
                 }
                 // Not a command: a prompt that starts with a slash.
-                _ => return (self.send(text.clone(), String::new(), text), None),
+                _ => return (self.send(&text, String::new(), text.clone()), None),
             };
             let effect = self.open_menu(menu, filter.trim());
             return (self.cleared(effect), None);
         }
-        (self.send(text.clone(), String::new(), text), None)
+        (self.send(&text, String::new(), text.clone()), None)
     }
 
     /// What `effect` asks, the line it came from taken out of the prompt.

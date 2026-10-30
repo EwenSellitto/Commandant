@@ -7,10 +7,10 @@ use commandant_client_core::chat::elapsed;
 use commandant_client_core::{Intent, OutputId, what_ran};
 use commandant_common::time::{self, ago};
 use commandant_proto::TaskInfo;
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, Context, Div, FontWeight, Hsla, InteractiveElement as _, ParentElement as _, SharedString,
-    Stateful, StatefulInteractiveElement as _, Styled as _, WeakEntity, div,
-    prelude::FluentBuilder as _, px,
+    Stateful, StatefulInteractiveElement as _, Styled as _, WeakEntity, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::clipboard::Clipboard;
@@ -63,7 +63,7 @@ impl Connected {
                         .on_click(move |_, window, cx| {
                             let node = node.clone();
                             let _ = connected.update(cx, |this, cx| {
-                                this.act(Intent::ListTasks { node }, window, cx)
+                                this.act(Intent::ListTasks { node }, window, cx);
                             });
                         });
                     menu = menu.item(item);
@@ -142,7 +142,7 @@ impl Connected {
         let theme = cx.theme();
         let id = task.id.clone();
         let open = cx.listener(move |this, _, window, cx| {
-            this.act(Intent::OpenTask(id.clone()), window, cx)
+            this.act(Intent::OpenTask(id.clone()), window, cx);
         });
         let id = task.id.clone();
         let cancel = (task.status == "running").then(|| {
@@ -215,7 +215,7 @@ impl Connected {
             .on_click(cx.listener(|this, _, window, cx| this.close_output(window, cx)));
         let cwd = commandant_common::or(&output.cwd, "worker's directory");
         let took = output.finished.unwrap_or_else(time::now) - output.started;
-        let took = elapsed(Duration::from_secs(took.max(0) as u64));
+        let took = elapsed(Duration::from_secs(u64::try_from(took).unwrap_or(0)));
         let facts = [output.node.as_str(), cwd, &took].join(" · ");
         let (ended, color) = end_label(&output.run, cx);
         let connected = cx.entity().downgrade();

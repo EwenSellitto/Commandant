@@ -3,14 +3,22 @@
 //! and never reach the agent.
 
 use commandant_proto::task_event::Event as TaskEvent;
-use commandant_proto::*;
+use commandant_proto::{OutputStream, RunCommandRequest, TaskFinished};
 
 use super::events::decode;
 use super::{Chat, Entry, Role, Unseen};
 use crate::state::{Effect, Outcome};
 
 /// Tells a chat's commands apart.
-pub type RunId = u64;
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct RunId(pub(crate) u64);
+
+/// For front ends that key their widgets by number.
+impl From<RunId> for u64 {
+    fn from(id: RunId) -> Self {
+        id.0
+    }
+}
 
 /// How much of a command's output its block keeps: the end of it. The
 /// server keeps more.
@@ -19,6 +27,7 @@ const KEPT: usize = 64 * 1024;
 /// A command run from the chat, as its block shows it.
 #[derive(Debug)]
 pub struct Run {
+    /// Unique within its chat.
     pub id: RunId,
     /// What it printed, in order: the end of it, if it printed a lot.
     pub output: Vec<Printed>,
@@ -26,13 +35,13 @@ pub struct Run {
     pub dropped: bool,
     /// How many bytes it has printed in all, kept or not.
     pub printed: usize,
-    /// How much of its output is kept, at most: the end of it.
-    keep: usize,
     /// How it ended; `None` while it runs.
     pub ended: Option<Ended>,
     /// Known once the server has started it, or from the start when
     /// watched.
     pub(in crate::state) task_id: Option<String>,
+    /// How much of its output is kept, at most: the end of it.
+    keep: usize,
     /// Asked to stop; one not started yet is stopped once it is.
     cancelling: bool,
     /// Bytes of a UTF-8 character split across output chunks, per stream.
@@ -41,23 +50,28 @@ pub struct Run {
 }
 
 /// A piece of a command's output, from one stream.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Printed {
     /// Written to its error output.
     pub stderr: bool,
+    /// What it said, decoded; a character split across chunks waits for
+    /// the rest of it.
     pub text: String,
 }
 
 /// How a command ended.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Ended {
+    /// It ran to the end, with this exit code.
     Exited(i32),
+    /// It was asked to stop, and did.
     Cancelled,
     /// It couldn't start, was killed, or its stream broke: why.
     Failed(String),
 }
 
 impl Ended {
+    /// Whether it exited with code 0.
     pub fn succeeded(&self) -> bool {
         matches!(self, Self::Exited(0))
     }
@@ -80,6 +94,7 @@ impl Run {
         }
     }
 
+    /// Whether it hasn't ended yet.
     pub fn running(&self) -> bool {
         self.ended.is_none()
     }
@@ -190,7 +205,7 @@ impl Chat {
             self.info("! runs a shell command on the node, in this chat's directory: !ls");
             return Outcome::default();
         }
-        let id = self.next_run;
+        let id = RunId(self.next_run);
         self.next_run += 1;
         self.thread.push(Entry {
             role: Role::Command,
@@ -237,7 +252,7 @@ impl Chat {
         let chat = self.id;
         let mut runs = self.runs_mut().filter(|r| r.running()).peekable();
         runs.peek()?;
-        let stops = runs.filter_map(|r| r.stop());
+        let stops = runs.filter_map(Run::stop);
         Some(stops.map(|task_id| Effect::Cancel(chat, task_id)).collect())
     }
 

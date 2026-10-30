@@ -9,7 +9,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 
-use super::{MUTED, PANEL, SELECTED, hints, spinner};
+use super::{MUTED, PANEL, SELECTED, cells, hints, spinner};
 use crate::picker::{Filtered, Picker, Row};
 use crate::tui::chat::Input;
 use crate::tui::help::Help;
@@ -28,13 +28,8 @@ pub(super) fn draw_suggestions(
     if suggestions.is_empty() {
         return;
     }
-    let height = suggestions.len().min(SHOWN).min(area.height as usize);
-    let area = Rect::new(
-        area.x,
-        area.bottom() - height as u16,
-        area.width,
-        height as u16,
-    );
+    let height = cells(suggestions.len().min(SHOWN)).min(area.height);
+    let area = Rect::new(area.x, area.bottom() - height, area.width, height);
     frame.render_widget(Clear, area);
     frame.render_widget(Block::new().bg(PANEL), area);
     let width = suggestions
@@ -87,7 +82,7 @@ fn draw_list<R: Row>(
     enter: &'static str,
 ) {
     // Title, filter, gap, the list, gap, hints; plus a padding row each end.
-    let rows = filtered.shown_len().max(1) as u16;
+    let rows = cells(filtered.shown_len().max(1));
     let inner = panel(frame, rows + 7);
     let [title_area, filter, _, list, _, hints] = Layout::vertical([
         Length(1),
@@ -111,7 +106,7 @@ fn draw_list<R: Row>(
         filter => Line::from(vec!["› ".fg(accent), Span::raw(filter.to_string())]),
     };
     frame.render_widget(query, filter);
-    let x = filter.x + 2 + filtered.filter.chars().count() as u16;
+    let x = (filter.x + 2).saturating_add(cells(filtered.filter.chars().count()));
     frame.set_cursor_position((x.min(filter.right().saturating_sub(1)), filter.y));
     frame.render_widget(
         self::hints(&[("↑↓", "move"), ("enter", enter), ("esc", "close")]),
@@ -163,12 +158,12 @@ pub(super) fn draw_dialog(
     let gutter = Span::raw("");
     let lines: Vec<Line> = said
         .lines()
-        .flat_map(|line| text::wrap(Line::from(line.to_string()), room, &gutter, &gutter))
+        .flat_map(|line| text::wrap(&Line::from(line.to_string()), room, &gutter, &gutter))
         .collect();
-    let rows = lines.len() as u16;
+    let rows = cells(lines.len());
     // Title and gap, the text, gap, hints; plus a padding row each end.
     let titled = if title.is_empty() { 0 } else { 2 };
-    let inner = panel(frame, titled + rows + 4);
+    let inner = panel(frame, rows.saturating_add(titled + 4));
     let [heading, _, body, _, keys] = Layout::vertical([
         Length(titled.min(1)),
         Length(titled.saturating_sub(1)),
@@ -227,6 +222,6 @@ pub(super) fn draw_line(frame: &mut Frame, accent: Color, input: &Input, area: R
     let offset = input.cursor.saturating_sub(room);
     let visible: String = input.text.chars().skip(offset).take(room).collect();
     frame.render_widget(Line::from(vec!["› ".fg(accent), Span::raw(visible)]), area);
-    let x = area.x + 2 + (input.cursor - offset) as u16;
+    let x = area.x + 2 + cells(input.cursor - offset);
     frame.set_cursor_position((x, area.y));
 }

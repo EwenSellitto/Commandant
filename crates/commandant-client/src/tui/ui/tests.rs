@@ -38,7 +38,7 @@ fn find(buf: &Buffer, text: &str) -> (u16, u16) {
     for y in 0..area.height {
         let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
         if let Some(at) = row.find(text) {
-            let x = row[..at].chars().count() as u16;
+            let x = u16::try_from(row[..at].chars().count()).unwrap();
             return (x, y);
         }
     }

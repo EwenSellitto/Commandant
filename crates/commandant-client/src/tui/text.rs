@@ -112,7 +112,7 @@ fn inline(text: &str, base: Style) -> Vec<Span<'static>> {
 /// Wraps `line` at word boundaries to `width` columns. The first row starts
 /// with `first`, the others with `rest`; both should be as wide.
 pub fn wrap(
-    line: Line<'static>,
+    line: &Line<'static>,
     width: usize,
     first: &Span<'static>,
     rest: &Span<'static>,
@@ -122,7 +122,7 @@ pub fn wrap(
     let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
     let mut row: Vec<Span<'static>> = Vec::new();
     let mut used = 0;
-    for (word, style) in words(&line) {
+    for (word, style) in words(line) {
         let space = word.starts_with(char::is_whitespace);
         let w = word.width();
         if used + w > room && used > 0 {
@@ -230,9 +230,9 @@ mod tests {
     fn wraps_words_behind_the_gutter() {
         let first = Span::raw("▌ ");
         let rest = Span::raw("  ");
-        let rows = wrap(Line::from("one two three fourfivesix"), 10, &first, &rest);
+        let rows = wrap(&Line::from("one two three fourfivesix"), 10, &first, &rest);
         let texts: Vec<_> = rows.iter().map(text).collect();
         assert_eq!(texts, ["▌ one two", "  three", "  fourfive", "  six"]);
-        assert_eq!(wrap(Line::default(), 10, &first, &rest).len(), 1);
+        assert_eq!(wrap(&Line::default(), 10, &first, &rest).len(), 1);
     }
 }

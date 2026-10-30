@@ -139,7 +139,7 @@ pub struct PromptArgs {
 }
 
 /// Where a front end starts; `tui` and `gui` take the same.
-#[derive(Args, Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Args)]
 pub struct UiArgs {
     /// Node name, id or id prefix; defaults to the only online node with an
     /// agent harness.
@@ -161,7 +161,7 @@ pub struct UiArgs {
     pub effort: Option<String>,
 }
 
-#[derive(Args, Default)]
+#[derive(Default, Args)]
 pub struct GuiArgs {
     #[command(flatten)]
     pub ui: UiArgs,

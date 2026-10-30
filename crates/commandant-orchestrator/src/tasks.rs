@@ -14,7 +14,7 @@ use crate::registry::ConnId;
 const EVENT_BUFFER: usize = 4096;
 
 /// The worker connection a task was dispatched on. Only it may report on the task.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Owner {
     pub node_id: String,
     pub conn_id: ConnId,
@@ -168,7 +168,7 @@ mod tests {
 
     use super::*;
 
-    const CONN: ConnId = 7;
+    const CONN: ConnId = ConnId(7);
 
     fn owner() -> Owner {
         Owner {
@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(text(&backlog), "one ");
         hub.output(CONN, out("two"));
         // Another connection can't speak for the task.
-        hub.output(CONN + 1, out("forged"));
+        hub.output(ConnId(8), out("forged"));
         let done = TaskFinished {
             task_id: "t".into(),
             exit_code: Some(0),

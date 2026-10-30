@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 
 use crate::DEFAULT_PORT;
 
+/// What every connection link starts with.
 pub const SCHEME: &str = "commandant://";
 
 /// First byte of an encoded link, so the format can evolve. Links in the
@@ -42,8 +43,11 @@ const CUSTOM_PORT: u8 = 0x80;
 const TOKEN_TEXT: u8 = 0;
 const TOKEN_PREFIXES: [&str; 3] = ["cmda", "cmdj", "cmdn"];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A connection link: where a server is, the token it takes and, if pinned,
+/// the certificate it must show.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Link {
+    /// The admin or join token it hands over.
     pub token: String,
     /// `host:port`s the orchestrator may be reached on, as advertised: a
     /// client tries each (a public name, say, then a LAN address).
@@ -56,7 +60,7 @@ pub struct Link {
 /// The SHA-256 of an orchestrator's TLS certificate. Whoever has its link
 /// connects only to a server showing that certificate, so nobody in between
 /// can pose as it, or read what is said.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Pin(pub [u8; 32]);
 
 impl Pin {
@@ -85,7 +89,7 @@ impl std::str::FromStr for Pin {
 }
 
 /// One of an orchestrator's addresses, taken apart.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Target {
     /// `host:port`.
     pub host: String,
@@ -95,6 +99,10 @@ pub struct Target {
 
 /// Takes apart an orchestrator's URL, `https://host:port#sha256=<hex>`: it
 /// is spoken to over TLS, and must show that certificate.
+///
+/// # Errors
+///
+/// If `url` isn't `https` or carries no pin.
 pub fn target(url: &str) -> Result<Target> {
     match parse_url(url)? {
         ("https", host, Some(pin)) => Ok(Target { host, pin }),
@@ -191,9 +199,9 @@ impl std::fmt::Display for Link {
                 false
             }
             hosts => {
-                let hosts = &hosts[..hosts.len().min(255)];
-                payload.push(hosts.len() as u8);
-                for host in hosts {
+                let count = u8::try_from(hosts.len()).unwrap_or(u8::MAX);
+                payload.push(count);
+                for host in &hosts[..usize::from(count)] {
                     pack_host(host, &mut payload);
                 }
                 true
@@ -211,8 +219,8 @@ impl std::fmt::Display for Link {
 }
 
 fn scramble(bytes: &mut [u8]) {
-    for (i, b) in bytes.iter_mut().enumerate() {
-        *b ^= KEY[i % KEY.len()] ^ (i as u8).wrapping_mul(31);
+    for ((i, b), round) in bytes.iter_mut().enumerate().zip((0..=u8::MAX).cycle()) {
+        *b ^= KEY[i % KEY.len()] ^ round.wrapping_mul(31);
     }
 }
 
@@ -292,10 +300,10 @@ fn pack_host(host: &str, out: &mut Vec<u8>) {
         }
         Err(_) => {
             // Longer names are cut; no DNS name is anywhere near that long.
-            let name = &name.as_bytes()[..name.len().min(255)];
+            let len = u8::try_from(name.len()).unwrap_or(u8::MAX);
             out.push(ADDR_NAME | port_flag);
-            out.push(name.len() as u8);
-            out.extend(name);
+            out.push(len);
+            out.extend(&name.as_bytes()[..usize::from(len)]);
         }
     }
     if port_flag != 0 {
@@ -328,11 +336,15 @@ fn unpack_host(rest: &mut &[u8]) -> Option<String> {
 /// The token goes last, so its length is whatever remains.
 fn pack_token(token: &str, out: &mut Vec<u8>) {
     let packed = token.split_once('_').and_then(|(prefix, secret)| {
-        let kind = TOKEN_PREFIXES.iter().position(|p| *p == prefix)?;
+        let kind: u8 = TOKEN_PREFIXES
+            .iter()
+            .position(|p| *p == prefix)?
+            .try_into()
+            .ok()?;
         // Only lowercase hex survives the round trip unchanged.
         let lowercase = !secret.bytes().any(|b| b.is_ascii_uppercase());
         let bytes = hex::decode(secret).ok().filter(|_| lowercase)?;
-        Some((kind as u8 + 1, bytes))
+        Some((kind + 1, bytes))
     });
     match packed {
         Some((kind, bytes)) => {
@@ -427,6 +439,7 @@ fn is_local(ip: IpAddr) -> bool {
     ip.is_loopback() || UdpSocket::bind(SocketAddr::new(ip, 0)).is_ok()
 }
 
+/// The loopback address in `ip`'s family, IPv4 or IPv6.
 pub fn loopback_of_same_family(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -467,7 +480,7 @@ mod tests {
         assert_eq!(text.parse::<Link>().unwrap(), link);
 
         // A typo is caught by the checksum.
-        let mut typo = text.clone().into_bytes();
+        let mut typo = text.into_bytes();
         let last = typo.len() - 3;
         typo[last] = if typo[last] == b'A' { b'B' } else { b'A' };
         assert!(String::from_utf8(typo).unwrap().parse::<Link>().is_err());

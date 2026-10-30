@@ -1,6 +1,6 @@
 //! Signing a node's agent in to or out of a model provider, from a chat.
 
-use commandant_proto::*;
+use commandant_proto::{AuthAction, OauthFinish, ProviderAuthResult, auth_action};
 
 use super::Chat;
 use crate::state::{Ask, Choice, Choices, Choose, Effect, Outcome, Wanted};

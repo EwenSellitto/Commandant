@@ -8,9 +8,12 @@ use commandant_common::{dirs, fs};
 use commandant_proto::{ControlClient, connect_control};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+/// What the config file saves: the server a client talks to by default.
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct FileConfig {
+    /// The server's address, `host:port`.
     pub addr: Option<String>,
+    /// The admin token it takes.
     pub token: Option<String>,
 }
 
@@ -21,6 +24,11 @@ impl FileConfig {
     }
 }
 
+/// The saved config; empty when there is no file yet.
+///
+/// # Errors
+///
+/// If the file can't be read or isn't valid TOML.
 pub fn load() -> Result<FileConfig> {
     let path = dirs::client_config()?;
     match fs::read_optional(&path)? {
@@ -29,6 +37,12 @@ pub fn load() -> Result<FileConfig> {
     }
 }
 
+/// Writes `config` where [`load`] reads it, readable only by its owner; the
+/// path it went to.
+///
+/// # Errors
+///
+/// If the config directory is unknown or the file can't be written.
 pub fn save(config: &FileConfig) -> Result<PathBuf> {
     let path = dirs::client_config()?;
     fs::write_private(&path, &toml::to_string(config)?)?;
@@ -38,12 +52,18 @@ pub fn save(config: &FileConfig) -> Result<PathBuf> {
 /// Resolved client connection settings.
 #[derive(Clone)]
 pub struct Client {
+    /// The server's address, `host:port`.
     pub addr: String,
+    /// The admin token it takes.
     pub token: String,
 }
 
 impl Client {
     /// The server a pasted connection link names.
+    ///
+    /// # Errors
+    ///
+    /// If `text` isn't a connection link.
     pub fn from_link(text: &str) -> Result<Self> {
         let link: Link = text.parse()?;
         Ok(Self {
@@ -57,6 +77,11 @@ impl Client {
         Link::for_addr(&self.token, &self.addr).to_string()
     }
 
+    /// A control client for the server.
+    ///
+    /// # Errors
+    ///
+    /// If the server can't be reached or the token is malformed.
     pub async fn connect(&self) -> Result<ControlClient> {
         connect_control(&self.addr, &self.token)
             .await
@@ -65,6 +90,10 @@ impl Client {
 }
 
 /// Saves the server, so the next client run talks to it.
+///
+/// # Errors
+///
+/// As [`save`].
 pub fn remember(client: &Client) -> Result<PathBuf> {
     save(&FileConfig {
         addr: Some(client.addr.clone()),
@@ -74,6 +103,10 @@ pub fn remember(client: &Client) -> Result<PathBuf> {
 
 /// Forgets the saved server, so the next client run asks for a link; the
 /// config file it was saved in, if it was.
+///
+/// # Errors
+///
+/// If the config directory is unknown or the file can't be removed.
 pub fn forget() -> Result<Option<PathBuf>> {
     let path = dirs::client_config()?;
     Ok(fs::remove(&path)?.then_some(path))
@@ -81,6 +114,10 @@ pub fn forget() -> Result<Option<PathBuf>> {
 
 /// Forgets the saved server if it is `client`'s, and not one flags or the
 /// environment named instead; a config file that can't be read goes too.
+///
+/// # Errors
+///
+/// As [`forget`].
 pub fn forget_if_saved(client: &Client) -> Result<()> {
     match load() {
         Ok(saved) if !saved.names(client) => Ok(()),
@@ -88,6 +125,13 @@ pub fn forget_if_saved(client: &Client) -> Result<()> {
     }
 }
 
+/// The server to talk to, from flags/env, then the config file, then a
+/// server running here.
+///
+/// # Errors
+///
+/// If the config file can't be read, or nothing names the address or the
+/// token.
 pub fn resolve(
     addr: Option<String>,
     token: Option<String>,
@@ -105,6 +149,10 @@ pub fn resolve(
 
 /// The server, as [`resolve`] finds it; none when nothing names it yet,
 /// before the first log in.
+///
+/// # Errors
+///
+/// If the config file can't be read.
 pub fn find(
     addr: Option<String>,
     token: Option<String>,

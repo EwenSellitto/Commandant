@@ -8,7 +8,7 @@ use commandant_client_core::Chat;
 use commandant_client_core::chat::{Ended, Entry, Role};
 
 /// One row of the thread: an entry, or tool calls in a row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Row {
     /// The entry at this index, drawn on its own.
     Entry(usize),
@@ -81,7 +81,7 @@ pub struct Tally {
 }
 
 /// What the scroller is to do once the thread has changed.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum Change {
     /// Start again with this many rows: the earlier turns came.
     Reset(usize),
@@ -149,7 +149,7 @@ impl Tally {
 
 #[cfg(test)]
 mod tests {
-    use commandant_client_core::chat::{Activity, Ended, Printed, Run};
+    use commandant_client_core::chat::{Activity, Ended, Printed, Run, RunId};
 
     use super::*;
 
@@ -236,7 +236,7 @@ mod tests {
         use Role::*;
         let mut tally = Tally::default();
         let mut chat = chat(&[User, Command, Agent], true);
-        chat.thread[1].run = Some(Run::new(0, usize::MAX));
+        chat.thread[1].run = Some(Run::new(RunId::default(), usize::MAX));
         let all = rows(&chat.thread);
         tally.change(&chat, &all, false);
         let run = chat.thread[1].run.as_mut().unwrap();

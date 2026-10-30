@@ -1,3 +1,8 @@
+use commandant_proto::{
+    AgentChoice, AgentCommand, AgentUsage, McpServer, OutputStream, ProjectCopy, RunCommandRequest,
+    TaskFinished, auth_action,
+};
+
 use super::*;
 use crate::state::fixtures::{acme, for_run, method, output, started};
 use crate::state::{Ask, Choose, Edit, Wanted};
@@ -9,7 +14,7 @@ fn chat() -> Chat {
         harnesses: vec!["opencode".into()],
         ..Default::default()
     };
-    Chat::new(1, node, Settings::default(), None)
+    Chat::new(ChatId(1), node, Settings::default(), None)
 }
 
 /// What submitting `text` comes to.
@@ -110,7 +115,7 @@ fn cancelling_cancels_the_task_once() {
     let mut app = chat();
     send(&mut app, "hi");
     assert!(app.on_message(started("t1")).is_none());
-    assert_eq!(app.cancel(), [Effect::Cancel(1, "t1".into())]);
+    assert_eq!(app.cancel(), [Effect::Cancel(ChatId(1), "t1".into())]);
     assert!(app.cancel().is_empty());
 }
 
@@ -173,7 +178,7 @@ fn with_options() -> Chat {
     let model = |id: &str, variants: &[&str]| ModelChoice {
         id: id.into(),
         name: id.into(),
-        variants: variants.iter().map(|v| v.to_string()).collect(),
+        variants: variants.iter().map(ToString::to_string).collect(),
         ..Default::default()
     };
     let agent = |name: &str| AgentChoice {
@@ -621,7 +626,7 @@ fn projects_are_browsed_joined_or_copied() {
         id: id.into(),
         path: format!("/state/projects/app/{id}"),
         branch: "main".into(),
-        sessions: sessions.iter().map(|s| s.to_string()).collect(),
+        sessions: sessions.iter().map(ToString::to_string).collect(),
     };
     let projects = vec![commandant_proto::Project {
         name: "app".into(),
@@ -704,7 +709,7 @@ fn the_agents_commands_are_known_once_loaded() {
 }
 
 /// Runs `line` with `!`, and returns the run and its request.
-fn run(chat: &mut Chat, line: &str) -> (u64, RunCommandRequest) {
+fn run(chat: &mut Chat, line: &str) -> (RunId, RunCommandRequest) {
     let outcome = command(chat, &format!("!{line}"));
     assert_eq!(outcome.prompt, Some((chat.id, Edit::Clear)));
     match effect(outcome) {
@@ -853,10 +858,10 @@ fn esc_stops_the_commands_and_then_the_turn() {
     let (one, _) = run(&mut app, "sleep 9");
     app.on_message(for_run(one, started("t2")));
     let (two, _) = run(&mut app, "sleep 8");
-    assert_eq!(app.cancel(), [Effect::Cancel(1, "t2".into())]);
+    assert_eq!(app.cancel(), [Effect::Cancel(ChatId(1), "t2".into())]);
     assert_eq!(
         app.on_message(for_run(two, started("t3"))),
-        Some(Effect::Cancel(1, "t3".into()))
+        Some(Effect::Cancel(ChatId(1), "t3".into()))
     );
     assert!(app.cancel().is_empty(), "they are stopping");
     assert!(app.running_task().is_some(), "the turn goes on");
@@ -864,7 +869,7 @@ fn esc_stops_the_commands_and_then_the_turn() {
     app.on_message(for_run(one, finished(None, "", true)));
     app.on_message(for_run(two, finished(None, "", true)));
     assert_eq!(block(&app, "sleep 9").ended, Some(Ended::Cancelled));
-    assert_eq!(app.cancel(), [Effect::Cancel(1, "t1".into())]);
+    assert_eq!(app.cancel(), [Effect::Cancel(ChatId(1), "t1".into())]);
 }
 
 #[test]
@@ -872,7 +877,7 @@ fn a_command_that_will_not_stop_can_be_stopped_again() {
     let mut app = chat();
     let (id, _) = run(&mut app, "sleep 9");
     app.on_message(for_run(id, started("t2")));
-    assert_eq!(app.cancel(), [Effect::Cancel(1, "t2".into())]);
+    assert_eq!(app.cancel(), [Effect::Cancel(ChatId(1), "t2".into())]);
     let refused = Message::CancelFailed {
         task_id: "t2".into(),
         error: "no route".into(),
@@ -884,7 +889,7 @@ fn a_command_that_will_not_stop_can_be_stopped_again() {
         (Role::Error, "couldn't stop sleep 9: no route")
     );
     assert!(block(&app, "sleep 9").running());
-    assert_eq!(app.cancel(), [Effect::Cancel(1, "t2".into())]);
+    assert_eq!(app.cancel(), [Effect::Cancel(ChatId(1), "t2".into())]);
 
     // The turn's own cancel failing still ends it, as before.
     app.on_message(for_run(id, finished(None, "", true)));

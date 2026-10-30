@@ -27,13 +27,21 @@ use std::time::Duration;
 
 use commandant_common::time::ago;
 use commandant_proto::task_event::Event as TaskEvent;
-use commandant_proto::*;
+use commandant_proto::{AgentOptions, AgentSession, NodeInfo};
 
 use self::chat::{Activity, AppCommand, Chat, Message, Settings};
-use self::tasks::{ListId, Output, OutputId, Tasks};
+use self::tasks::{Output, Tasks};
 
 /// Tells chats apart for as long as the client runs.
-pub type ChatId = u64;
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct ChatId(pub(crate) u64);
+
+/// For front ends that key their widgets by number.
+impl From<ChatId> for u64 {
+    fn from(id: ChatId) -> Self {
+        id.0
+    }
+}
 
 /// How long to wait before asking again for commands that were loading.
 const OPTIONS_RETRY: Duration = Duration::from_secs(3);
@@ -77,9 +85,9 @@ pub(crate) struct State {
     link: String,
     /// The last node listing failed; the next to succeed clears it.
     unreachable: bool,
-    next_id: ChatId,
-    next_list: ListId,
-    next_output: OutputId,
+    next_id: u64,
+    next_list: u64,
+    next_output: u64,
 }
 
 impl State {
@@ -346,7 +354,7 @@ impl State {
         self.notice.clear();
         // Its chats are no use until it hosts an agent again.
         if lacks_agent(&node) {
-            self.choose_harness(node);
+            self.choose_harness(&node);
             return Outcome::default();
         }
         let mut outcome = Outcome::default();
@@ -369,7 +377,7 @@ impl State {
     }
 
     /// Offers the harnesses a node without one can start.
-    fn choose_harness(&mut self, node: NodeInfo) {
+    fn choose_harness(&mut self, node: &NodeInfo) {
         if self.starting.contains(&node.id) {
             self.notice
                 .tell(format!("{} is still starting its agent…", node.name));
@@ -426,7 +434,7 @@ impl State {
         {
             return Outcome::go(Go::Chat(blank.id));
         }
-        let id = self.next_id;
+        let id = ChatId(self.next_id);
         self.next_id += 1;
         let options = self.options.get(&node.id).cloned();
         let fetch = options.is_none().then(|| Effect::fetch_options(&node.id));
@@ -584,7 +592,7 @@ impl State {
 
     /// Opens a chat on a session `node` saved, as it was last used.
     fn resume_on(&mut self, node: NodeInfo, saved: AgentSession) -> Outcome {
-        let id = self.next_id;
+        let id = ChatId(self.next_id);
         let fetch = Effect::FetchHistory {
             chat: id,
             node: node.id.clone(),
@@ -608,11 +616,11 @@ impl State {
 
     /// Records a node's options and hands them to its chats.
     fn set_options(&mut self, node: &str, options: Result<Arc<AgentOptions>, String>) {
-        if let Ok(options) = &options {
-            self.options.insert(node.to_string(), options.clone());
-        }
         for chat in self.chats.iter_mut().filter(|c| c.node.id == node) {
             chat.on_message(Message::Options(options.clone()));
+        }
+        if let Ok(options) = options {
+            self.options.insert(node.to_string(), options);
         }
     }
 
@@ -620,10 +628,10 @@ impl State {
     pub fn update(&mut self, update: Update) -> Outcome {
         match update {
             Update::Chat(id, message) if self.chat(id).is_none() => {
-                let started = match message {
-                    Message::Task(TaskEvent::Started(s))
-                    | Message::Run(_, Ok(TaskEvent::Started(s))) => s,
-                    _ => return Outcome::default(),
+                let (Message::Task(TaskEvent::Started(started))
+                | Message::Run(_, Ok(TaskEvent::Started(started)))) = message
+                else {
+                    return Outcome::default();
                 };
                 let cancel = self.abandoned.contains(&id);
                 cancel.then_some(Effect::Cancel(id, started.task_id)).into()
@@ -797,15 +805,28 @@ impl Notice {
 /// The item `step` places after `current`, wrapping round; the first item if
 /// `current` isn't there.
 pub fn cycle<T: PartialEq + Copy>(items: &[T], current: T, step: isize) -> Option<T> {
-    let len = items.len() as isize;
-    if len == 0 {
+    if items.is_empty() {
         return None;
     }
-    let next = match items.iter().position(|&i| i == current) {
-        Some(at) => (at as isize + step).rem_euclid(len),
-        None => 0,
-    };
-    Some(items[next as usize])
+    let next = items
+        .iter()
+        .position(|&i| i == current)
+        .map_or(0, |at| step_index(at, step, items.len()));
+    Some(items[next])
+}
+
+/// The index `step` places after `at` among `len` items, wrapping round.
+///
+/// # Panics
+///
+/// If `len` is zero.
+pub fn step_index(at: usize, step: isize, len: usize) -> usize {
+    let shift = step.unsigned_abs() % len;
+    if step < 0 {
+        (at + len - shift) % len
+    } else {
+        (at + shift) % len
+    }
 }
 
 /// Online, but its chats are no use until it hosts an agent again.

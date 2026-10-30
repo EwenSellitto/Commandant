@@ -162,12 +162,12 @@ impl NodeLink for LinkService {
             capabilities(&hello, HOSTS),
             capabilities(&hello, CAN_HOST),
         );
-        info!(%node_id, conn_id, hostname = %hello.hostname, "node connected");
+        info!(%node_id, ?conn_id, hostname = %hello.hostname, "node connected");
 
         let shared = self.shared.clone();
         tokio::spawn(async move {
             let reason = handle_messages(&shared, &node_id, conn_id, &mut inbound).await;
-            info!(%node_id, conn_id, %reason, "node disconnected");
+            info!(%node_id, ?conn_id, %reason, "node disconnected");
             forget_connection(&shared, &node_id, conn_id).await;
         });
 
@@ -217,7 +217,7 @@ async fn handle_messages(
                 }
                 shared
                     .queries
-                    .answer(conn_id, worker_msg::Msg::HarnessStarted(started))
+                    .answer(conn_id, worker_msg::Msg::HarnessStarted(started));
             }
             answer @ (worker_msg::Msg::Options(_)
             | worker_msg::Msg::Sessions(_)

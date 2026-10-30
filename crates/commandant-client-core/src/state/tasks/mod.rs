@@ -4,9 +4,9 @@
 use std::time::Duration;
 
 use commandant_common::time;
-use commandant_proto::*;
+use commandant_proto::{AgentSession, RunCommandRequest, TaskInfo, task_event};
 
-use super::chat::Run;
+use super::chat::{Run, RunId};
 use super::{Ask, Choice, Choices, Choose, Effect, Go, Outcome, State, Wanted};
 
 #[cfg(test)]
@@ -14,9 +14,12 @@ mod tests;
 
 /// Tells the lists asked for apart, so the answer to one no longer shown
 /// is dropped.
-pub type ListId = u64;
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct ListId(pub(crate) u64);
+
 /// Tells output views apart for as long as the client runs.
-pub type OutputId = u64;
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct OutputId(pub(crate) u64);
 
 /// How often the open list is asked for again.
 pub(crate) const REFRESH: Duration = Duration::from_secs(2);
@@ -33,6 +36,7 @@ const TASKS_OF: &str = "Show the tasks of";
 pub struct Tasks {
     /// Only this node's; every node's when `None`.
     pub node: Option<String>,
+    /// What the server listed.
     pub tasks: Vec<TaskInfo>,
     /// Not listed yet.
     pub loading: bool,
@@ -44,6 +48,7 @@ pub struct Tasks {
 /// One task's output, read-only, followed while it runs.
 #[derive(Debug)]
 pub struct Output {
+    /// Unique among the output views, never reused.
     pub id: OutputId,
     /// What ran.
     pub line: String,
@@ -57,6 +62,7 @@ pub struct Output {
     pub pruned: bool,
     /// When it started and, once it has, ended, in Unix seconds.
     pub started: i64,
+    /// When it ended; none while it runs.
     pub finished: Option<i64>,
     /// Started from here rather than watched, so cancelled on quitting.
     pub(super) ran_here: bool,
@@ -92,7 +98,7 @@ impl State {
     /// Opens the list of `node`'s tasks, or every node's.
     pub(super) fn list_tasks(&mut self, node: Option<String>) -> Outcome {
         self.next_list += 1;
-        let list = self.next_list;
+        let list = ListId(self.next_list);
         self.notice.clear();
         self.tasks = Some(Tasks {
             node: node.clone(),
@@ -217,13 +223,14 @@ impl State {
     /// An output view, waiting for what its task printed.
     fn new_output(&mut self, line: String, node: String, cwd: String, ran_here: bool) -> OutputId {
         self.next_output += 1;
-        let id = self.next_output;
+        let id = OutputId(self.next_output);
         self.outputs.push(Output {
             id,
             line,
             node,
             cwd,
-            run: Run::new(id, KEPT_IN_VIEW),
+            // Alone in its view, so its id is never read.
+            run: Run::new(RunId::default(), KEPT_IN_VIEW),
             pruned: false,
             started: time::now(),
             finished: None,

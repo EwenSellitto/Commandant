@@ -1,3 +1,5 @@
+//! `commandant`: the CLI, TUI and GUI that talk to an orchestrator.
+
 mod admin;
 mod cli;
 #[cfg(feature = "gui")]
@@ -84,18 +86,18 @@ async fn dispatch(command: Command, client_args: &ClientArgs, handle: Handle) ->
         Command::Link => println!("{}", client()?.link()),
         Command::Logout => admin::logout(client_args)?,
         Command::Token(TokenCommand::Create { ttl, reusable }) => {
-            admin::create_token(&client()?, ttl, reusable).await?
+            admin::create_token(&client()?, ttl, reusable).await?;
         }
         Command::Node(NodeCommand::Ls) => admin::list_nodes(&client()?).await?,
         Command::Node(NodeCommand::Rm { node }) => admin::remove_node(&client()?, node).await?,
         Command::Node(NodeCommand::StartAgent { node, harness }) => {
-            admin::start_agent(&client()?, node, harness).await?
+            admin::start_agent(&client()?, node, harness).await?;
         }
         Command::Node(NodeCommand::Sessions { node }) => {
-            admin::list_sessions(&client()?, node).await?
+            admin::list_sessions(&client()?, node).await?;
         }
         Command::Node(NodeCommand::Commands { node }) => {
-            admin::list_commands(&client()?, node).await?
+            admin::list_commands(&client()?, node).await?;
         }
         Command::Node(NodeCommand::Mcp {
             node,
@@ -103,10 +105,10 @@ async fn dispatch(command: Command, client_args: &ClientArgs, handle: Handle) ->
             disconnect,
         }) => admin::mcp(&client()?, node, connect, disconnect).await?,
         Command::Task(TaskCommand::Ls { limit, node }) => {
-            admin::list_tasks(&client()?, limit, node).await?
+            admin::list_tasks(&client()?, limit, node).await?;
         }
         Command::Task(TaskCommand::Cancel { task_id }) => {
-            admin::cancel_task(&client()?, task_id).await?
+            admin::cancel_task(&client()?, task_id).await?;
         }
         Command::Task(TaskCommand::Watch { task_id }) => {
             return run::watch(&client()?, task_id).await;

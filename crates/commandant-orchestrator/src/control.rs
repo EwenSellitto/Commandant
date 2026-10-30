@@ -4,8 +4,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use commandant_proto::control_server::Control;
-use commandant_proto::*;
-use tokio::sync::broadcast::{self, error::RecvError};
+use commandant_proto::{
+    AgentOptions, AgentPrompt, AgentProviders, AgentSessions, AuthenticateProviderRequest,
+    CancelTask, CancelTaskRequest, CancelTaskResponse, CreateJoinTokenRequest,
+    CreateJoinTokenResponse, GetAgentOptionsRequest, GetSessionHistory, GetSessionHistoryRequest,
+    HarnessStarted, ListAgentOptions, ListAgentSessions, ListAgentSessionsRequest,
+    ListNodesRequest, ListNodesResponse, ListProjects, ListProjectsRequest, ListProviders,
+    ListProvidersRequest, ListTasksRequest, ListTasksResponse, McpSwitch, NodeInfo,
+    OrchestratorMsg, OutputStream, PrepareProject, PrepareProjectRequest, ProjectReady, Projects,
+    PromptRequest, ProviderAuth, ProviderAuthResult, RemoveNodeRequest, RemoveNodeResponse, Reply,
+    RunCommandRequest, RunTask, SessionHistory, StartHarness, StartHarnessRequest,
+    SwitchMcpServerRequest, TaskEvent, TaskInfo, TaskOutput, TaskStarted, WatchTaskRequest,
+    auth_action, task_event,
+};
+use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
@@ -219,7 +232,8 @@ impl Control for ControlService {
     ) -> Result<Response<CreateJoinTokenResponse>, Status> {
         let req = request.into_inner();
         let token = generate_token(JOIN_PREFIX);
-        let expires_at = (req.ttl_secs > 0).then(|| now() + req.ttl_secs as i64);
+        let ttl = i64::try_from(req.ttl_secs).unwrap_or(i64::MAX);
+        let expires_at = (ttl > 0).then(|| now().saturating_add(ttl));
         self.shared
             .store
             .add_join_token(&hash_token(&token), expires_at, req.reusable)

@@ -37,6 +37,7 @@ pub fn hostable(kind: HarnessKind) -> String {
 /// number may run at once.
 #[tonic::async_trait]
 pub trait Harness: Send + Sync {
+    /// Which agent it is.
     fn kind(&self) -> HarnessKind;
 
     /// Runs one prompt, streaming the reply on `out` as `TaskOutput` (text on
@@ -205,7 +206,10 @@ pub async fn ensure_installed(name: &str, installed_in: &str, install: &str) -> 
     }
     #[cfg(not(unix))]
     bail!("install {name} first, then restart the worker");
-    #[allow(unreachable_code)]
+    #[cfg_attr(
+        not(unix),
+        expect(unreachable_code, reason = "bail! returns before it")
+    )]
     find_binary(name, installed_in)
         .with_context(|| format!("the {name} installer finished, but no {name} binary was found"))
 }

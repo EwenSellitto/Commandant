@@ -68,9 +68,11 @@ async fn answer(
         "" => task.prompt.clone(),
         name => format!("/{name} {}", task.prompt).trim_end().to_string(),
     };
-    let mut stdin = child.stdin.take().expect("piped");
-    stdin.write_all(text.as_bytes()).await?;
-    drop(stdin);
+    // Closed at the end of the block, so the CLI knows the prompt is whole.
+    {
+        let mut stdin = child.stdin.take().expect("piped");
+        stdin.write_all(text.as_bytes()).await?;
+    }
     let mut stderr = child.stderr.take().expect("piped");
     let errors = tokio::spawn(async move {
         let mut text = String::new();
@@ -187,7 +189,7 @@ impl<'a> Turn<'a> {
                         match delta["type"].as_str().unwrap_or_default() {
                             "text_delta" => self.say(OutputStream::Stdout, &delta["text"]).await,
                             "thinking_delta" => {
-                                self.say(OutputStream::Reasoning, &delta["thinking"]).await
+                                self.say(OutputStream::Reasoning, &delta["thinking"]).await;
                             }
                             _ => {}
                         }
