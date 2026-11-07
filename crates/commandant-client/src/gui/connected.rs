@@ -4,14 +4,14 @@
 use std::collections::HashMap;
 
 use commandant_client_core::{ChatId, Core, Edit, Go, Intent, Next, OutputId, Scope, Updates};
-use gpui::prelude::FluentBuilder as _;
-use gpui::{
-    Anchor, AsyncWindowContext, Context, EventEmitter, FocusHandle, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, ScrollHandle, Styled as _, Task, WeakEntity, Window,
-    div,
+use gpui_kit::component::menu::PopupMenuItem;
+use gpui_kit::component::notification::{Notification, NotificationType};
+use gpui_kit::component::{ActiveTheme as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::{
+    Anchor, App, AsyncWindowContext, Context, Div, EventEmitter, FocusHandle, FontWeight,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
+    Styled as _, Task, WeakEntity, Window, div,
 };
-use gpui_component::notification::{Notification, NotificationType};
-use gpui_component::{ActiveTheme as _, WindowExt as _, h_flex, v_flex};
 use tokio::sync::oneshot;
 
 use super::asks::Question;
@@ -42,7 +42,7 @@ pub(super) struct Connected {
     pub(super) panes: HashMap<ChatId, Pane>,
     /// What the window keeps of each open question, by scope.
     pub(super) questions: HashMap<Scope, Question>,
-    /// How wide the sidebar is.
+    /// How wide the sidebar opens: as wide as it was last dragged.
     pub(super) sidebar: f32,
     /// Whether the sidebar is shown, or folded away with Ctrl-B.
     pub(super) sidebar_open: bool,
@@ -83,9 +83,9 @@ impl Connected {
                 let taken = this.update_in(cx, |this, window, cx| {
                     // A reply streams in many small pieces: take what has
                     // come before drawing again.
-                    let next = this.core.on_update(update);
-                    this.apply(next, window, cx);
-                    while let Some(update) = updates.ready() {
+                    let come =
+                        std::iter::once(update).chain(std::iter::from_fn(|| updates.ready()));
+                    for update in come {
                         let next = this.core.on_update(update);
                         this.apply(next, window, cx);
                     }
@@ -155,7 +155,7 @@ impl Connected {
             let scroller = self.pane(id, window, cx).scroller.clone();
             scroller.update(
                 cx,
-                gpui_component::message_scroller::MessageScrollerState::scroll_to_end,
+                gpui_kit::component::message_scroller::MessageScrollerState::scroll_to_end,
             );
         }
         self.go(go, window, cx);
@@ -399,12 +399,16 @@ impl Render for Connected {
             (None, None) if self.nodes_shown => self.render_nodes(cx).into_any_element(),
             (None, None) => div().into_any_element(),
         };
-        let sidebar = self
-            .sidebar_open
-            .then(|| self.render_sidebar(cx).into_any_element());
+        let main = self.beside_sidebar(div().size_full().min_w_0().child(main), cx);
         let asked = self
             .shown
             .is_some_and(|id| self.core.ask(Scope::Chat(id)).is_some());
+        let keys = h_flex()
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .key_context(KEYS)
+            .track_focus(&self.focus);
         let theme = cx.theme();
         let lost = (!self.core.server_reachable()).then(|| {
             div()
@@ -421,30 +425,7 @@ impl Render for Connected {
             .relative()
             .size_full()
             .children(lost)
-            .child(
-                h_flex()
-                    .w_full()
-                    .flex_1()
-                    .min_h_0()
-                    .key_context(KEYS)
-                    .track_focus(&self.focus)
-                    // A question over the chat shown takes its keys.
-                    .when(!asked, |chords| {
-                        chords
-                            .on_action(cx.listener(Self::on_new_chat))
-                            .on_action(cx.listener(Self::on_sessions))
-                            .on_action(cx.listener(Self::on_close_chat))
-                            .on_action(cx.listener(Self::on_show_nodes))
-                            .on_action(cx.listener(Self::on_show_tasks))
-                            .on_action(cx.listener(Self::on_previous_chat))
-                            .on_action(cx.listener(Self::on_next_chat))
-                            .on_action(cx.listener(Self::on_next_effort))
-                    })
-                    .on_action(cx.listener(Self::on_toggle_sidebar))
-                    .on_drag_move(cx.listener(Self::on_drag_sidebar))
-                    .children(sidebar)
-                    .child(div().flex_1().h_full().min_w_0().child(main)),
-            )
+            .child(self.on_chords(keys, asked, cx).child(main))
             .children(self.render_ask(Scope::App, cx))
     }
 }
@@ -457,7 +438,10 @@ mod tests {
     use commandant_client_core::state::fixtures::{node, output};
     use commandant_client_core::{Settings, Update};
     use commandant_proto::{NodeInfo, OutputStream};
-    use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
+    use gpui_kit::{
+        AppContext as _, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point,
+        px,
+    };
 
     use super::*;
     use crate::gui::thread::Thread;
@@ -472,7 +456,7 @@ mod tests {
         &mut VisualTestContext,
         tokio::sync::mpsc::UnboundedSender<Update>,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(gpui_kit::init);
         let open = Intent::OpenSession {
             node: nodes[0].id.clone(),
             session: None,
@@ -485,7 +469,7 @@ mod tests {
             let connected =
                 cx.new(|cx| Connected::new(core, updates, Some(open), 240.0, window, cx));
             made = Some(connected.clone());
-            gpui_component::Root::new(connected, window, cx)
+            gpui_kit::component::Root::new(connected, window, cx)
         });
         (made.unwrap(), cx, send)
     }
@@ -509,7 +493,7 @@ mod tests {
         (id, told)
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn a_reply_is_drawn_as_it_streams_in(cx: &mut TestAppContext) {
         let (connected, cx, send) = connected(vec![node("n1", true)], cx);
         let (id, told) = watch(&connected, cx);
@@ -528,7 +512,7 @@ mod tests {
         assert!(told.get() > asked, "nor of more of it");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn an_empty_thread_is_drawn_again_as_the_chat_changes(cx: &mut TestAppContext) {
         let nodes = vec![node("n1", true)];
         let (connected, cx, send) = connected(nodes.clone(), cx);
@@ -539,7 +523,47 @@ mod tests {
         assert!(told.get() > 0);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
+    fn an_open_chat_takes_what_is_typed(cx: &mut TestAppContext) {
+        let (connected, cx, _send) = connected(vec![node("n1", true)], cx);
+        cx.run_until_parked();
+        cx.simulate_input("hi");
+        let typed = connected.read_with(cx, |c, cx| {
+            let id = c.shown.expect("a chat is shown");
+            c.panes[&id].composer.read(cx).value()
+        });
+        assert_eq!(typed, "hi");
+    }
+
+    #[gpui_kit::test]
+    fn dragging_the_sidebar_edge_resizes_it_within_bounds(cx: &mut TestAppContext) {
+        let (connected, cx, _send) = connected(vec![node("n1", true)], cx);
+        let resized = Rc::new(Cell::new(None));
+        let telling = resized.clone();
+        cx.update(|_, cx| {
+            cx.subscribe(&connected, move |_, Resized(width), _| {
+                telling.set(Some(*width));
+            })
+            .detach();
+        });
+        cx.run_until_parked();
+        let drag = |cx: &mut VisualTestContext, from: f32, to: f32| {
+            let (left, y) = (MouseButton::Left, px(300.0));
+            cx.simulate_mouse_down(point(px(from), y), left, Modifiers::default());
+            cx.simulate_mouse_move(point(px(from + 10.0), y), Some(left), Modifiers::default());
+            cx.simulate_mouse_move(point(px(to), y), Some(left), Modifiers::default());
+            cx.simulate_mouse_up(point(px(to), y), left, Modifiers::default());
+        };
+        // The edge is where the sidebar ends: 240 wide.
+        drag(cx, 240.0, 300.0);
+        assert_eq!(resized.take(), Some(300.0));
+        drag(cx, 300.0, 900.0);
+        assert_eq!(resized.take(), Some(480.0), "wider than it goes");
+        drag(cx, 480.0, 480.0);
+        assert_eq!(resized.take(), None, "nothing moved, nothing to save");
+    }
+
+    #[gpui_kit::test]
     fn a_command_run_from_the_nodes_goes_back_to_them(cx: &mut TestAppContext) {
         let (connected, cx, _send) = connected(vec![node("n1", true)], cx);
         connected.update_in(cx, |c, window, cx| {
@@ -560,7 +584,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn logging_out_once_confirmed_tells_the_shell(cx: &mut TestAppContext) {
         let (connected, cx, _send) = connected(vec![node("n1", true)], cx);
         let told = Rc::new(Cell::new(false));
@@ -579,7 +603,7 @@ mod tests {
         assert!(told.get());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn logging_out_first_learns_of_tasks_that_just_started(cx: &mut TestAppContext) {
         use commandant_client_core::state::fixtures::started;
         let (connected, cx, send) = connected(vec![node("n1", true)], cx);
@@ -607,7 +631,7 @@ mod tests {
         assert_eq!(known.take(), ["t1"], "the task would go on uncancelled");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn an_agent_starting_opens_its_node_only_if_marked(cx: &mut TestAppContext) {
         use commandant_client_core::state::fixtures::bare;
         let (connected, cx, send) = connected(vec![node("n1", true), bare("b2"), bare("b3")], cx);
@@ -647,3 +671,43 @@ impl EventEmitter<Resized> for Connected {}
 pub(super) struct LoggedOut;
 
 impl EventEmitter<LoggedOut> for Connected {}
+
+/// Asks the core for `intent` on an `E`: a click, a key.
+pub(super) fn act_on<E: 'static>(
+    intent: Intent,
+    cx: &Context<Connected>,
+) -> impl Fn(&E, &mut Window, &mut App) + 'static {
+    cx.listener(move |this, _: &E, window, cx| this.act(intent.clone(), window, cx))
+}
+
+/// A menu item asking the core for `intent`.
+pub(super) fn act_item(
+    connected: &WeakEntity<Connected>,
+    label: impl Into<SharedString>,
+    intent: Intent,
+) -> PopupMenuItem {
+    let connected = connected.clone();
+    PopupMenuItem::new(label).on_click(move |_, window, cx| {
+        let _ = connected.update(cx, |this, cx| this.act(intent.clone(), window, cx));
+    })
+}
+
+/// A view's title bar: its name, then what follows.
+pub(super) fn view_header(name: &'static str, cx: &App) -> Div {
+    h_flex()
+        .px_4()
+        .py_2()
+        .gap_2()
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
+}
+
+/// A muted line where a list has nothing to show.
+pub(super) fn hint(text: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .px_2()
+        .text_sm()
+        .text_color(cx.theme().muted_foreground)
+        .child(text.into())
+}

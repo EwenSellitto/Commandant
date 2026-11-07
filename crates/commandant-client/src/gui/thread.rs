@@ -5,22 +5,22 @@ use std::ops::Range;
 
 use commandant_client_core::chat::{Entry, Role};
 use commandant_client_core::{Chat, ChatId, Intent};
-use gpui::{
+use gpui_kit::component::clipboard::Clipboard;
+use gpui_kit::component::message_scroller::MessageScroller;
+use gpui_kit::component::text::markdown_ast::Node;
+use gpui_kit::component::text::{
+    MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin, TextView,
+};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::{
     AnyElement, App, Context, DefiniteLength, Empty, Hsla, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
     WeakEntity, Window, div, px,
 };
-use gpui_component::clipboard::Clipboard;
-use gpui_component::message_scroller::MessageScroller;
-use gpui_component::text::markdown_ast::Node;
-use gpui_component::text::{
-    MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin, TextView,
-};
-use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 
 use super::chat::agent_name;
 use super::command::render_command;
-use super::connected::Connected;
+use super::connected::{Connected, act_on};
 use super::rows::Row;
 
 /// A chat's thread as a view of its own, so that it is drawn again only
@@ -197,10 +197,7 @@ impl Connected {
                 .into_any_element(),
             Role::Command => match &entry.run {
                 Some(run) => {
-                    let (id, run_id) = (chat.id, run.id);
-                    let stop = cx.listener(move |this, _, window, cx| {
-                        this.act(Intent::StopRun(id, run_id), window, cx);
-                    });
+                    let stop = act_on(Intent::StopRun(chat.id, run.id), cx);
                     render_command(&entry.text, run, stop, cx).into_any_element()
                 }
                 None => div().into_any_element(),
@@ -320,7 +317,7 @@ pub(super) fn agent_color(chat: &Chat, name: &str, cx: &App) -> Hsla {
 
 #[cfg(test)]
 mod tests {
-    use gpui_component::text::markdown_ast::{Html, Image, Node, Text};
+    use gpui_kit::component::text::markdown_ast::{Html, Image, Node, Text};
 
     use super::*;
 

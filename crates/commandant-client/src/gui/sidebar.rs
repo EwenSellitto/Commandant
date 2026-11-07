@@ -4,21 +4,19 @@
 use commandant_client_core::chat::Unseen;
 use commandant_client_core::{Chat, Intent};
 use commandant_proto::NodeInfo;
-use gpui::{
-    App, AppContext as _, Context, Div, DragMoveEvent, Empty, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, Stateful, StatefulInteractiveElement as _, Styled as _, Window,
-    div, px,
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::DropdownMenu as _;
+use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::{
+    AnyElement, App, Context, Div, ElementId, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, Stateful, StatefulInteractiveElement as _, Styled as _, div, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_component::spinner::Spinner;
-use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 
-use super::connected::{Connected, Resized};
-use super::placement::sidebar_within;
-
-/// How wide the sidebar's edge is to grab, in logical pixels.
-const EDGE: f32 = 4.0;
+use super::connected::{Connected, Resized, act_item, act_on, hint};
+use super::placement::{SIDEBAR_MAX, SIDEBAR_MIN};
 
 /// Room for a chat's mark, so titles line up.
 const MARK: f32 = 14.0;
@@ -36,15 +34,14 @@ pub(super) fn status_dot(online: bool, cx: &App) -> Div {
 impl Connected {
     /// Every node and its chats, then the Nodes and Tasks entries, and the
     /// link and logging out.
-    pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let nodes = self.core.nodes();
         let empty = nodes.is_empty().then(|| {
-            div()
-                .px_2()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child("No nodes yet. Add a worker with `commandant-server worker <link>`.")
+            hint(
+                "No nodes yet. Add a worker with `commandant-server worker <link>`.",
+                cx,
+            )
         });
         let mut tree = Vec::new();
         for (at, node) in nodes.iter().enumerate() {
@@ -53,27 +50,12 @@ impl Connected {
                 tree.push(self.chat_row(chat, cx));
             }
         }
-        let edge = div()
-            .id("sidebar-edge")
-            .absolute()
-            .top_0()
-            .right_0()
-            .w(px(EDGE))
-            .h_full()
-            .cursor_col_resize()
-            .hover(|s| s.bg(theme.border))
-            .on_drag(DraggedEdge, |edge, _, _, cx| cx.new(|_| *edge));
         v_flex()
-            .relative()
-            .w(px(self.sidebar))
-            .h_full()
-            .flex_none()
+            .size_full()
             .p_2()
             .gap_1()
             .bg(theme.sidebar)
             .text_color(theme.sidebar_foreground)
-            .border_r_1()
-            .border_color(theme.sidebar_border)
             .child(
                 v_flex()
                     .id("nodes")
@@ -86,29 +68,45 @@ impl Connected {
             .child(self.nodes_row(cx))
             .child(self.tasks_row(cx))
             .child(self.footer(cx))
-            .child(edge)
     }
 
-    /// Widens or narrows the sidebar to where its edge is dragged.
-    pub(super) fn on_drag_sidebar(
-        &mut self,
-        drag: &DragMoveEvent<DraggedEdge>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let width = sidebar_within((drag.event.position.x - drag.bounds.left()).into());
-        if width != self.sidebar {
-            self.sidebar = width;
-            cx.emit(Resized(width));
-            cx.notify();
+    /// `main`, beside the sidebar unless it is folded away; the edge
+    /// between them is dragged to resize the sidebar, which keeps its width
+    /// as the window resizes.
+    pub(super) fn beside_sidebar(&self, main: Div, cx: &mut Context<Self>) -> AnyElement {
+        if !self.sidebar_open {
+            return main.into_any_element();
         }
+        h_resizable("sidebar")
+            .on_resize(cx.listener(|this, state: &Entity<ResizableState>, _, cx| {
+                let Some(&width) = state.read(cx).sizes().first() else {
+                    return;
+                };
+                // A click on the edge ends a drag too, moving nothing.
+                let width: f32 = width.into();
+                if width != this.sidebar {
+                    this.sidebar = width;
+                    cx.emit(Resized(width));
+                }
+            }))
+            .child(
+                resizable_panel()
+                    .size(px(self.sidebar))
+                    .size_range(px(SIDEBAR_MIN)..px(SIDEBAR_MAX))
+                    .fixed()
+                    .child(self.render_sidebar(cx)),
+            )
+            .child(resizable_panel().child(main))
+            .into_any_element()
     }
 
     /// Opens the nodes; marked while they, or an output run from them, are
     /// shown.
     fn nodes_row(&self, cx: &Context<Self>) -> Stateful<Div> {
         let shown = self.nodes_shown && self.core.tasks().is_none();
-        entry("nodes-entry", IconName::Network, "Nodes", shown, cx)
+        row("nodes-entry", shown, cx)
+            .child(Icon::new(IconName::Network).small())
+            .child("Nodes")
             .on_click(cx.listener(|this, _, window, cx| this.show_nodes(None, window, cx)))
     }
 
@@ -116,16 +114,20 @@ impl Connected {
     fn tasks_row(&self, cx: &Context<Self>) -> Stateful<Div> {
         let shown = self.shown.is_none()
             && (self.core.tasks().is_some() || (self.output.is_some() && !self.nodes_shown));
-        entry("tasks-entry", IconName::SquareTerminal, "Tasks", shown, cx)
+        row("tasks-entry", shown, cx)
+            .child(Icon::new(IconName::SquareTerminal).small())
+            .child("Tasks")
             .on_click(cx.listener(|this, _, window, cx| this.show_tasks(window, cx)))
     }
 
     /// Shows the link to copy, or logs out once confirmed.
     fn footer(&self, cx: &Context<Self>) -> Div {
         let button = |id: &'static str, label: &'static str, intent: Intent| {
-            Button::new(id).ghost().xsmall().label(label).on_click(
-                cx.listener(move |this, _, window, cx| this.act(intent.clone(), window, cx)),
-            )
+            Button::new(id)
+                .ghost()
+                .xsmall()
+                .label(label)
+                .on_click(act_on(intent, cx))
         };
         h_flex()
             .pt_1()
@@ -166,27 +168,13 @@ impl Connected {
                 .icon(IconName::Plus)
                 .tooltip("New chat or session")
                 .dropdown_menu(move |menu, _, _| {
-                    // An item asking the core for `intent`.
-                    let item = |label: &'static str, intent: &Intent| {
-                        let (connected, intent) = (connected.clone(), intent.clone());
-                        PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                            let intent = intent.clone();
-                            let _ = connected.update(cx, |this, cx| this.act(intent, window, cx));
-                        })
-                    };
-                    menu.item(item("New chat", &new_chat))
-                        .item(item("Sessions…", &sessions))
+                    menu.item(act_item(&connected, "New chat", new_chat.clone()))
+                        .item(act_item(&connected, "Sessions…", sessions.clone()))
                 })
         });
-        let row = h_flex()
-            .id(("node", at))
-            .gap_2()
-            .px_2()
-            .h(px(28.0))
-            .rounded_md()
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.sidebar_accent))
+        row(("node", at), false, cx)
             .on_click(open)
+            .when(!node.online, |row| row.text_color(theme.muted_foreground))
             .child(status_dot(node.online, cx))
             .child(div().flex_1().truncate().child(node.name.clone()))
             .children(
@@ -194,12 +182,7 @@ impl Connected {
                     .starting(&node.id)
                     .then(|| Spinner::new().xsmall().color(theme.info)),
             )
-            .children(new);
-        if node.online {
-            row
-        } else {
-            row.text_color(theme.muted_foreground)
-        }
+            .children(new)
     }
 
     /// A chat's title and what it is at, how it ended out of sight, or that
@@ -229,7 +212,7 @@ impl Connected {
         };
         let close = div()
             .invisible()
-            .group_hover("chat-row", gpui::Styled::visible)
+            .group_hover("chat-row", gpui_kit::Styled::visible)
             .child(
                 Button::new(("close", u64::from(id)))
                     .ghost()
@@ -241,44 +224,27 @@ impl Connected {
                         this.act(Intent::Close(id), window, cx);
                     })),
             );
-        let shown = self.shown == Some(id);
-        let row = h_flex()
-            .id(("chat", u64::from(id)))
+        row(("chat", u64::from(id)), self.shown == Some(id), cx)
             .group("chat-row")
             .gap_1()
             .pl_4()
             .pr_1()
             .h(px(26.0))
-            .rounded_md()
             .text_sm()
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.sidebar_accent))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.show(id, window, cx);
                 cx.notify();
             }))
             .child(mark)
             .child(div().flex_1().min_w_0().truncate().child(chat.title()))
-            .child(close);
-        if shown {
-            row.bg(theme.sidebar_accent)
-                .text_color(theme.sidebar_accent_foreground)
-        } else {
-            row
-        }
+            .child(close)
     }
 }
 
-/// A view's entry under the nodes, marked while `shown`.
-fn entry(
-    id: &'static str,
-    icon: IconName,
-    label: &'static str,
-    shown: bool,
-    cx: &App,
-) -> Stateful<Div> {
+/// A row of the sidebar, marked while what it opens is `shown`.
+fn row(id: impl Into<ElementId>, shown: bool, cx: &App) -> Stateful<Div> {
     let theme = cx.theme();
-    let row = h_flex()
+    h_flex()
         .id(id)
         .gap_2()
         .px_2()
@@ -286,23 +252,8 @@ fn entry(
         .rounded_md()
         .cursor_pointer()
         .hover(|s| s.bg(theme.sidebar_accent))
-        .child(Icon::new(icon).small())
-        .child(label);
-    if shown {
-        row.bg(theme.sidebar_accent)
-            .text_color(theme.sidebar_accent_foreground)
-    } else {
-        row
-    }
-}
-
-/// The sidebar's edge, while it is dragged.
-#[derive(Copy, Clone)]
-pub(super) struct DraggedEdge;
-
-/// Nothing follows the pointer: the sidebar's edge is what moves.
-impl Render for DraggedEdge {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        Empty
-    }
+        .when(shown, |row| {
+            row.bg(theme.sidebar_accent)
+                .text_color(theme.sidebar_accent_foreground)
+        })
 }

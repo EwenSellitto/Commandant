@@ -833,3 +833,17 @@ pub fn step_index(at: usize, step: isize, len: usize) -> usize {
 pub fn lacks_agent(node: &NodeInfo) -> bool {
     node.online && node.harnesses.is_empty()
 }
+
+/// What a node hosts, on what, and its version if it gave one:
+/// `opencode`, `linux/x86_64`, `v0.4.0`.
+pub fn node_facts(node: &NodeInfo) -> Vec<String> {
+    let agents = match node.harnesses.join(", ") {
+        none if none.is_empty() => "no agent".to_string(),
+        agents => agents,
+    };
+    let mut facts = vec![agents, format!("{}/{}", node.os, node.arch)];
+    if !node.version.is_empty() {
+        facts.push(format!("v{}", node.version));
+    }
+    facts
+}

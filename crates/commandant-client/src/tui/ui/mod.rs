@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use commandant_client_core::chat::{self, Activity, Chat, Ended, Entry, Role, Run, Unseen};
-use commandant_client_core::{Ask, ChatId, Scope, Wanted};
+use commandant_client_core::{Ask, ChatId, Scope, Wanted, node_facts};
 use commandant_common::or;
 
 use super::app::{App, Screen};
@@ -211,9 +211,7 @@ fn draw_header(frame: &mut Frame, chat: &Chat, area: Rect) {
         Span::raw(node.name.clone()).bold(),
         Span::raw("  "),
     ];
-    let mut facts = facts(node);
-    facts.push(format!("v{}", node.version));
-    left.extend(dotted(facts.into_iter().map(|f| f.fg(MUTED))));
+    left.extend(dotted(node_facts(node).into_iter().map(|f| f.fg(MUTED))));
 
     let settings = &chat.settings;
     let session = match settings.session_id.as_str() {
@@ -616,15 +614,6 @@ fn agent_color(chat: &Chat, name: &str) -> Color {
 /// `● `: green when the node is online, red when not.
 fn status_dot(online: bool) -> Span<'static> {
     if online { "● ".green() } else { "● ".red() }
-}
-
-/// `opencode`, `linux/x86_64`: what a node runs, and on what.
-fn facts(node: &commandant_proto::NodeInfo) -> Vec<String> {
-    let agents = match node.harnesses.join(", ") {
-        none if none.is_empty() => "no agent".to_string(),
-        agents => agents,
-    };
-    vec![agents, format!("{}/{}", node.os, node.arch)]
 }
 
 /// The spinner's frame now; every spinner on screen turns together.

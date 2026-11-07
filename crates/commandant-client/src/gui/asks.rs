@@ -3,25 +3,25 @@
 //! over the whole window.
 
 use commandant_client_core::{Ask, Intent, Scope};
-use gpui::{
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::clipboard::Clipboard;
+use gpui_kit::component::input::{Escape, Input, InputEvent, InputState, MoveDown, MoveUp};
+use gpui_kit::component::list::ListItem;
+use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
+use gpui_kit::{
     App, AppContext as _, Context, Div, ElementId, Entity, FocusHandle, FontWeight,
     InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, ScrollHandle,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::clipboard::Clipboard;
-use gpui_component::input::{Escape, Input, InputEvent, InputState, MoveDown, MoveUp};
-use gpui_component::list::ListItem;
-use gpui_component::{ActiveTheme as _, h_flex, v_flex};
 
-use super::connected::Connected;
+use super::connected::{Connected, act_on, hint};
 use crate::picker::Picker;
 
 /// Where the keys of a question go.
 const KEYS: &str = "Ask";
 
 // Enter and Esc on a question with nothing to type.
-gpui::actions!(ask, [Yes, No]);
+gpui_kit::actions!(ask, [Yes, No]);
 
 /// The tallest a question's choices or text grow before they scroll, in
 /// logical pixels.
@@ -273,14 +273,6 @@ impl Connected {
     }
 }
 
-/// Does `intent` on an `E`: a click, a key.
-fn act_on<E: 'static>(
-    intent: Intent,
-    cx: &Context<Connected>,
-) -> impl Fn(&E, &mut Window, &mut App) + 'static {
-    cx.listener(move |this, _: &E, window, cx| this.act(intent.clone(), window, cx))
-}
-
 fn title(text: impl Into<SharedString>) -> Div {
     div().font_weight(FontWeight::SEMIBOLD).child(text.into())
 }
@@ -340,13 +332,7 @@ fn render_choices(
         )
         .on_click(act_on(choose, cx))
     });
-    let empty = (picker.list.shown_len() == 0).then(|| {
-        div()
-            .px_2()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child("Nothing matches")
-    });
+    let empty = (picker.list.shown_len() == 0).then(|| hint("Nothing matches", cx));
     v_flex()
         .id("choices")
         .max_h(px(MAX_HEIGHT))

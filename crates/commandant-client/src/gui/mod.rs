@@ -25,12 +25,12 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use commandant_client_core::config::{self, Client};
 use commandant_common::dirs;
-use gpui::{
+use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
+use gpui_kit::{
     App, AppContext as _, Bounds, Context, Entity, IntoElement, ParentElement as _, Render,
     Styled as _, Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
     point, px, size,
 };
-use gpui_component::{ActiveTheme as _, Root, Theme, ThemeMode};
 use tokio::runtime::Handle;
 
 use self::connected::{Connected, LoggedOut, Resized};
@@ -51,7 +51,7 @@ pub fn run(args: GuiArgs, client: &ClientArgs, handle: Handle) -> Result<()> {
     // With no display server GPUI runs headless: an invisible window that
     // never closes.
     #[cfg(target_os = "linux")]
-    if gpui::guess_compositor() == "Headless" {
+    if gpui_kit::guess_compositor() == "Headless" {
         anyhow::bail!(
             "no display to open a window on (neither WAYLAND_DISPLAY nor DISPLAY is set)"
         );
@@ -67,9 +67,9 @@ pub fn run(args: GuiArgs, client: &ClientArgs, handle: Handle) -> Result<()> {
     let placement = Placement::load(&placement_file);
     let failed = Rc::new(RefCell::new(None));
     let failure = failed.clone();
-    let app = gpui_platform::application().with_assets(gpui_kit_assets::Assets);
+    let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
     app.run(move |cx| {
-        gpui_component::init(cx);
+        gpui_kit::init(cx);
         asks::bind_keys(cx);
         chords::bind_keys(cx);
         cx.on_window_closed(|cx, _| {
@@ -88,14 +88,13 @@ pub fn run(args: GuiArgs, client: &ClientArgs, handle: Handle) -> Result<()> {
             app_id: Some("commandant".into()),
             ..Default::default()
         };
-        let opened = cx.open_window(options, |window, cx| {
+        // Under a `Root`, which shows the toasts.
+        let opened = gpui_kit::open_window(options, cx, |window, cx| {
             // Dark whatever the system says: many Linux desktops don't tell
             // GPUI, which then takes them for light.
             Theme::change(ThemeMode::Dark, Some(window), cx);
             let sidebar = placement.map_or(SIDEBAR_WIDTH, |p| p.sidebar);
-            let shell = cx
-                .new(|cx| Shell::new(placement_file, sidebar, args.ui, handle, saved, window, cx));
-            cx.new(|cx| Root::new(shell, window, cx))
+            cx.new(|cx| Shell::new(placement_file, sidebar, args.ui, handle, saved, window, cx))
         });
         if let Err(e) = opened {
             *failure.borrow_mut() = Some(e);

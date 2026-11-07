@@ -7,19 +7,19 @@ use commandant_client_core::chat::elapsed;
 use commandant_client_core::{Intent, OutputId, what_ran};
 use commandant_common::time::{self, ago};
 use commandant_proto::TaskInfo;
-use gpui::prelude::FluentBuilder as _;
-use gpui::{
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::clipboard::Clipboard;
+use gpui_kit::component::menu::DropdownMenu as _;
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::{
     App, Context, Div, FontWeight, Hsla, InteractiveElement as _, ParentElement as _, SharedString,
     Stateful, StatefulInteractiveElement as _, Styled as _, WeakEntity, div, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::clipboard::Clipboard;
-use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_component::spinner::Spinner;
-use gpui_component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
 
 use super::command::{command_header, end_label, render_printed};
-use super::connected::Connected;
+use super::connected::{Connected, act_item, act_on, hint, view_header};
 
 /// The widths of the columns before what ran, in logical pixels.
 const NODE: f32 = 140.0;
@@ -57,32 +57,17 @@ impl Connected {
             .dropdown_caret(true)
             .dropdown_menu(move |mut menu, _, _| {
                 for (label, node) in &choices {
-                    let (connected, node) = (connected.clone(), node.clone());
-                    let item = PopupMenuItem::new(label.clone())
-                        .checked(node == current)
-                        .on_click(move |_, window, cx| {
-                            let node = node.clone();
-                            let _ = connected.update(cx, |this, cx| {
-                                this.act(Intent::ListTasks { node }, window, cx);
-                            });
-                        });
-                    menu = menu.item(item);
+                    let list = Intent::ListTasks { node: node.clone() };
+                    menu = menu
+                        .item(act_item(&connected, label.clone(), list).checked(*node == current));
                 }
                 menu
             });
-        let header = h_flex()
-            .px_4()
-            .py_2()
-            .gap_2()
-            .border_b_1()
-            .border_color(theme.border)
-            .child(div().font_weight(FontWeight::SEMIBOLD).child("Tasks"))
-            .child(filter)
-            .children(
-                tasks
-                    .loading
-                    .then(|| Spinner::new().xsmall().color(theme.info)),
-            );
+        let header = view_header("Tasks", cx).child(filter).children(
+            tasks
+                .loading
+                .then(|| Spinner::new().xsmall().color(theme.info)),
+        );
         let heading = |text: &'static str, width: f32| div().w(px(width)).flex_none().child(text);
         let headings = h_flex()
             .gap_2()
@@ -95,13 +80,8 @@ impl Connected {
             .child(heading("Started", AGE))
             .child(div().flex_1().child("What ran"))
             .child(div().w(px(CANCEL)).flex_none());
-        let empty = (tasks.tasks.is_empty() && !tasks.loading).then(|| {
-            div()
-                .px_2()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child("Nothing has run yet. Run a command with `!` in a chat.")
-        });
+        let empty = (tasks.tasks.is_empty() && !tasks.loading)
+            .then(|| hint("Nothing has run yet. Run a command with `!` in a chat.", cx));
         // The core's notices are toasts.
         let said = tasks.error.as_ref().map(|e| {
             let said = format!("couldn't list the tasks: {e}");
@@ -140,10 +120,7 @@ impl Connected {
     /// output is pruned. Known by its id, as rows move when the list refreshes.
     fn task_row(&self, task: &TaskInfo, cx: &Context<Self>) -> Stateful<Div> {
         let theme = cx.theme();
-        let id = task.id.clone();
-        let open = cx.listener(move |this, _, window, cx| {
-            this.act(Intent::OpenTask(id.clone()), window, cx);
-        });
+        let open = act_on(Intent::OpenTask(task.id.clone()), cx);
         let id = task.id.clone();
         let cancel = (task.status == "running").then(|| {
             Button::new(SharedString::from(format!("cancel-{}", task.id)))
