@@ -3,16 +3,16 @@
 //! over the whole window.
 
 use commandant_client_core::{Ask, Intent, Scope};
-use gpui::{
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::clipboard::Clipboard;
+use gpui_kit::component::input::{Escape, Input, InputEvent, InputState, MoveDown, MoveUp};
+use gpui_kit::component::list::ListItem;
+use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
+use gpui_kit::{
     App, AppContext as _, Context, Div, ElementId, Entity, FocusHandle, FontWeight,
     InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, ScrollHandle,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::clipboard::Clipboard;
-use gpui_component::input::{Escape, Input, InputEvent, InputState, MoveDown, MoveUp};
-use gpui_component::list::ListItem;
-use gpui_component::{ActiveTheme as _, h_flex, v_flex};
 
 use super::connected::Connected;
 use crate::picker::Picker;
@@ -21,7 +21,7 @@ use crate::picker::Picker;
 const KEYS: &str = "Ask";
 
 // Enter and Esc on a question with nothing to type.
-gpui::actions!(ask, [Yes, No]);
+gpui_kit::actions!(ask, [Yes, No]);
 
 /// The tallest a question's choices or text grow before they scroll, in
 /// logical pixels.

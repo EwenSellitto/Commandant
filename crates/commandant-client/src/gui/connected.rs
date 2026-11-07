@@ -4,14 +4,14 @@
 use std::collections::HashMap;
 
 use commandant_client_core::{ChatId, Core, Edit, Go, Intent, Next, OutputId, Scope, Updates};
-use gpui::prelude::FluentBuilder as _;
-use gpui::{
+use gpui_kit::component::notification::{Notification, NotificationType};
+use gpui_kit::component::{ActiveTheme as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::{
     Anchor, AsyncWindowContext, Context, EventEmitter, FocusHandle, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, ScrollHandle, Styled as _, Task, WeakEntity, Window,
     div,
 };
-use gpui_component::notification::{Notification, NotificationType};
-use gpui_component::{ActiveTheme as _, WindowExt as _, h_flex, v_flex};
 use tokio::sync::oneshot;
 
 use super::asks::Question;
@@ -155,7 +155,7 @@ impl Connected {
             let scroller = self.pane(id, window, cx).scroller.clone();
             scroller.update(
                 cx,
-                gpui_component::message_scroller::MessageScrollerState::scroll_to_end,
+                gpui_kit::component::message_scroller::MessageScrollerState::scroll_to_end,
             );
         }
         self.go(go, window, cx);
@@ -457,7 +457,7 @@ mod tests {
     use commandant_client_core::state::fixtures::{node, output};
     use commandant_client_core::{Settings, Update};
     use commandant_proto::{NodeInfo, OutputStream};
-    use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
+    use gpui_kit::{AppContext as _, Entity, TestAppContext, VisualTestContext};
 
     use super::*;
     use crate::gui::thread::Thread;
@@ -472,7 +472,7 @@ mod tests {
         &mut VisualTestContext,
         tokio::sync::mpsc::UnboundedSender<Update>,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(gpui_kit::init);
         let open = Intent::OpenSession {
             node: nodes[0].id.clone(),
             session: None,
@@ -485,7 +485,7 @@ mod tests {
             let connected =
                 cx.new(|cx| Connected::new(core, updates, Some(open), 240.0, window, cx));
             made = Some(connected.clone());
-            gpui_component::Root::new(connected, window, cx)
+            gpui_kit::component::Root::new(connected, window, cx)
         });
         (made.unwrap(), cx, send)
     }
@@ -509,7 +509,7 @@ mod tests {
         (id, told)
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn a_reply_is_drawn_as_it_streams_in(cx: &mut TestAppContext) {
         let (connected, cx, send) = connected(vec![node("n1", true)], cx);
         let (id, told) = watch(&connected, cx);
@@ -528,7 +528,7 @@ mod tests {
         assert!(told.get() > asked, "nor of more of it");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn an_empty_thread_is_drawn_again_as_the_chat_changes(cx: &mut TestAppContext) {
         let nodes = vec![node("n1", true)];
         let (connected, cx, send) = connected(nodes.clone(), cx);
@@ -539,7 +539,19 @@ mod tests {
         assert!(told.get() > 0);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
+    fn an_open_chat_takes_what_is_typed(cx: &mut TestAppContext) {
+        let (connected, cx, _send) = connected(vec![node("n1", true)], cx);
+        cx.run_until_parked();
+        cx.simulate_input("hi");
+        let typed = connected.read_with(cx, |c, cx| {
+            let id = c.shown.expect("a chat is shown");
+            c.panes[&id].composer.read(cx).value()
+        });
+        assert_eq!(typed, "hi");
+    }
+
+    #[gpui_kit::test]
     fn a_command_run_from_the_nodes_goes_back_to_them(cx: &mut TestAppContext) {
         let (connected, cx, _send) = connected(vec![node("n1", true)], cx);
         connected.update_in(cx, |c, window, cx| {
@@ -560,7 +572,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn logging_out_once_confirmed_tells_the_shell(cx: &mut TestAppContext) {
         let (connected, cx, _send) = connected(vec![node("n1", true)], cx);
         let told = Rc::new(Cell::new(false));
@@ -579,7 +591,7 @@ mod tests {
         assert!(told.get());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn logging_out_first_learns_of_tasks_that_just_started(cx: &mut TestAppContext) {
         use commandant_client_core::state::fixtures::started;
         let (connected, cx, send) = connected(vec![node("n1", true)], cx);
@@ -607,7 +619,7 @@ mod tests {
         assert_eq!(known.take(), ["t1"], "the task would go on uncancelled");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn an_agent_starting_opens_its_node_only_if_marked(cx: &mut TestAppContext) {
         use commandant_client_core::state::fixtures::bare;
         let (connected, cx, send) = connected(vec![node("n1", true), bare("b2"), bare("b3")], cx);

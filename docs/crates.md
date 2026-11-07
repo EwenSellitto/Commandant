@@ -115,9 +115,10 @@ code, so every front end shares it. Code used by several crates goes in
 | `gui/rows.rs` | The thread as rows, and what the scroller is told as it grows: the rows added, and the rows written to, such as a command's block still printing above later rows; nothing when it hasn't, so its scrollbar stays put; rows added or written to while scrolled up are the pill's "N new" |
 | `gui/placement.rs` | Where the window was and how wide its sidebar when it last closed, stopped moving or was resized, so it reopens that way |
 
-GPUI (`gpui-pre`, `gpui-pre-platform`), `gpui-component` and its icons
-(`gpui-kit-assets`) are pinned with `=` and bumped together: their weekly
-snapshots break freely.
+The GUI's one UI dependency is `gpui-kit`, which pins GPUI (`gpui-pre`) with
+its platform, `gpui-component` and its icons as a matching set: `gpui_kit::*`
+is GPUI, `gpui_kit::component` and `gpui_kit::assets` the rest. It is pinned
+with `=`, as each release breaks freely.
 
 Tests that open a window run on GPUI's test platform, with no display, under
 the `gui-tests` feature: `cargo test --features commandant-client/gui-tests`.

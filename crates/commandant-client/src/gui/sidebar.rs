@@ -4,15 +4,15 @@
 use commandant_client_core::chat::Unseen;
 use commandant_client_core::{Chat, Intent};
 use commandant_proto::NodeInfo;
-use gpui::{
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::{
     App, AppContext as _, Context, Div, DragMoveEvent, Empty, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Stateful, StatefulInteractiveElement as _, Styled as _, Window,
     div, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_component::spinner::Spinner;
-use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 
 use super::connected::{Connected, Resized};
 use super::placement::sidebar_within;
@@ -229,7 +229,7 @@ impl Connected {
         };
         let close = div()
             .invisible()
-            .group_hover("chat-row", gpui::Styled::visible)
+            .group_hover("chat-row", gpui_kit::Styled::visible)
             .child(
                 Button::new(("close", u64::from(id)))
                     .ghost()

@@ -4,13 +4,13 @@
 use commandant_client_core::{Intent, lacks_agent};
 use commandant_common::time::ago;
 use commandant_proto::NodeInfo;
-use gpui::{
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::{
     Context, Div, FontWeight, InteractiveElement as _, ParentElement as _, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::spinner::Spinner;
-use gpui_component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
 
 use super::connected::Connected;
 use super::sidebar::status_dot;

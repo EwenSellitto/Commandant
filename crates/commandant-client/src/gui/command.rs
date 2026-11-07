@@ -4,9 +4,13 @@
 //! pane with one.
 
 use commandant_client_core::chat::{Ended, Run};
-use gpui::{App, ClickEvent, Div, FontWeight, Hsla, ParentElement as _, Styled as _, Window, div};
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
+};
+use gpui_kit::{
+    App, ClickEvent, Div, FontWeight, Hsla, ParentElement as _, Styled as _, Window, div,
+};
 
 /// The block of `run`, which ran `line`; `stop` is what its Stop button
 /// does.

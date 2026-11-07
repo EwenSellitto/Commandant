@@ -8,18 +8,20 @@ use std::collections::HashSet;
 use commandant_client_core::chat::Menu;
 use commandant_client_core::{Chat, ChatId, Intent, Scope, step_index};
 use commandant_common::or;
-use gpui::{
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{
+    Escape, IndentInline, InputEvent, MoveDown, MoveUp, OutdentInline, Textarea, TextareaState,
+};
+use gpui_kit::component::message_scroller::MessageScrollerState;
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
+};
+use gpui_kit::{
     App, AppContext as _, Context, Div, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, ScrollHandle, StatefulInteractiveElement as _, StyleRefinement,
     Styled as _, Subscription, Window, div, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::input::{
-    Escape, IndentInline, InputEvent, MoveDown, MoveUp, OutdentInline, Textarea, TextareaState,
-};
-use gpui_component::message_scroller::MessageScrollerState;
-use gpui_component::spinner::Spinner;
-use gpui_component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
 
 use super::asks::{list_row, panel};
 use super::connected::Connected;
@@ -397,7 +399,7 @@ fn render_header(chat: &Chat, cx: &Context<Connected>) -> Div {
                 .child(status_dot(node.online, cx))
                 .child(
                     div()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                         .child(node.name.clone()),
                 )
                 .children(agent)

@@ -3,11 +3,11 @@
 //! effort; and Ctrl-B, which folds the sidebar away.
 
 use commandant_client_core::{ChatId, Intent};
-use gpui::{App, Context, KeyBinding, Window};
+use gpui_kit::{App, Context, KeyBinding, Window};
 
 use super::connected::Connected;
 
-gpui::actions!(
+gpui_kit::actions!(
     chord,
     [
         NewChat,

@@ -3,13 +3,13 @@
 
 use commandant_client_core::config::{self, Client};
 use commandant_client_core::{Core, Updates};
-use gpui::{
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, h_flex, v_flex};
+use gpui_kit::{
     AppContext as _, Context, Entity, IntoElement, ParentElement as _, SharedString, Styled as _,
     Subscription, Task, Window, div, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::{ActiveTheme as _, Disableable as _, h_flex, v_flex};
 
 use super::{Connected, LoggedOut, Resized, Screen, Shell};
 

@@ -7,16 +7,16 @@ use commandant_client_core::chat::elapsed;
 use commandant_client_core::{Intent, OutputId, what_ran};
 use commandant_common::time::{self, ago};
 use commandant_proto::TaskInfo;
-use gpui::prelude::FluentBuilder as _;
-use gpui::{
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::clipboard::Clipboard;
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::{
     App, Context, Div, FontWeight, Hsla, InteractiveElement as _, ParentElement as _, SharedString,
     Stateful, StatefulInteractiveElement as _, Styled as _, WeakEntity, div, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::clipboard::Clipboard;
-use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_component::spinner::Spinner;
-use gpui_component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
 
 use super::command::{command_header, end_label, render_printed};
 use super::connected::Connected;
