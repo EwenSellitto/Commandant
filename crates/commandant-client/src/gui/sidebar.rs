@@ -82,8 +82,12 @@ impl Connected {
                 let Some(&width) = state.read(cx).sizes().first() else {
                     return;
                 };
-                this.sidebar = width.into();
-                cx.emit(Resized(this.sidebar));
+                // A click on the edge ends a drag too, moving nothing.
+                let width: f32 = width.into();
+                if width != this.sidebar {
+                    this.sidebar = width;
+                    cx.emit(Resized(width));
+                }
             }))
             .child(
                 resizable_panel()

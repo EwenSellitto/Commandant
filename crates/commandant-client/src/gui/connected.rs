@@ -555,10 +555,12 @@ mod tests {
             cx.simulate_mouse_up(point(px(to), y), left, Modifiers::default());
         };
         // The edge is where the sidebar ends: 240 wide.
-        drag(cx, 239.0, 300.0);
+        drag(cx, 240.0, 300.0);
         assert_eq!(resized.take(), Some(300.0));
-        drag(cx, 299.0, 900.0);
+        drag(cx, 300.0, 900.0);
         assert_eq!(resized.take(), Some(480.0), "wider than it goes");
+        drag(cx, 480.0, 480.0);
+        assert_eq!(resized.take(), None, "nothing moved, nothing to save");
     }
 
     #[gpui_kit::test]
