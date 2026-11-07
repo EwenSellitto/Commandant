@@ -9,7 +9,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
 };
 use gpui_kit::{
-    App, ClickEvent, Div, FontWeight, Hsla, ParentElement as _, Styled as _, Window, div,
+    App, ClickEvent, Div, ElementId, FontWeight, Hsla, ParentElement as _, Styled as _, Window, div,
 };
 
 /// The block of `run`, which ran `line`; `stop` is what its Stop button
@@ -32,14 +32,9 @@ pub(super) fn command_header(
     cx: &App,
 ) -> Div {
     let theme = cx.theme();
-    let stopping = run.stopping();
     let stop = run.running().then(|| {
-        Button::new(("stop-run", u64::from(run.id)))
-            .danger()
+        stop_button(("stop-run", u64::from(run.id)), run.stopping())
             .xsmall()
-            .icon(IconName::Square)
-            .label(if stopping { "Stopping…" } else { "Stop" })
-            .disabled(stopping)
             .on_click(stop)
     });
     h_flex()
@@ -54,6 +49,15 @@ pub(super) fn command_header(
                 .child(format!("$ {line}")),
         )
         .children(stop)
+}
+
+/// Stop, for what is at work: disabled once `stopping`, and saying so.
+pub(super) fn stop_button(id: impl Into<ElementId>, stopping: bool) -> Button {
+    Button::new(id)
+        .danger()
+        .icon(IconName::Square)
+        .label(if stopping { "Stopping…" } else { "Stop" })
+        .disabled(stopping)
 }
 
 /// What `run` printed, with its error output tinted, and how it ended,

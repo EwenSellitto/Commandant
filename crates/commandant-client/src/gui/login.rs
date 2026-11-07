@@ -207,30 +207,27 @@ impl Shell {
             ),
         };
         let label = if connecting { "Connecting…" } else { label };
+        let saved = card.saved.is_some();
         let primary = Button::new("connect")
             .primary()
             .label(label)
             .loading(connecting)
-            .disabled(connecting);
-        let primary = match card.saved {
-            Some(_) => {
-                primary.on_click(cx.listener(|shell, _, window, cx| shell.retry(window, cx)))
-            }
-            None => primary
-                .on_click(cx.listener(|shell, _, window, cx| shell.connect_pasted(window, cx))),
-        };
-        let buttons = h_flex().gap_2().justify_end().child(primary);
-        let buttons = match card.saved {
-            Some(_) => buttons.child(
-                Button::new("another-link")
-                    .ghost()
-                    .label("Use a different link")
-                    .on_click(
-                        cx.listener(|shell, _, window, cx| shell.use_another_link(window, cx)),
-                    ),
-            ),
-            None => buttons,
-        };
+            .disabled(connecting)
+            .on_click(cx.listener(move |shell, _, window, cx| match saved {
+                true => shell.retry(window, cx),
+                false => shell.connect_pasted(window, cx),
+            }));
+        let another = saved.then(|| {
+            Button::new("another-link")
+                .ghost()
+                .label("Use a different link")
+                .on_click(cx.listener(|shell, _, window, cx| shell.use_another_link(window, cx)))
+        });
+        let buttons = h_flex()
+            .gap_2()
+            .justify_end()
+            .child(primary)
+            .children(another);
         div()
             .size_full()
             .flex()
@@ -252,7 +249,7 @@ impl Shell {
                             .text_color(theme.muted_foreground)
                             .child(hint),
                     )
-                    .child(Input::new(&card.link).disabled(card.saved.is_some() || connecting))
+                    .child(Input::new(&card.link).disabled(saved || connecting))
                     .children(
                         card.error
                             .clone()

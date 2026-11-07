@@ -1,7 +1,7 @@
 //! The nodes: what each runs, and what can be done with it, from opening a
 //! chat to removing it; and adding one.
 
-use commandant_client_core::{Intent, lacks_agent};
+use commandant_client_core::{Intent, lacks_agent, node_facts};
 use commandant_common::time::ago;
 use commandant_proto::NodeInfo;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -12,7 +12,7 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
-use super::connected::Connected;
+use super::connected::{Connected, act_on, hint, view_header};
 use super::sidebar::status_dot;
 
 /// How wide a node's name is, in logical pixels.
@@ -28,14 +28,8 @@ impl Connected {
             .small()
             .icon(IconName::Plus)
             .label("Add node")
-            .on_click(cx.listener(|this, _, window, cx| this.act(Intent::AddNode, window, cx)));
-        let header = h_flex()
-            .px_4()
-            .py_2()
-            .gap_2()
-            .border_b_1()
-            .border_color(theme.border)
-            .child(div().font_weight(FontWeight::SEMIBOLD).child("Nodes"))
+            .on_click(act_on(Intent::AddNode, cx));
+        let header = view_header("Nodes", cx)
             .child(
                 div()
                     .flex_1()
@@ -45,11 +39,10 @@ impl Connected {
             )
             .child(add);
         let empty = nodes.is_empty().then(|| {
-            div()
-                .px_2()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child("No nodes yet. Add node gives the command that enrols one.")
+            hint(
+                "No nodes yet. Add node gives the command that enrols one.",
+                cx,
+            )
         });
         let rows: Vec<_> = nodes.iter().map(|node| self.node_entry(node, cx)).collect();
         v_flex().size_full().child(header).child(
@@ -156,17 +149,10 @@ impl Connected {
     }
 }
 
-/// `linux/x86_64 · v0.4.0 · opencode`, and when it was last seen while
+/// `opencode · linux/x86_64 · v0.4.0`, and when it was last seen while
 /// offline.
 fn facts(node: &NodeInfo) -> String {
-    let mut facts = vec![format!("{}/{}", node.os, node.arch)];
-    if !node.version.is_empty() {
-        facts.push(format!("v{}", node.version));
-    }
-    facts.push(match node.harnesses.join(", ") {
-        none if none.is_empty() => "no agent".into(),
-        agents => agents,
-    });
+    let mut facts = node_facts(node);
     if !node.online {
         facts.push(format!("seen {}", ago(node.last_seen)));
     }
@@ -191,7 +177,7 @@ mod tests {
         };
         assert_eq!(
             facts(&node),
-            "linux/x86_64 · v0.4.0 · opencode, claude-code"
+            "opencode, claude-code · linux/x86_64 · v0.4.0"
         );
     }
 
@@ -203,6 +189,6 @@ mod tests {
             last_seen: now() - 180,
             ..Default::default()
         };
-        assert_eq!(facts(&node), "linux/aarch64 · no agent · seen 3m ago");
+        assert_eq!(facts(&node), "no agent · linux/aarch64 · seen 3m ago");
     }
 }

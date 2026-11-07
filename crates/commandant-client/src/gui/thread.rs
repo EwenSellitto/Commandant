@@ -20,7 +20,7 @@ use gpui_kit::{
 
 use super::chat::agent_name;
 use super::command::render_command;
-use super::connected::Connected;
+use super::connected::{Connected, act_on};
 use super::rows::Row;
 
 /// A chat's thread as a view of its own, so that it is drawn again only
@@ -197,10 +197,7 @@ impl Connected {
                 .into_any_element(),
             Role::Command => match &entry.run {
                 Some(run) => {
-                    let (id, run_id) = (chat.id, run.id);
-                    let stop = cx.listener(move |this, _, window, cx| {
-                        this.act(Intent::StopRun(id, run_id), window, cx);
-                    });
+                    let stop = act_on(Intent::StopRun(chat.id, run.id), cx);
                     render_command(&entry.text, run, stop, cx).into_any_element()
                 }
                 None => div().into_any_element(),

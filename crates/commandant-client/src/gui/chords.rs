@@ -3,7 +3,8 @@
 //! effort; and Ctrl-B, which folds the sidebar away.
 
 use commandant_client_core::{ChatId, Intent};
-use gpui_kit::{App, Context, KeyBinding, Window};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::{App, Context, Div, InteractiveElement as _, KeyBinding, Window};
 
 use super::connected::Connected;
 
@@ -49,6 +50,41 @@ pub(super) fn bind_keys(cx: &mut App) {
 }
 
 impl Connected {
+    /// Has `keys` do the chords: only Ctrl-B while a question is `asked`
+    /// over the chat shown.
+    pub(super) fn on_chords(&self, keys: Div, asked: bool, cx: &mut Context<Self>) -> Div {
+        keys.when(!asked, |keys| {
+            keys.on_action(cx.listener(|this, _: &NewChat, window, cx| {
+                this.for_shown(Intent::NewChat, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &Sessions, window, cx| {
+                this.for_shown(Intent::Sessions, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CloseChat, window, cx| {
+                this.for_shown(Intent::Close, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowNodes, window, cx| {
+                this.show_nodes(None, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowTasks, window, cx| {
+                this.show_tasks(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &PreviousChat, window, cx| {
+                this.show_beside(-1, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NextChat, window, cx| {
+                this.show_beside(1, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NextEffort, window, cx| {
+                this.for_shown(Intent::CycleEffort, window, cx);
+            }))
+        })
+        .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
+            this.sidebar_open = !this.sidebar_open;
+            cx.notify();
+        }))
+    }
+
     /// Asks the core for something about the chat shown, if one is.
     fn for_shown(
         &mut self,
@@ -61,46 +97,6 @@ impl Connected {
         }
     }
 
-    pub(super) fn on_new_chat(&mut self, _: &NewChat, window: &mut Window, cx: &mut Context<Self>) {
-        self.for_shown(Intent::NewChat, window, cx);
-    }
-
-    pub(super) fn on_sessions(
-        &mut self,
-        _: &Sessions,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.for_shown(Intent::Sessions, window, cx);
-    }
-
-    pub(super) fn on_close_chat(
-        &mut self,
-        _: &CloseChat,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.for_shown(Intent::Close, window, cx);
-    }
-
-    pub(super) fn on_show_nodes(
-        &mut self,
-        _: &ShowNodes,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.show_nodes(None, window, cx);
-    }
-
-    pub(super) fn on_show_tasks(
-        &mut self,
-        _: &ShowTasks,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.show_tasks(window, cx);
-    }
-
     /// Shows the tasks: back from an output, kept as filtered if already
     /// listed, else listed anew.
     pub(super) fn show_tasks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -111,24 +107,6 @@ impl Connected {
         }
     }
 
-    pub(super) fn on_previous_chat(
-        &mut self,
-        _: &PreviousChat,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.show_beside(-1, window, cx);
-    }
-
-    pub(super) fn on_next_chat(
-        &mut self,
-        _: &NextChat,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.show_beside(1, window, cx);
-    }
-
     /// Shows the chat `step` away from the one shown, among its node's.
     fn show_beside(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
         let beside = self.shown.and_then(|id| self.core.chat_beside(id, step));
@@ -136,24 +114,5 @@ impl Connected {
             self.show(id, window, cx);
             cx.notify();
         }
-    }
-
-    pub(super) fn on_next_effort(
-        &mut self,
-        _: &NextEffort,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.for_shown(Intent::CycleEffort, window, cx);
-    }
-
-    pub(super) fn on_toggle_sidebar(
-        &mut self,
-        _: &ToggleSidebar,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.sidebar_open = !self.sidebar_open;
-        cx.notify();
     }
 }

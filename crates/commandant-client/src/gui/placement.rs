@@ -42,7 +42,7 @@ fn sidebar_width() -> f32 {
 }
 
 /// `width` within what the sidebar is dragged to.
-pub fn sidebar_within(width: f32) -> f32 {
+fn sidebar_within(width: f32) -> f32 {
     width.clamp(SIDEBAR_MIN, SIDEBAR_MAX)
 }
 

@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use commandant_client_core::chat::Menu;
-use commandant_client_core::{Chat, ChatId, Intent, Scope, step_index};
+use commandant_client_core::{Chat, ChatId, Intent, Scope, node_facts, step_index};
 use commandant_common::or;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{
@@ -14,9 +14,7 @@ use gpui_kit::component::input::{
 };
 use gpui_kit::component::message_scroller::MessageScrollerState;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
-};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
     App, AppContext as _, Context, Div, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, ScrollHandle, StatefulInteractiveElement as _, StyleRefinement,
@@ -24,7 +22,8 @@ use gpui_kit::{
 };
 
 use super::asks::{list_row, panel};
-use super::connected::Connected;
+use super::command::stop_button;
+use super::connected::{Connected, act_on};
 use super::rows::{Row, Tally};
 use super::sidebar::status_dot;
 use super::thread::{Thread, agent_color};
@@ -208,9 +207,11 @@ fn suggestions(chat: &Chat, pane: &Pane, cx: &App) -> Vec<(String, String)> {
 fn render_chips(chat: &Chat, cx: &mut Context<Connected>) -> Div {
     let id = chat.id;
     let chip = |name: &'static str, label: String, menu: Menu| {
-        Button::new(name).ghost().xsmall().label(label).on_click(
-            cx.listener(move |this, _, window, cx| this.act(Intent::Menu(id, menu), window, cx)),
-        )
+        Button::new(name)
+            .ghost()
+            .xsmall()
+            .label(label)
+            .on_click(act_on(Intent::Menu(id, menu), cx))
     };
     let chips = h_flex()
         .gap_1()
@@ -243,17 +244,9 @@ fn render_composer(
     cx: &mut Context<Connected>,
 ) -> Div {
     let id = chat.id;
-    let stopping = chat.stopping();
-    let stop = chat.at_work().then(|| {
-        Button::new("stop")
-            .danger()
-            .icon(IconName::Square)
-            .label(if stopping { "Stopping…" } else { "Stop" })
-            .disabled(stopping)
-            .on_click(
-                cx.listener(move |this, _, window, cx| this.act(Intent::Cancel(id), window, cx)),
-            )
-    });
+    let stop = chat
+        .at_work()
+        .then(|| stop_button("stop", chat.stopping()).on_click(act_on(Intent::Cancel(id), cx)));
     // Only when it changes: setting it redraws.
     let placeholder = format!("Message {}…", agent_name(chat));
     if pane.placeholder != placeholder {
@@ -374,11 +367,6 @@ fn render_header(chat: &Chat, cx: &Context<Connected>) -> Div {
             .text_color(agent_color(chat, chat.agent(), cx))
             .child(chat.agent().to_string())
     });
-    let harness = node.harnesses.first().map_or("no agent", String::as_str);
-    let mut facts = vec![harness.to_string(), format!("{}/{}", node.os, node.arch)];
-    if !node.version.is_empty() {
-        facts.push(format!("v{}", node.version));
-    }
     let session = match chat.settings.session_id.as_str() {
         "" => "new session",
         id => id,
@@ -408,7 +396,7 @@ fn render_header(chat: &Chat, cx: &Context<Connected>) -> Div {
                         .text_sm()
                         .text_color(theme.muted_foreground)
                         .truncate()
-                        .child(facts.join(" · ")),
+                        .child(node_facts(node).join(" · ")),
                 ),
         )
         .child(
@@ -425,9 +413,7 @@ fn render_header(chat: &Chat, cx: &Context<Connected>) -> Div {
                         .truncate()
                         .cursor_pointer()
                         .hover(|s| s.text_color(theme.foreground))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.act(Intent::Projects(id), window, cx);
-                        }))
+                        .on_click(act_on(Intent::Projects(id), cx))
                         .child(cwd.to_string()),
                 ),
         )
